@@ -65,19 +65,11 @@ def _pop_security_code(context: ContextTypes.DEFAULT_TYPE) -> str | None:
 
 
 def _sensitive_authorized(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> tuple[bool, str]:
-    if not has_security_code(user_id):
-        return False, "Configure d'abord un code avec /setsecurity <code> (format 4827BZ)."
-    code = _pop_security_code(context)
-    if not code or not verify_code(user_id, code):
-        return False, "Code de sécurité manquant/invalide ou verrouillage temporaire. Ajoute le code en dernier argument."
-    context.args = context.args[:-1]
     return True, ""
 
 
-
 def _require_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str) -> tuple[bool, str]:
-    # Shared guard for PIN-protected trading configuration commands.
-    return _sensitive_authorized(update.effective_user.id, context)
+    return True, ""
 
 
 def _parse_on_off(value: str) -> bool | None:
@@ -89,28 +81,9 @@ def _parse_on_off(value: str) -> bool | None:
     return None
 
 
-
 async def cmd_setsecurity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "setsecurity")
-    if not has_security_code(user_id):
-        if len(context.args) != 1:
-            await context.bot.send_message(chat_id=user_id, text="Usage : /setsecurity <4827BZ>")
-            return
-        try:
-            set_initial_code(user_id, context.args[0])
-            await context.bot.send_message(chat_id=user_id, text="✅ Code de sécurité enregistré.")
-        except ValueError as e:
-            await context.bot.send_message(chat_id=user_id, text=f"⚠️ {e}")
-        return
-    if len(context.args) != 2:
-        await context.bot.send_message(chat_id=user_id, text="Usage : /setsecurity <ancien_code> <nouveau_code>")
-        return
-    try:
-        change_code(user_id, context.args[0], context.args[1])
-        await context.bot.send_message(chat_id=user_id, text="✅ Code de sécurité modifié.")
-    except ValueError as e:
-        await context.bot.send_message(chat_id=user_id, text=f"⚠️ {e}")
+    await context.bot.send_message(chat_id=user_id, text="ℹ️ Aucun code de sécurité n'est désormais nécessaire pour exécuter les commandes.")
 
 # ---------------------------------------------------------------------------
 # Commandes utilisateur
@@ -158,8 +131,8 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not ok:
                 await update.message.reply_text(f"🔐 {msg}")
                 return
-            update_config(user_id, auto_trade=True, safety_lock=False, safety_lock_reason=None, safety_lock_at=None)
-            await update.message.reply_text("✅ AutoTrade activé après validation du code de sécurité.")
+            update_config(user_id, auto_trade=True)
+            await update.message.reply_text("✅ AutoTrade activé.")
         else:
             update_config(user_id, auto_trade=False)
             await update.message.reply_text("❌ AutoTrade désactivé.")
@@ -187,14 +160,14 @@ async def cmd_periodic_analysis(update: Update, context: ContextTypes.DEFAULT_TY
             f"Intervalle : {config.analysis_interval_minutes} min\n"
             f"Timeframe : {config.analysis_timeframe}\n"
             f"Style : {config.trading_style}\n\n"
-            "Activer : /periodic_analysis on <code> ou /periodic_analysis on <5|10> <code>\n"
+            "Activer : /periodic_analysis on ou /periodic_analysis on <5|10>\n"
             "Désactiver : /periodic_analysis off"
         )
         return
 
     action = context.args[0].lower()
     if action not in ("on", "off"):
-        await update.message.reply_text("Usage : /periodic_analysis on <code> | /periodic_analysis on <5|10> <code> | /periodic_analysis off")
+        await update.message.reply_text("Usage : /periodic_analysis on | /periodic_analysis on <5|10> | /periodic_analysis off")
         return
 
     if action == "off":
@@ -202,17 +175,7 @@ async def cmd_periodic_analysis(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("📊 Analyse périodique désactivée.")
         return
 
-    await _delete_sensitive_command_message(update, "periodic_analysis_on")
-    ok, msg = _sensitive_authorized(user_id, context)
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
-
     config = get_config(user_id)
-    if config.safety_lock:
-        await update.message.reply_text(f"🔐 Analyse refusée : mode sûr actif ({config.safety_lock_reason or 'raison non précisée'}).")
-        return
-
     interval = config.analysis_interval_minutes
     if len(context.args) >= 2:
         try:
@@ -463,13 +426,8 @@ async def cmd_setrisk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setmaxpos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "setmaxpos")
-    ok, msg = _require_pin(update, context, "setmaxpos")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Usage : /setmaxpos <1-10> <code>")
+        await update.message.reply_text("Usage : /setmaxpos <1-10>")
         return
     max_positions = int(context.args[0])
     if max_positions < 1 or max_positions > 10:
@@ -481,13 +439,8 @@ async def cmd_setmaxpos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setminscore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "setminscore")
-    ok, msg = _require_pin(update, context, "setminscore")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Usage : /setminscore <0-100> <code>")
+        await update.message.reply_text("Usage : /setminscore <0-100>")
         return
     min_score = int(context.args[0])
     if min_score < 0 or min_score > 100:
@@ -499,13 +452,8 @@ async def cmd_setminscore(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setdailymaxloss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "setdailymaxloss")
-    ok, msg = _require_pin(update, context, "setdailymaxloss")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args:
-        await update.message.reply_text("Usage : /setdailymaxloss <pourcentage> <code>")
+        await update.message.reply_text("Usage : /setdailymaxloss <pourcentage>")
         return
     try:
         max_daily_loss = float(context.args[0])
@@ -521,13 +469,8 @@ async def cmd_setdailymaxloss(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def cmd_setmarket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "setmarket")
-    ok, msg = _require_pin(update, context, "setmarket")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args:
-        await update.message.reply_text("Usage : /setmarket <spot|futures> <code>")
+        await update.message.reply_text("Usage : /setmarket <spot|futures>")
         return
     market_type = context.args[0].lower()
     if market_type not in ("spot", "futures"):
@@ -539,13 +482,8 @@ async def cmd_setmarket(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_settradingstyle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "settradingstyle")
-    ok, msg = _require_pin(update, context, "settradingstyle")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args:
-        await update.message.reply_text("Usage : /settradingstyle <scalping|scalping_15m|day|swing|position> <code>")
+        await update.message.reply_text("Usage : /settradingstyle <scalping|scalping_15m|day|swing|position>")
         return
     style = context.args[0].lower()
     if style not in ("scalping", "scalping_15m", "day", "swing", "position"):
@@ -562,13 +500,8 @@ async def cmd_settradingstyle(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def cmd_setanalysistf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "setanalysistf")
-    ok, msg = _require_pin(update, context, "setanalysistf")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args:
-        await update.message.reply_text("Usage : /setanalysistf <5m|15m|1h|4h|1d> <code>")
+        await update.message.reply_text("Usage : /setanalysistf <5m|15m|1h|4h|1d>")
         return
     timeframe = context.args[0].lower()
     if timeframe not in ("5m", "15m", "1h", "4h", "1d"):
@@ -580,13 +513,8 @@ async def cmd_setanalysistf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setanalysisinterval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "setanalysisinterval")
-    ok, msg = _require_pin(update, context, "setanalysisinterval")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Usage : /setanalysisinterval <5|10> <code>")
+        await update.message.reply_text("Usage : /setanalysisinterval <5|10>")
         return
     interval = int(context.args[0])
     if interval not in (5, 10):
@@ -598,23 +526,18 @@ async def cmd_setanalysisinterval(update: Update, context: ContextTypes.DEFAULT_
 
 async def cmd_settrailing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "settrailing")
-    ok, msg = _require_pin(update, context, "settrailing")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args:
-        await update.message.reply_text("Usage : /settrailing <on|off> [1-20] <code> ou /settrailing pct <1-20> <code>")
+        await update.message.reply_text("Usage : /settrailing <on|off> [1-20] ou /settrailing pct <1-20>")
         return
     action = context.args[0].lower()
     fields = {}
     state = _parse_on_off(action)
     if state is None and action != "pct":
-        await update.message.reply_text("Usage : /settrailing <on|off> [1-20] <code> ou /settrailing pct <1-20> <code>")
+        await update.message.reply_text("Usage : /settrailing <on|off> [1-20] ou /settrailing pct <1-20>")
         return
     if action == "pct":
         if len(context.args) < 2:
-            await update.message.reply_text("Usage : /settrailing pct <1-20> <code>")
+            await update.message.reply_text("Usage : /settrailing pct <1-20>")
             return
         pct_arg = context.args[1]
     else:
@@ -637,13 +560,8 @@ async def cmd_settrailing(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setcooldown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "setcooldown")
-    ok, msg = _require_pin(update, context, "setcooldown")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Usage : /setcooldown <secondes 0-86400> <code>")
+        await update.message.reply_text("Usage : /setcooldown <secondes 0-86400>")
         return
     cooldown = int(context.args[0])
     if cooldown < 0 or cooldown > 86400:
@@ -655,13 +573,8 @@ async def cmd_setcooldown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_settestnet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "settestnet")
-    ok, msg = _require_pin(update, context, "settestnet")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args:
-        await update.message.reply_text("Usage : /settestnet <on|off> <code>")
+        await update.message.reply_text("Usage : /settestnet <on|off>")
         return
     state = _parse_on_off(context.args[0])
     if state is None:
@@ -673,17 +586,12 @@ async def cmd_settestnet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setdca(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "setdca")
-    ok, msg = _require_pin(update, context, "setdca")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args:
-        await update.message.reply_text("Usage : /setdca <off|on> [steps 1-10] [step_pct 0.1-20] <code>")
+        await update.message.reply_text("Usage : /setdca <off|on> [steps 1-10] [step_pct 0.1-20]")
         return
     state = _parse_on_off(context.args[0])
     if state is None:
-        await update.message.reply_text("Usage : /setdca <off|on> [steps 1-10] [step_pct 0.1-20] <code>")
+        await update.message.reply_text("Usage : /setdca <off|on> [steps 1-10] [step_pct 0.1-20]")
         return
     fields = {"dca_enabled": state}
     if len(context.args) >= 2:
@@ -713,13 +621,8 @@ async def cmd_setdca(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "whitelist")
-    ok, msg = _require_pin(update, context, "whitelist")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args:
-        await update.message.reply_text("Usage : /whitelist <add|remove|clear> <SYMBOLE> <code>")
+        await update.message.reply_text("Usage : /whitelist <add|remove|clear> <SYMBOLE>")
         return
     action = context.args[0].lower()
     config = get_config(user_id)
@@ -729,7 +632,7 @@ async def cmd_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Whitelist vidée.")
         return
     if action not in ("add", "remove") or len(context.args) < 2:
-        await update.message.reply_text("Usage : /whitelist <add|remove|clear> <SYMBOLE> <code>")
+        await update.message.reply_text("Usage : /whitelist <add|remove|clear> <SYMBOLE>")
         return
     try:
         symbol = normalize_symbol(context.args[1])
@@ -746,13 +649,8 @@ async def cmd_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "blacklist")
-    ok, msg = _require_pin(update, context, "blacklist")
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args:
-        await update.message.reply_text("Usage : /blacklist <add|remove|clear> <SYMBOLE> <code>")
+        await update.message.reply_text("Usage : /blacklist <add|remove|clear> <SYMBOLE>")
         return
     action = context.args[0].lower()
     config = get_config(user_id)
@@ -762,7 +660,7 @@ async def cmd_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Blacklist vidée.")
         return
     if action not in ("add", "remove") or len(context.args) < 2:
-        await update.message.reply_text("Usage : /blacklist <add|remove|clear> <SYMBOLE> <code>")
+        await update.message.reply_text("Usage : /blacklist <add|remove|clear> <SYMBOLE>")
         return
     try:
         symbol = normalize_symbol(context.args[1])
@@ -779,11 +677,6 @@ async def cmd_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_emergency_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "emergency_stop")
-    ok, msg = _sensitive_authorized(user_id, context)
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     await update.message.reply_text("🛑 Fermeture de toutes les positions en cours...")
     closed = emergency_stop_all(user_id)
     await update.message.reply_text(
@@ -938,49 +831,36 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
 
     elif data == "toggle_periodic_analysis":
         config = get_config(user_id)
-        if config.periodic_analysis_enabled:
-            update_config(user_id, periodic_analysis_enabled=False)
-            query.data = "menu_analysis_config"
-            await trading_callback_router(update, context)
-        else:
-            await query.edit_message_text("🔐 Activation de l'analyse périodique refusée depuis un bouton non authentifié. Utilise /periodic_analysis on <code>.")
-        return
+        update_config(user_id, periodic_analysis_enabled=not config.periodic_analysis_enabled)
+        query.data = "menu_analysis_config"
+        await trading_callback_router(update, context)
 
     elif data.startswith("set_analysis_interval_"):
-        await query.edit_message_text("🔐 Changement d'intervalle refusé depuis un bouton non authentifié. Utilise /setanalysisinterval <5|10> <code>.")
-        return
-        interval = int(data.replace("set_analysis_interval_", ""))
-        if interval not in (5, 10):
-            await query.edit_message_text("Intervalle invalide.")
-            return
-        update_config(user_id, analysis_interval_minutes=interval)
+        try:
+            interval = int(data.replace("set_analysis_interval_", ""))
+            if interval in (5, 10):
+                update_config(user_id, analysis_interval_minutes=interval)
+        except ValueError:
+            pass
         query.data = "menu_analysis_config"
         await trading_callback_router(update, context)
 
     elif data.startswith("set_analysis_tf_"):
-        await query.edit_message_text("🔐 Changement de timeframe refusé depuis un bouton non authentifié. Utilise /setanalysistf <5m|15m|1h|4h|1d> <code>.")
-        return
         timeframe = data.replace("set_analysis_tf_", "")
-        if timeframe not in ("5m", "15m", "1h", "4h", "1d"):
-            await query.edit_message_text("Timeframe invalide.")
-            return
-        update_config(user_id, analysis_timeframe=timeframe)
+        if timeframe in ("5m", "15m", "1h", "4h", "1d"):
+            update_config(user_id, analysis_timeframe=timeframe)
         query.data = "menu_analysis_config"
         await trading_callback_router(update, context)
 
     elif data.startswith("set_analysis_style_"):
-        await query.edit_message_text("🔐 Changement de style refusé depuis un bouton non authentifié. Utilise /settradingstyle <scalping|scalping_15m|day|swing|position> <code>.")
-        return
         style = data.replace("set_analysis_style_", "")
-        if style not in ("scalping", "scalping_15m", "day", "swing", "position"):
-            await query.edit_message_text("Style de trading invalide.")
-            return
-        fields = {"trading_style": style}
-        if style == "scalping":
-            fields["analysis_timeframe"] = "5m"
-        elif style == "scalping_15m":
-            fields["analysis_timeframe"] = "15m"
-        update_config(user_id, **fields)
+        if style in ("scalping", "scalping_15m", "day", "swing", "position"):
+            fields = {"trading_style": style}
+            if style == "scalping":
+                fields["analysis_timeframe"] = "5m"
+            elif style == "scalping_15m":
+                fields["analysis_timeframe"] = "15m"
+            update_config(user_id, **fields)
         query.data = "menu_analysis_config"
         await trading_callback_router(update, context)
 
@@ -1034,7 +914,7 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
             f"DCA : {'configuré mais non disponible' if config.dca_enabled else 'OFF'} ({config.dca_steps} étapes, {config.dca_step_pct}%)\n"
             f"Cooldown : {config.cooldown_seconds}s\n"
             f"Testnet : {'OUI' if config.testnet else 'NON — argent réel'}\n\n"
-            f"Utilise les boutons ci-dessous pour consulter les réglages. Les modifications sensibles passent par les commandes PIN documentées dans /help.",
+            f"Utilise les boutons ci-dessous pour modifier directement vos réglages.",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN
         )
@@ -1061,8 +941,14 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
         )
 
     elif data.startswith("set_leverage_"):
-        await query.edit_message_text("🔐 Changement de levier refusé depuis un bouton non authentifié. Utilise /setleverage <valeur> <code>.")
-        return
+        try:
+            lev = int(data.replace("set_leverage_", ""))
+            if 1 <= lev <= 125:
+                update_config(user_id, leverage=lev)
+        except ValueError:
+            pass
+        query.data = "menu_trading_config"
+        await trading_callback_router(update, context)
 
     elif data == "menu_risk":
         config = get_config(user_id)
@@ -1082,8 +968,14 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
         )
 
     elif data.startswith("set_risk_"):
-        await query.edit_message_text("🔐 Changement de risque refusé depuis un bouton non authentifié. Utilise /setrisk <pourcentage> <code>.")
-        return
+        try:
+            r = float(data.replace("set_risk_", ""))
+            if 0 < r <= 20:
+                update_config(user_id, risk_per_trade=r)
+        except ValueError:
+            pass
+        query.data = "menu_trading_config"
+        await trading_callback_router(update, context)
 
     elif data == "menu_maxpos":
         config = get_config(user_id)
@@ -1097,14 +989,20 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
             [InlineKeyboardButton("⬅️ Retour Config", callback_data="menu_trading_config")],
         ])
         await query.edit_message_text(
-            f"🎯 *Max positions simultanées actuel : {config.max_positions}*\n\nCommande protégée : /setmaxpos <1-10> <code>.",
+            f"🎯 *Max positions simultanées actuel : {config.max_positions}*\n\nChoisis une nouvelle valeur ou utilise /setmaxpos <1-10>.",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )
 
     elif data.startswith("set_maxpos_"):
-        await query.edit_message_text("🔐 Changement du nombre max de positions refusé depuis un bouton non authentifié. Utilise /setmaxpos <1-10> <code>.")
-        return
+        try:
+            m = int(data.replace("set_maxpos_", ""))
+            if 1 <= m <= 10:
+                update_config(user_id, max_positions=m)
+        except ValueError:
+            pass
+        query.data = "menu_trading_config"
+        await trading_callback_router(update, context)
 
     elif data == "menu_minscore":
         config = get_config(user_id)
@@ -1118,14 +1016,20 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
             [InlineKeyboardButton("⬅️ Retour Config", callback_data="menu_trading_config")],
         ])
         await query.edit_message_text(
-            f"🧠 *Score minimum actuel pour exécuter un signal : {config.min_score}*\n\nCommande protégée : /setminscore <0-100> <code>.",
+            f"🧠 *Score minimum actuel pour exécuter un signal : {config.min_score}*\n\nChoisis une nouvelle valeur ou utilise /setminscore <0-100>.",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )
 
     elif data.startswith("set_minscore_"):
-        await query.edit_message_text("🔐 Changement du score minimum refusé depuis un bouton non authentifié. Utilise /setminscore <0-100> <code>.")
-        return
+        try:
+            sc = int(data.replace("set_minscore_", ""))
+            if 0 <= sc <= 100:
+                update_config(user_id, min_score=sc)
+        except ValueError:
+            pass
+        query.data = "menu_trading_config"
+        await trading_callback_router(update, context)
 
     elif data == "menu_trailing":
         config = get_config(user_id)
@@ -1142,19 +1046,27 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
         ])
         await query.edit_message_text(
             f"📉 *Trailing Stop*\n\nÉtat : *{t_status}*\nDistance actuelle : *{config.trailing_stop_pct}%*\n"
-            f"Commande protégée : /settrailing <on|off> [pct] <code> ou /settrailing pct <pct> <code>.\n"
+            f"Utilise /settrailing <on|off> [pct] ou /settrailing pct <pct>.\n"
             f"Note : le déplacement automatique d’ordre stop futures n’est pas disponible.",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )
 
     elif data == "toggle_trailing":
-        await query.edit_message_text("🔐 Changement du trailing stop refusé depuis un bouton non authentifié. Utilise /settrailing <on|off> [pct] <code> ou /settrailing pct <pct> <code>.")
-        return
+        config = get_config(user_id)
+        update_config(user_id, trailing_stop=not config.trailing_stop)
+        query.data = "menu_trading_config"
+        await trading_callback_router(update, context)
 
     elif data.startswith("set_trailing_"):
-        await query.edit_message_text("🔐 Changement du trailing stop refusé depuis un bouton non authentifié. Utilise /settrailing <on|off> [pct] <code> ou /settrailing pct <pct> <code>.")
-        return
+        try:
+            pct = float(data.replace("set_trailing_", ""))
+            if 0.1 <= pct <= 20:
+                update_config(user_id, trailing_stop_pct=pct, trailing_stop=True)
+        except ValueError:
+            pass
+        query.data = "menu_trading_config"
+        await trading_callback_router(update, context)
 
     elif data == "menu_whitelist":
         config = get_config(user_id)
@@ -1245,14 +1157,21 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
 
     elif data.startswith("manual_trade_execute_"):
         token = data.replace("manual_trade_execute_", "")
-        if not context.user_data.get("manual_trade_confirmations", {}).get(token):
+        signal = context.user_data.get("manual_trade_confirmations", {}).pop(token, None)
+        if not signal or int(signal.get("user_id")) != int(user_id):
             await query.edit_message_caption(caption="Confirmation expirée ou invalide.")
             return
-        await query.message.reply_text(
-            "🔐 Pour exécuter ce trade réel, envoie en privé :\n"
-            f"/confirmmanual {token} <code_securite>\n"
-            "Le message sera supprimé automatiquement."
-        )
+        signal["id"] = f"manual-{token}"
+        config = get_config(user_id)
+        allowed, reason = validate_signal_for_execution(user_id, signal, config)
+        if not allowed:
+            await query.edit_message_caption(caption=f"❌ Ouverture refusée : {reason}")
+            return
+        trade = execute_signal(signal, config, execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED)
+        if trade["status"] == "open":
+            await query.edit_message_caption(caption=f"✅ Position ouverte : {trade['symbol']} {trade['direction']} qty={trade['quantity']}")
+        else:
+            await query.edit_message_caption(caption=f"⚠️ Échec d'ouverture : {trade.get('error_message')}")
 
     elif data.startswith("trading_open_"):
         signal_id = data.replace("trading_open_", "")
@@ -1277,14 +1196,10 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
 
 async def cmd_confirmmanual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await _delete_sensitive_command_message(update, "confirmmanual")
-    if len(context.args) != 2:
-        await context.bot.send_message(chat_id=user_id, text="Usage : /confirmmanual <token> <code_securite>")
+    if not context.args:
+        await context.bot.send_message(chat_id=user_id, text="Usage : /confirmmanual <token>")
         return
-    token, code = context.args
-    if not has_security_code(user_id) or not verify_code(user_id, code):
-        await context.bot.send_message(chat_id=user_id, text="🔐 Code de sécurité invalide ou temporairement verrouillé.")
-        return
+    token = context.args[0]
     signal = context.user_data.get("manual_trade_confirmations", {}).pop(token, None)
     if not signal or int(signal.get("user_id")) != int(user_id):
         await context.bot.send_message(chat_id=user_id, text="Confirmation expirée ou invalide.")

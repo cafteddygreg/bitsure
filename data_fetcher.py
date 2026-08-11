@@ -26,8 +26,7 @@ class DataFetcher:
         self.price_cache = {}
         self.history_cache = {}
         self.subscribed_symbols = set([
-            "BTCUSDT", "ETHUSDT", "EURUSD", "GBPUSD", "USDJPY",
-            "AUDUSD", "XAUUSD", "AAPL", "TSLA", "NVDA"
+            "BTCUSDT", "ETHUSDT", "BTCUSD", "ETHUSD", "XAUUSD"
         ])
         self.ws = None
         self.ws_thread = None
@@ -242,6 +241,4 @@ class DataFetcher:
         s = symbol.upper()
         if len(s) == 6:
             return f"{s[:3]}/{s[3:]}"
-        if s in ["AAPL", "TSLA", "NVDA", "SPX", "NDX"]:
-            return s
         return s

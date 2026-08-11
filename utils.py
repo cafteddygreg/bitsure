@@ -28,7 +28,6 @@ import re
 #   "BTC-USD"  → "BTCUSDT"
 #   "btcusd"   → "BTCUSDT"
 #   "ETHUSDT"  → "ETHUSDT"   (already canonical, no-op)
-#   "EUR/USD"  → "EURUSD"    (forex pair — passed through as-is for DataFetcher)
 #   "XAU/USD"  → "XAUUSD"
 # ---------------------------------------------------------------------------
 
@@ -72,7 +71,7 @@ def normalize_symbol(symbol: str) -> str:
     if not re.match(r"^[A-Z0-9]{2,20}$", s):
         raise ValueError(
             f"Symbole invalide : « {symbol} ». "
-            "Exemples valides : BTCUSDT, ETHUSDT, EURUSD, XAUUSD."
+            "Exemples valides : BTCUSDT, ETHUSDT, BTCUSD, XAUUSD."
         )
 
     return s

@@ -33,8 +33,7 @@ history_mgr = HistoryManager.get_instance()
 weekly_scheduler = None
 
 SYMBOLS_12 = [
-    "BTCUSDT", "ETHUSDT", "EURUSD", "GBPUSD", "USDJPY",
-    "AUDUSD", "XAUUSD", "AAPL", "TSLA", "NVDA"
+    "BTCUSDT", "ETHUSDT", "BTCUSD", "ETHUSD", "XAUUSD"
 ]
 
 def generate_signal_id():

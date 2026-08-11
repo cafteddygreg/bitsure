@@ -64,17 +64,6 @@ ASSET_CLASS_RULES = {
         "sr_buffer_factor": 1.15,
         "atr_min_pct": 0.003,  # ATR minimum 0.3% du prix (marché actif)
     },
-    "forex": {
-        "symbols": {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"},
-        "sl_factor": 0.90,
-        "tp_factor": 1.00,
-        "adx_delta": 3,
-        "min_score_delta": 4,
-        "min_rr_delta": 0.10,
-        "pullback_pct": 0.025,
-        "overextension_factor": 0.90,
-        "sr_buffer_factor": 0.85,
-    },
     "metal": {
         "symbols": {"XAUUSD", "GOLD"},
         "sl_factor": 1.15,
@@ -85,17 +74,6 @@ ASSET_CLASS_RULES = {
         "pullback_pct": 0.045,
         "overextension_factor": 1.10,
         "sr_buffer_factor": 1.20,
-    },
-    "equity_index": {
-        "symbols": {"AAPL", "TSLA", "NVDA", "MSFT", "AMZN", "META", "SPY", "QQQ", "NAS100", "US30", "SPX500"},
-        "sl_factor": 1.05,
-        "tp_factor": 1.05,
-        "adx_delta": 1,
-        "min_score_delta": 1,
-        "min_rr_delta": 0.0,
-        "pullback_pct": 0.045,
-        "overextension_factor": 1.00,
-        "sr_buffer_factor": 1.00,
     },
 }
 
@@ -312,7 +290,7 @@ class SignalEngine:
         Args:
             df:     DataFrame OHLC (minimum 60 bougies).
             lang:   Code langue ("en" ou "fr").
-            symbol: Symbole (ex: "EURUSD", "BTCUSD").
+            symbol: Symbole (ex: "BTCUSDT", "BTCUSD").
             style:  Style de trading ("scalping", "scalping_15m", "day", "swing", "position", ou None pour fallback config.py).
 
         Returns:

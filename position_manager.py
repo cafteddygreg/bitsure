@@ -200,8 +200,10 @@ def reconcile_user_positions(user_id: int, startup_mode: bool = False) -> dict:
                 user_id, len(missing_local), missing_local,
             )
         else:
-            engage_safe_mode(user_id, f"Positions Binance sans trade local: {missing_local}")
-            reject_pending_trading_signals(user_id)
+            logger.warning(
+                "reconcile user=%s: positions Binance sans trade local %s — ignored (safe mode disabled)",
+                user_id, missing_local,
+            )
 
     try:
         open_orders = get_open_binance_orders(user_id, market_type="futures")

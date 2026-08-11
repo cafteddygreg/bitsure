@@ -171,12 +171,10 @@ TEXTS = {
         # ----- Symboles -----
         "symbole_invalide": "Symbole invalide.",
         "symboles_list": (
-            "📊 *SYMBOLES POPULAIRES*\n\n"
-            "🪙 *Cryptos*\nBTCUSD – Bitcoin\nETHUSD – Ethereum\n\n"
-            "💱 *Devises*\nEURUSD – Euro/Dollar\nGBPUSD – Livre/Dollar\nUSDJPY – Dollar/Yen\nAUDUSD – Dollar Australien\n\n"
-            "✨ *Matières premières*\nXAUUSD – Or\n\n"
-            "📈 *Actions*\nAAPL – Apple\nTSLA – Tesla\nNVDA – NVIDIA\n\n"
-            "💡 Exemple : /analyse BTCUSD"
+            "📊 *SYMBOLES BINANCE POPULAIRES*\n\n"
+            "🪙 *Cryptos*\nBTCUSDT – Bitcoin (USDT)\nETHUSDT – Ethereum (USDT)\nBTCUSD – Bitcoin\nETHUSD – Ethereum\n\n"
+            "✨ *Matières premières*\nXAUUSD – Or (Gold)\n\n"
+            "💡 Exemple : /analyse BTCUSDT"
         ),
         "symbol_not_found": "Symbole non trouvé.",
 
@@ -589,12 +587,10 @@ TEXTS = {
         # ----- Symbols -----
         "symbole_invalide": "Invalid symbol.",
         "symboles_list": (
-            "📊 *POPULAR SYMBOLS*\n\n"
-            "🪙 *Cryptos*\nBTCUSD – Bitcoin\nETHUSD – Ethereum\n\n"
-            "💱 *Currencies*\nEURUSD – Euro/Dollar\nGBPUSD – Pound/Dollar\nUSDJPY – Dollar/Yen\nAUDUSD – Australian Dollar\n\n"
+            "📊 *POPULAR BINANCE SYMBOLS*\n\n"
+            "🪙 *Cryptos*\nBTCUSDT – Bitcoin (USDT)\nETHUSDT – Ethereum (USDT)\nBTCUSD – Bitcoin\nETHUSD – Ethereum\n\n"
             "✨ *Commodities*\nXAUUSD – Gold\n\n"
-            "📈 *Stocks*\nAAPL – Apple\nTSLA – Tesla\nNVDA – NVIDIA\n\n"
-            "💡 Example: /analyse BTCUSD"
+            "💡 Example: /analyse BTCUSDT"
         ),
         "symbol_not_found": "Symbol not found.",
 

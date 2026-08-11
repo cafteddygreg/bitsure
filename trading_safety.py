@@ -24,36 +24,11 @@ class SafetyError(Exception):
 
 
 def engage_safe_mode(user_id: int, reason: str) -> None:
-    """Disable all automated entry points for a user and persist the reason."""
-    logger.critical("SAFE_MODE user=%s reason=%s", user_id, reason)
-    update_config(
-        user_id,
-        auto_trade=False,
-        periodic_analysis_enabled=False,
-        safety_lock=True,
-        safety_lock_reason=reason,
-        safety_lock_at=time.time(),
-    )
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE signals
-                SET status = 'rejected', rejection_reason = %s
-                WHERE user_id = %s
-                  AND status IN ('pending', 'active', 'awaiting_confirmation', 'processing')
-                """,
-                (f"safe_mode: {reason}", user_id),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+    """Log warning for trading anomaly without disabling AutoTrade or locking trading."""
+    logger.warning("TRADING_ANOMALY user=%s reason=%s", user_id, reason)
 
 
 def assert_trading_allowed(config: TradingConfig, *, require_auto_trade: bool = False) -> None:
-    if getattr(config, "safety_lock", False):
-        raise SafetyError(f"Mode sûr actif: {config.safety_lock_reason or 'raison non précisée'}")
     if require_auto_trade and not config.auto_trade:
         raise SafetyError("AutoTrade est désactivé.")
 

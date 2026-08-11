@@ -127,7 +127,9 @@ class TradingSafetyTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertIn("already used", result["error_message"])
 
-    def test_safety_lock_blocks_open_validation(self):
+    def test_safety_lock_no_longer_blocks_open_validation(self):
+        """safety_lock has been removed — validate_signal_for_execution should allow trades
+        even when config.safety_lock is True, since the lock is now a no-op."""
         from execution_engine import validate_signal_for_execution
 
         signal = {
@@ -144,8 +146,8 @@ class TradingSafetyTests(unittest.TestCase):
         }
         config = TradingConfig(user_id=42, auto_trade=True, safety_lock=True, safety_lock_reason="divergence")
         allowed, reason = validate_signal_for_execution(42, signal, config)
-        self.assertFalse(allowed)
-        self.assertIn("Mode sûr", reason)
+        # safety_lock is no longer enforced — trade should be allowed
+        self.assertTrue(allowed, f"Unexpected block: {reason}")
 
     def test_close_requires_matching_remote_position(self):
         import position_manager

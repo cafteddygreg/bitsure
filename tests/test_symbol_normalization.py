@@ -45,9 +45,7 @@ from utils import normalize_symbol, is_valid_symbol
     # Dash between base and USDT
     ("ETH-USDT",  "ETHUSDT"),
     ("BTC-USDT",  "BTCUSDT"),
-    # Forex / precious metals — not in _USD_TO_USDT_BASES, kept as-is
-    ("EUR/USD",   "EURUSD"),
-    ("GBP/USD",   "GBPUSD"),
+    # Precious metals / Binance pairs
     ("XAU/USD",   "XAUUSD"),
     ("xauusd",    "XAUUSD"),
     # Leading / trailing whitespace
@@ -83,7 +81,7 @@ def test_normalize_symbol_invalid(raw):
     ("BTC/USD",  True),
     ("btcusd",   True),
     ("ETH USD",  True),
-    ("EUR/USD",  True),
+    ("XAU/USD",  True),
     ("",         False),
     ("!!!",      False),
     ("VERYLONGSYMBOLNAME123456", False),
@@ -98,7 +96,7 @@ def test_is_valid_symbol(raw, expected):
 
 @pytest.mark.parametrize("symbol", [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT",
-    "EURUSD", "XAUUSD", "GBPUSD",
+    "BTCUSD", "ETHUSD", "XAUUSD",
 ])
 def test_normalize_symbol_idempotent(symbol):
     assert normalize_symbol(normalize_symbol(symbol)) == normalize_symbol(symbol)

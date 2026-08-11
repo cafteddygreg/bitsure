@@ -163,13 +163,9 @@ def run_health_check(context=None) -> Dict[str, Any]:
             binance_ok, binance_msg = check_binance_health(user_id)
             report["user_statuses"][user_id] = {
                 "auto_trade": cfg.auto_trade,
-                "safety_lock": cfg.safety_lock,
-                "safety_reason": cfg.safety_lock_reason,
                 "binance_ok": binance_ok,
                 "binance_msg": binance_msg,
             }
-            if cfg.safety_lock:
-                logger.info(f"[HealthMonitor] User {user_id} en SafeMode: {cfg.safety_lock_reason}")
     except Exception as e:
         logger.error(f"[HealthMonitor] Erreur vérification configs utilisateurs: {e}")
 
