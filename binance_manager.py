@@ -450,6 +450,39 @@ def cancel_order(user_id: int, symbol: str, order_id: str, market_type: MarketTy
         logger.warning("Annulation ordre %s (%s) impossible : %s", order_id, symbol, e.message)
 
 
+def replace_futures_stop_loss_order(
+    user_id: int,
+    symbol: str,
+    direction: str,
+    new_sl_price: float,
+    old_sl_order_id: Optional[str] = None,
+    execution_context: Optional[str] = None,
+) -> Optional[str]:
+    """Remplace l'ordre STOP_MARKET sur Binance Futures lors d'un déplacement de Trailing Stop."""
+    _assert_order_context_allowed(
+        user_id,
+        execution_context,
+        require_auto_trade=(execution_context == ORDER_CONTEXT_AUTOTRADE),
+    )
+    client = _client_for_user(user_id)
+    symbol = normalize_symbol(symbol)
+    opposite = "SELL" if direction.upper() == "BUY" else "BUY"
+    filters = get_symbol_filters(client, symbol, "futures")
+    if old_sl_order_id:
+        cancel_order(user_id, symbol, str(old_sl_order_id), "futures", execution_context=execution_context)
+    try:
+        sl_order = client.futures_create_order(
+            symbol=symbol,
+            side=opposite,
+            type="STOP_MARKET",
+            stopPrice=format_price_for_symbol(new_sl_price, filters),
+            closePosition=True,
+        )
+        return str(sl_order.get("orderId")) if sl_order.get("orderId") is not None else None
+    except BinanceAPIException as e:
+        raise BinanceClientError(f"Erreur Binance (mise à jour SL {symbol}) : {e.message}")
+
+
 def test_connection(user_id: int) -> bool:
     """Utilisé par /setapikeys pour valider les clés dès leur saisie."""
     client = _client_for_user(user_id)

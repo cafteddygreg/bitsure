@@ -76,6 +76,8 @@ USER_COMMAND_CATEGORIES = [
         ("/emergency_stop", "🚨 Arrêt d'urgence et fermeture globale"),
         ("/confirmmanual <token>", "Valider un trade suggéré par /analyse"),
         ("/editsignal <id> <sl> <tp>", "Ajuster SL/TP d'un signal en attente"),
+        ("/safestatus", "Afficher l'état du Safe Mode et des avertissements"),
+        ("/clearsafe <code>", "Déverrouiller le Safe Mode avec le code de sécurité"),
     ]),
     ("🚨 Live Trading Manuel", [
         ("/live", "Menu interactif Live Trading"),

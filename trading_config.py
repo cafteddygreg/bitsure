@@ -91,6 +91,10 @@ class TradingConfig:
     safety_lock: bool = False
     safety_lock_reason: Optional[str] = None
     safety_lock_at: Optional[float] = None
+    safety_warn: bool = False
+    safety_warn_reason: Optional[str] = None
+    safety_warn_at: Optional[float] = None
+    safety_lock_ttl_seconds: int = int(os.getenv("DEFAULT_SAFETY_LOCK_TTL_SECONDS", "3600"))
 
 
 def ensure_config_row(user_id: int) -> None:
@@ -135,7 +139,8 @@ def get_config(user_id: int) -> TradingConfig:
                        symbol_blacklist, market_type, trading_style,
                        analysis_timeframe, analysis_interval_minutes, testnet,
                        cooldown_seconds, daily_loss_accum, periodic_analysis_enabled,
-                       safety_lock, safety_lock_reason, safety_lock_at
+                       safety_lock, safety_lock_reason, safety_lock_at,
+                       safety_warn, safety_warn_reason, safety_warn_at, safety_lock_ttl_seconds
                 FROM trading_config WHERE user_id = %s
                 """,
                 (user_id,),
@@ -164,6 +169,10 @@ def get_config(user_id: int) -> TradingConfig:
         safety_lock=bool(row[22]) if len(row) > 22 and row[22] is not None else False,
         safety_lock_reason=row[23] if len(row) > 23 else None,
         safety_lock_at=row[24] if len(row) > 24 else None,
+        safety_warn=bool(row[25]) if len(row) > 25 and row[25] is not None else False,
+        safety_warn_reason=row[26] if len(row) > 26 else None,
+        safety_warn_at=row[27] if len(row) > 27 else None,
+        safety_lock_ttl_seconds=int(row[28]) if len(row) > 28 and row[28] is not None else 3600,
     )
 
 

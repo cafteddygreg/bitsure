@@ -333,6 +333,10 @@ def _ensure_schema(conn):
         "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_lock BOOLEAN DEFAULT FALSE",
         "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_lock_reason TEXT",
         "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_lock_at DOUBLE PRECISION",
+        "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_warn BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_warn_reason TEXT",
+        "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_warn_at DOUBLE PRECISION",
+        "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_lock_ttl_seconds INT DEFAULT 3600",
         """
         CREATE TABLE IF NOT EXISTS binance_credentials (
             user_id BIGINT PRIMARY KEY,
@@ -383,6 +387,12 @@ def _ensure_schema(conn):
     for statement in statements:
         conn.execute(statement)
     conn.commit()
+    try:
+        conn.execute("DELETE FROM signals WHERE direction = 'WAIT'")
+        conn.execute("ALTER TABLE signals ADD CONSTRAINT chk_no_wait CHECK (direction <> 'WAIT')")
+        conn.commit()
+    except Exception:
+        conn.rollback()
 
 
 atexit.register(close_db)

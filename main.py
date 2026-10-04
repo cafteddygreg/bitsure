@@ -118,6 +118,8 @@ from trading_handlers import (
     cmd_blacklist,
     cmd_emergency_stop,
     cmd_editsignal,
+    cmd_clearsafe,
+    cmd_safestatus,
     trading_callback_router,
 )
 from live_handlers import (
@@ -328,6 +330,8 @@ def main():
         ("blacklist", cmd_blacklist),
         ("emergency_stop", cmd_emergency_stop),
         ("editsignal", cmd_editsignal),
+        ("clearsafe", cmd_clearsafe),
+        ("safestatus", cmd_safestatus),
 
         # ================= LIVE TRADING =================
 

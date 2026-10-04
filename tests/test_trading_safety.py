@@ -66,10 +66,14 @@ binance_manager_stub.close_position = lambda *a, **k: {"order_id": "close"}
 binance_manager_stub.cancel_order = lambda *a, **k: None
 binance_manager_stub.get_open_binance_positions = lambda *a, **k: []
 binance_manager_stub.get_open_binance_orders = lambda *a, **k: []
+binance_manager_stub.replace_futures_stop_loss_order = lambda *a, **k: "sl_new"
 binance_manager_stub.ORDER_CONTEXT_AUTOTRADE = "autotrade"
 binance_manager_stub.ORDER_CONTEXT_MANUAL_AUTHENTICATED = "manual_authenticated"
 binance_manager_stub.ORDER_CONTEXT_EMERGENCY = "emergency_stop"
 sys.modules.setdefault("binance_manager", binance_manager_stub)
+for _attr, _val in vars(binance_manager_stub).items():
+    if not _attr.startswith("__") and not hasattr(sys.modules["binance_manager"], _attr):
+        setattr(sys.modules["binance_manager"], _attr, _val)
 
 risk_manager_stub = types.ModuleType("risk_manager")
 class _RiskResult:
@@ -127,9 +131,9 @@ class TradingSafetyTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertIn("already used", result["error_message"])
 
-    def test_safety_lock_no_longer_blocks_open_validation(self):
-        """safety_lock has been removed — validate_signal_for_execution should allow trades
-        even when config.safety_lock is True, since the lock is now a no-op."""
+    def test_safety_lock_blocks_within_ttl_and_auto_downgrades_after_ttl(self):
+        """safety_lock blocks within TTL, and automatically downgrades to safety_warn after TTL."""
+        import execution_engine
         from execution_engine import validate_signal_for_execution
 
         signal = {
@@ -144,10 +148,35 @@ class TradingSafetyTests(unittest.TestCase):
             "status": "pending",
             "created_at": time.time(),
         }
-        config = TradingConfig(user_id=42, auto_trade=True, safety_lock=True, safety_lock_reason="divergence")
-        allowed, reason = validate_signal_for_execution(42, signal, config)
-        # safety_lock is no longer enforced — trade should be allowed
-        self.assertTrue(allowed, f"Unexpected block: {reason}")
+        # 1. Within TTL -> strictly blocked
+        active_lock_config = TradingConfig(
+            user_id=42,
+            auto_trade=True,
+            safety_lock=True,
+            safety_lock_reason="divergence",
+            safety_lock_at=time.time() - 60,
+            safety_lock_ttl_seconds=3600,
+        )
+        with patch.object(execution_engine, "check_can_open_position", return_value=_RiskResult(True)):
+            allowed, reason = validate_signal_for_execution(42, signal, active_lock_config)
+        self.assertFalse(allowed)
+        self.assertIn("Safe mode actif", reason)
+
+        # 2. Expired TTL -> auto-downgraded to safety_warn and allowed
+        expired_lock_config = TradingConfig(
+            user_id=42,
+            auto_trade=True,
+            safety_lock=True,
+            safety_lock_reason="divergence",
+            safety_lock_at=time.time() - 7200,
+            safety_lock_ttl_seconds=3600,
+        )
+        with patch("trading_safety.update_config", return_value=expired_lock_config), \
+             patch.object(execution_engine, "check_can_open_position", return_value=_RiskResult(True)):
+            allowed_after, reason_after = validate_signal_for_execution(42, signal, expired_lock_config)
+        self.assertTrue(allowed_after, f"Unexpected block after TTL: {reason_after}")
+        self.assertFalse(expired_lock_config.safety_lock)
+        self.assertTrue(expired_lock_config.safety_warn)
 
     def test_close_requires_matching_remote_position(self):
         import position_manager

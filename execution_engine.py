@@ -38,7 +38,7 @@ logger = get_trading_logger("execution_engine")
 
 
 def fetch_pending_signals():
-    """Récupère les signaux non encore traités (statuts 'pending' ou 'active')."""
+    """Récupère les signaux non encore traités (statuts 'pending', 'active', ou 'skipped' suite à safe_mode)."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -47,7 +47,10 @@ def fetch_pending_signals():
                 SELECT id, user_id, symbol, direction, entry_price, sl, tp, score,
                        timeframe, signal_type, created_at
                 FROM signals
-                WHERE status IN ('pending', 'active')
+                WHERE (
+                        status IN ('pending', 'active')
+                        OR (status = 'skipped' AND COALESCE(rejection_reason, '') LIKE 'safe_mode:%%')
+                      )
                   AND direction IN ('BUY', 'SELL')
                 ORDER BY id ASC
                 """
@@ -340,20 +343,27 @@ def _format_market_scan_report(
     rejected_by_risk: int,
     errors: int,
     rejected_spot_sell: int = 0,
+    read_only_safe_mode: bool = False,
 ) -> str:
+    title = "📊 *Rapport analyse marché Binance*"
+    if read_only_safe_mode or config.safety_lock:
+        title += " _(mode lecture seule, safe mode actif)_"
     lines = [
-        "📊 *Rapport analyse marché Binance*",
+        title,
         f"Marché : `{config.market_type}` | TF : `{config.analysis_timeframe}` | Style : `{config.trading_style}`",
         f"Symboles analysés : {scanned}",
         f"Signaux actionnables : {len(saved)}",
         f"Refus risque/config : {rejected_by_risk}",
         f"Erreurs données/API : {errors}",
     ]
+    if read_only_safe_mode or config.safety_lock:
+        lines.append("⚠️ Safe mode actif : mode lecture seule, aucun signal pending enregistré en base.")
     if rejected_spot_sell:
         lines.append(f"SELL ignorés (spot) : {rejected_spot_sell}")
     if saved:
         lines.append("")
-        lines.append("*Top signaux sauvegardés*")
+        header = "*Top signaux détectés (lecture seule)*" if (read_only_safe_mode or config.safety_lock) else "*Top signaux sauvegardés*"
+        lines.append(header)
         for symbol, result, signal_id in saved[:10]:
             lines.append(
                 f"`{symbol}` {result['signal']} score {result['teddy_score']} "
@@ -370,6 +380,7 @@ async def scheduled_market_analysis(context: ContextTypes.DEFAULT_TYPE, interval
     Analyse tous les symboles tradables Binance pour les utilisateurs AutoTrade
     et Analyse Périodique configurés sur l'intervalle demandé.
     Affiche les résultats détaillés dans le terminal et envoie le rapport Telegram.
+    Si safety_lock = TRUE, fonctionne en mode lecture seule sans enregistrer de signal pending en base.
     """
     history_mgr = HistoryManager.get_instance()
     user_ids = _get_auto_trade_user_ids(interval_minutes)
@@ -380,6 +391,7 @@ async def scheduled_market_analysis(context: ContextTypes.DEFAULT_TYPE, interval
 
     for user_id in user_ids:
         config = get_config(user_id)
+        read_only_safe_mode = bool(config.safety_lock)
         try:
             symbols = get_tradable_symbols(config.market_type)
         except Exception as e:
@@ -439,6 +451,11 @@ async def scheduled_market_analysis(context: ContextTypes.DEFAULT_TYPE, interval
                     rejected_spot_sell += 1
                     continue
 
+                if read_only_safe_mode:
+                    # En mode lecture seule (safe mode actif), ne pas créer de signal en base
+                    saved.append((symbol, result, "READONLY"))
+                    continue
+
                 risk_check = check_can_open_position(user_id, config, symbol, sig)
                 if not risk_check.allowed:
                     rejected_by_risk += 1
@@ -471,7 +488,15 @@ async def scheduled_market_analysis(context: ContextTypes.DEFAULT_TYPE, interval
                 errors += 1
                 log_error(logger, user_id, f"scheduled_market_analysis.{symbol}", str(e))
 
-        report = _format_market_scan_report(config, scanned, saved, rejected_by_risk, errors, rejected_spot_sell)
+        report = _format_market_scan_report(
+            config,
+            scanned,
+            saved,
+            rejected_by_risk,
+            errors,
+            rejected_spot_sell,
+            read_only_safe_mode=read_only_safe_mode,
+        )
         logger.info(f"--- Rapport final User {user_id} ---\n{report}")
         try:
             if context and hasattr(context, "bot"):

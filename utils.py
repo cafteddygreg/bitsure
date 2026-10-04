@@ -45,29 +45,40 @@ _USD_TO_USDT_BASES = {
 _SEPARATOR_RE = re.compile(r"[\s/\-_]+")
 
 
-def normalize_symbol(symbol: str) -> str:
-    """Convert a user-supplied symbol string to a Binance-ready ticker.
+# Suffixes de contrats perpétuels ou futures à nettoyer avant normalisation
+_PERP_SUFFIX_RE = re.compile(r"(?:PERP|SWAP|FUTURES|FUT|[_\-]\d{6})$", re.IGNORECASE)
 
-    Raises ValueError with a clear message if the result is still invalid
-    after all normalization steps, so the caller can immediately reject it
-    without attempting any API call.
+
+def normalize_symbol(symbol: str) -> str:
+    """Convertit une chaîne de symbole fournie par l'utilisateur ou un flux externe
+    en un ticker standardisé compatible Binance (ex: 'BTC/USDT', 'btcusdt_perp' -> 'BTCUSDT').
+
+    Lève ValueError avec un message clair si le résultat reste invalide après
+    toutes les étapes de nettoyage.
     """
     if not isinstance(symbol, str) or not symbol.strip():
         raise ValueError("Le symbole ne peut pas être vide.")
 
-    # Step 1 — uppercase and strip
+    # Étape 1 — Majuscules et suppression des espaces englobants
     s = symbol.strip().upper()
 
-    # Step 2 — remove separators (spaces, /, -, _)
+    # Étape 2 — Nettoyage des suffixes de type contrat (:USDT, _PERP, -PERP, etc.)
+    if ":" in s:
+        s = s.split(":", 1)[0]
+
+    # Étape 3 — Suppression des séparateurs (espaces, /, -, _)
     s = _SEPARATOR_RE.sub("", s)
 
-    # Step 3 — map *USD suffix to *USDT for known crypto bases
+    # Étape 4 — Suppression des suffixes PERP / SWAP / FUTURES collés
+    s = _PERP_SUFFIX_RE.sub("", s)
+
+    # Étape 5 — Conversion du suffixe *USD en *USDT pour les actifs crypto connus
     if s.endswith("USD") and not s.endswith("USDT"):
-        base = s[:-3]  # everything before "USD"
+        base = s[:-3]  # tout ce qui précède "USD"
         if base in _USD_TO_USDT_BASES:
             s = base + "USDT"
 
-    # Step 4 — final sanity check: only alphanumeric characters allowed
+    # Étape 6 — Vérification finale : uniquement des caractères alphanumériques (2 à 20 car.)
     if not re.match(r"^[A-Z0-9]{2,20}$", s):
         raise ValueError(
             f"Symbole invalide : « {symbol} ». "

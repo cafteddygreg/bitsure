@@ -6,12 +6,18 @@ le routeur de callbacks pour les boutons (menu_autotrade, menu_positions, etc.)
 et la confirmation des signaux en mode semi-automatique.
 """
 
+import time
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
 from trading_config import get_config, update_config, save_binance_credentials
-from binance_manager import test_connection, get_full_account_info, BinanceClientError, ORDER_CONTEXT_MANUAL_AUTHENTICATED
+from binance_manager import (
+    test_connection, get_full_account_info, get_open_binance_positions,
+    BinanceClientError, ORDER_CONTEXT_MANUAL_AUTHENTICATED,
+)
 from position_manager import get_open_trades, close_trade_manual, emergency_stop_all
 from execution_engine import execute_signal, mark_signal_status, validate_signal_for_execution, insert_trade_row
 from database import get_connection
@@ -20,6 +26,16 @@ from security_manager import has_security_code, set_initial_code, change_code, v
 from utils import escape_markdown, normalize_symbol
 
 logger = get_trading_logger("trading_handlers")
+
+
+async def _safe_edit(query, text: str, **kwargs):
+    """Édite un message Telegram en ignorant l'erreur 'Message is not modified'."""
+    try:
+        return await query.edit_message_text(text, **kwargs)
+    except BadRequest as exc:
+        if "Message is not modified" in str(exc):
+            return None
+        raise
 
 
 def _is_user_allowed(user_id: int) -> bool:
@@ -64,12 +80,23 @@ def _pop_security_code(context: ContextTypes.DEFAULT_TYPE) -> str | None:
     return candidate if len(candidate) == 6 else None
 
 
-def _sensitive_authorized(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> tuple[bool, str]:
-    return True, ""
+def _sensitive_authorized(user_id: int, context: ContextTypes.DEFAULT_TYPE, *, require_pin: bool = False) -> tuple[bool, str]:
+    """Vérifie le code PIN à 6 chiffres lorsqu'un PIN est configuré ou requis."""
+    if not require_pin and not has_security_code(user_id):
+        return True, ""
+    code = _pop_security_code(context)
+    if not code:
+        if not has_security_code(user_id):
+            return False, "Aucun code de sécurité configuré. Définis d'abord un PIN à 6 chiffres avec /setsecurity <code_6_chiffres>."
+        return False, "Code de sécurité à 6 chiffres requis en dernier argument."
+    ok, msg = verify_code(user_id, code)
+    if ok and context.args and context.args[-1].strip() == code:
+        context.args = list(context.args[:-1])
+    return ok, msg
 
 
 def _require_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str) -> tuple[bool, str]:
-    return True, ""
+    return _sensitive_authorized(update.effective_user.id, context, require_pin=False)
 
 
 def _parse_on_off(value: str) -> bool | None:
@@ -82,8 +109,137 @@ def _parse_on_off(value: str) -> bool | None:
 
 
 async def cmd_setsecurity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Configure ou modifie le code PIN de sécurité à 6 chiffres."""
     user_id = update.effective_user.id
-    await context.bot.send_message(chat_id=user_id, text="ℹ️ Aucun code de sécurité n'est désormais nécessaire pour exécuter les commandes.")
+    await _delete_sensitive_command_message(update, "setsecurity")
+    if not context.args:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "🔐 *Code de sécurité (PIN 6 chiffres)*\n"
+                "• Premier code : `/setsecurity <nouveau_code_6_chiffres>`\n"
+                "• Changer le code : `/setsecurity <ancien_code> <nouveau_code>`"
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    if len(context.args) == 1:
+        ok, msg = set_initial_code(user_id, context.args[0])
+    else:
+        ok, msg = change_code(user_id, context.args[0], context.args[1])
+    prefix = "✅" if ok else "❌"
+    await context.bot.send_message(chat_id=user_id, text=f"{prefix} {msg}")
+
+
+async def cmd_clearsafe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Commande /clearsafe <code_securite> — lève safety_lock et safety_warn (protégée par PIN)."""
+    user_id = update.effective_user.id
+    await _delete_sensitive_command_message(update, "clearsafe")
+    ok, msg = _sensitive_authorized(user_id, context, require_pin=True)
+    if not ok:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"🔐 Déverrouillage refusé : {msg}\nUsage : /clearsafe <code_securite>",
+        )
+        return
+
+    update_config(
+        user_id,
+        safety_lock=False,
+        safety_lock_reason=None,
+        safety_lock_at=None,
+        safety_warn=False,
+        safety_warn_reason=None,
+        safety_warn_at=None,
+    )
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=(
+            "✅ Safe Mode et avertissements de sécurité levés avec succès.\n"
+            "• safety_lock : INACTIF\n"
+            "• safety_warn : INACTIF\n"
+            "Note : si tu souhaites réactiver l'ouverture automatique d'ordres, utilise /autotrade on."
+        ),
+    )
+
+
+async def cmd_safestatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Commande publique /safestatus — affiche l'état complet safety_lock / safety_warn et les divergences."""
+    user_id = update.effective_user.id
+    config = get_config(user_id)
+    now = time.time()
+
+    def _fmt_ts(ts: float | None) -> str:
+        if not ts:
+            return "—"
+        try:
+            return datetime.utcfromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S UTC")
+        except Exception:
+            return str(ts)
+
+    lock_state = "🔴 ACTIF (Verrouillage Critique)" if config.safety_lock else "🟢 INACTIF"
+    ttl = int(getattr(config, "safety_lock_ttl_seconds", 3600) or 0)
+    if config.safety_lock and config.safety_lock_at and ttl > 0:
+        rem = max(0, int((float(config.safety_lock_at) + ttl) - now))
+        ttl_str = f"{rem}s (~{max(1, rem // 60)} min)" if rem > 0 else "Expiré (downgrade auto au prochain check)"
+    elif ttl == 0:
+        ttl_str = "Désactivé (strict)"
+    else:
+        ttl_str = f"{ttl}s"
+
+    warn_state = "🟠 ACTIF (Avertissement Temporaire)" if config.safety_warn else "🟢 INACTIF"
+
+    lines = [
+        "🛡️ *État du Système de Sécurité (Safe Mode)*",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"• *Verrouillage Critique (safety_lock)* : {lock_state}",
+        f"  Raison : `{escape_markdown(config.safety_lock_reason or '—')}`",
+        f"  Horodatage : `{_fmt_ts(config.safety_lock_at)}`",
+        f"  TTL restant : `{ttl_str}`",
+        "",
+        f"• *Avertissement (safety_warn)* : {warn_state}",
+        f"  Raison : `{escape_markdown(config.safety_warn_reason or '—')}`",
+        f"  Horodatage : `{_fmt_ts(config.safety_warn_at)}`",
+    ]
+
+    if config.safety_lock:
+        lines.append("\n🔍 *Positions Binance divergentes :*")
+        try:
+            local_trades = [t for t in get_open_trades(user_id) if t["market_type"] == "futures"]
+            local_keys = {(normalize_symbol(t["symbol"]), str(t["direction"]).upper()) for t in local_trades}
+            remote_positions = get_open_binance_positions(user_id, market_type="futures")
+            remote_keys = {(normalize_symbol(p["symbol"]), str(p["direction"]).upper()): p for p in remote_positions}
+
+            divergent = []
+            for k, pos in remote_keys.items():
+                if k not in local_keys:
+                    divergent.append(f"  - `{k[0]}` {k[1]} qty={pos['quantity']} (présente sur Binance, absente localement)")
+            for k in local_keys:
+                if k not in remote_keys:
+                    divergent.append(f"  - `{k[0]}` {k[1]} (présente localement, absente sur Binance)")
+
+            if divergent:
+                lines.extend(divergent)
+            else:
+                lines.append("  Aucune divergence active détectée actuellement.")
+        except Exception as e:
+            lines.append(f"  Impossible de vérifier les positions Binance : `{escape_markdown(str(e))}`")
+
+    lines.append("\n💡 *Actions recommandées :*")
+    if config.safety_lock:
+        if ttl > 0 and config.safety_lock_at:
+            rem_min = max(1, int(max(0, (float(config.safety_lock_at) + ttl) - now) // 60))
+            lines.append(f"  • Vérifier vos positions sur Binance puis exécuter `/clearsafe <code_securite>`")
+            lines.append(f"  • Ou attendre ~{rem_min} minute(s) pour le downgrade automatique en avertissement.")
+        else:
+            lines.append("  • Vérifier vos positions sur Binance puis exécuter `/clearsafe <code_securite>`.")
+    elif config.safety_warn:
+        lines.append("  • Aucune action urgente requise : l'avertissement s'effacera automatiquement au prochain cycle réussi.")
+        lines.append("  • Pour acquitter manuellement : `/clearsafe <code_securite>`.")
+    else:
+        lines.append("  • Tout est nominal. Aucune action requise.")
+
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 # ---------------------------------------------------------------------------
 # Commandes utilisateur
@@ -187,6 +343,20 @@ async def cmd_periodic_analysis(update: Update, context: ContextTypes.DEFAULT_TY
     if interval not in (5, 10):
         await update.message.reply_text(
             "Intervalle non supporté à chaud. Utilise 5 ou 10 minutes pour garantir que le scheduler actif lance l'analyse."
+        )
+        return
+
+    if config.safety_lock:
+        update_config(
+            user_id,
+            periodic_analysis_enabled=True,
+            analysis_interval_minutes=interval,
+            auto_trade=False,
+        )
+        await update.message.reply_text(
+            "✅ Analyse périodique activée en mode lecture seule, safe mode actif.\n"
+            f"Le marché Binance sera analysé automatiquement toutes les {interval} minutes.\n"
+            "⚠️ Safe mode actif : AutoTrade est forcé sur OFF et aucun signal pending ne sera enregistré en base."
         )
         return
 
@@ -772,15 +942,11 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
         )
 
     elif data.startswith("set_market_"):
-        await query.edit_message_text("🔐 Changement de marché refusé depuis un bouton non authentifié. Utilise /setmarket <spot|futures> <code>.")
+        await _safe_edit(
+            query,
+            "🔐 Changement de marché refusé depuis un bouton non authentifié. Utilise /setmarket <spot|futures> <code>.",
+        )
         return
-        market_type = data.replace("set_market_", "")
-        if market_type not in ("spot", "futures"):
-            await query.edit_message_text("Mode de marché invalide.")
-            return
-        update_config(user_id, market_type=market_type)
-        query.data = "menu_market_mode"
-        await trading_callback_router(update, context)
 
     elif data == "menu_analysis_config":
         config = get_config(user_id)
