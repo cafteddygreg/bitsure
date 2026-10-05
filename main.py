@@ -329,6 +329,8 @@ def main():
         ("close", cmd_close),
         ("pnl", cmd_pnl),
         ("account", cmd_account),
+        ("balance", cmd_account),
+        ("solde", cmd_account),
         ("history_trades", cmd_trade_history),
         ("setleverage", cmd_setleverage),
         ("setrisk", cmd_setrisk),

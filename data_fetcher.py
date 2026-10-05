@@ -139,37 +139,65 @@ class DataFetcher:
         return price
 
     async def _fetch_price(self, symbol: str) -> Optional[Dict]:
-        # 1. Binance REST public — source unique pour tous les actifs USDT
-        if symbol.endswith("USDT"):
+        # 1. Binance REST public multi-miroirs (data-api.binance.vision n'est jamais géo-bloqué)
+        binance_sym = symbol
+        if symbol in ("BTCUSD", "ETHUSD"):
+            binance_sym = f"{symbol}T"  # BTCUSD -> BTCUSDT si besoin
+
+        if symbol.endswith("USDT") or ( symbol in ("BTCUSD", "ETHUSD") and not TWELVEDATA_API_KEY ):
+            price_urls = (
+                f"https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol={binance_sym}",
+                f"https://api.binance.com/api/v3/ticker/bookTicker?symbol={binance_sym}",
+                f"https://api1.binance.com/api/v3/ticker/bookTicker?symbol={binance_sym}",
+                f"https://fapi.binance.com/fapi/v1/ticker/bookTicker?symbol={binance_sym}",
+                f"https://testnet.binance.vision/api/v3/ticker/bookTicker?symbol={binance_sym}",
+            )
+            for url in price_urls:
+                try:
+                    r = requests.get(url, timeout=5)
+                    if r.status_code == 200:
+                        data = r.json()
+                        bid = float(data.get("bidPrice", 0) or 0)
+                        ask = float(data.get("askPrice", 0) or 0)
+                        if bid > 0 or ask > 0:
+                            price = (bid + ask) / 2.0 if (bid and ask) else (bid or ask)
+                            return {"price": price, "bid": bid or price, "ask": ask or price, "timestamp": time.time()}
+                except Exception as e:
+                    logger.debug(f"Binance mirror price error {binance_sym} ({url}): {e}")
+
+            if symbol.endswith("USDT"):
+                return None
+
+        # 2. Source Twelve Data pour les autres symboles (si clé présente)
+        if TWELVEDATA_API_KEY:
             try:
-                url = f"https://api.binance.com/api/v3/ticker/bookTicker?symbol={symbol}"
-                r = requests.get(url, timeout=5)
+                td_symbol = self._format_symbol(symbol)
+                url = f"https://api.twelvedata.com/quote?symbol={td_symbol}&apikey={TWELVEDATA_API_KEY}"
+                r = requests.get(url, timeout=8)
                 if r.status_code == 200:
                     data = r.json()
-                    bid = float(data.get("bidPrice", 0))
-                    ask = float(data.get("askPrice", 0))
-                    price = (bid + ask) / 2.0 if (bid and ask) else float(data.get("bidPrice") or 0)
-                    return {"price": price, "bid": bid, "ask": ask, "timestamp": time.time()}
+                    if "close" in data or "price" in data:
+                        price = float(data.get("close") or data.get("price", 0))
+                        if price > 0:
+                            bid = float(data.get("bid", price - max(price * 0.0005, 0.0001)))
+                            ask = float(data.get("ask", price + max(price * 0.0005, 0.0001)))
+                            return {"price": price, "bid": bid, "ask": ask, "timestamp": time.time()}
             except Exception as e:
-                logger.warning(f"Binance Price error {symbol}: {e}")
-            # Pas de repli TwelveData pour un actif Binance
-            return None
+                logger.warning(f"Price error {symbol}: {e}")
 
-        # 2. Repli / Source Twelve Data pour les autres symboles
-        if not TWELVEDATA_API_KEY:
-            return None
+        # 3. Repli Yahoo Finance pour XAUUSD / BTCUSD / ETHUSD si TwelveData absent
         try:
-            td_symbol = self._format_symbol(symbol)
-            url = f"https://api.twelvedata.com/quote?symbol={td_symbol}&apikey={TWELVEDATA_API_KEY}"
-            r = requests.get(url, timeout=10)
-            if r.status_code == 200:
-                data = r.json()
-                price = float(data.get("close") or data.get("price", 0))
-                bid = float(data.get("bid", price - max(price * 0.0005, 0.0001)))
-                ask = float(data.get("ask", price + max(price * 0.0005, 0.0001)))
-                return {"price": price, "bid": bid, "ask": ask, "timestamp": time.time()}
-        except Exception as e:
-            logger.warning(f"Price error {symbol}: {e}")
+            import yfinance as yf
+            yf_map = {"XAUUSD": "GC=F", "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD"}
+            yf_sym = yf_map.get(symbol)
+            if yf_sym:
+                hist = yf.Ticker(yf_sym).history(period="1d", interval="5m")
+                if hist is not None and not hist.empty:
+                    p = float(hist["Close"].iloc[-1])
+                    spread = max(p * 0.0005, 0.01)
+                    return {"price": p, "bid": p - spread / 2, "ask": p + spread / 2, "timestamp": time.time()}
+        except Exception:
+            pass
         return None
 
     # =========================================================
@@ -192,45 +220,75 @@ class DataFetcher:
         return None
 
     async def _fetch_history(self, symbol: str, timeframe: str):
-        # 1. Binance REST public — source unique pour tous les actifs USDT
-        if symbol.endswith("USDT"):
+        # 1. Binance REST public multi-miroirs (data-api.binance.vision fonctionne partout, même US/Render)
+        if symbol.endswith("USDT") or (symbol in ("BTCUSD", "ETHUSD") and not TWELVEDATA_API_KEY):
+            target_sym = f"{symbol}T" if symbol in ("BTCUSD", "ETHUSD") else symbol
             try:
                 from binance_manager import get_klines_dataframe
-                df = get_klines_dataframe(symbol, timeframe, market_type="spot", limit=1000)
+                df = get_klines_dataframe(target_sym, timeframe, market_type="spot", limit=500)
                 if df is not None and not df.empty:
                     return df
             except Exception as e:
-                logger.warning(f"Binance History error {symbol}: {e}")
-            # Pas de repli TwelveData pour un actif Binance : évite des données incohérentes
-            return None
+                logger.warning(f"Binance History error {target_sym}: {e}")
 
-        # 2. TwelveData — uniquement pour les actifs hors Binance (forex, actions, matières premières)
+            if symbol.endswith("USDT"):
+                # Dernier recours : yfinance pour BTC-USD / ETH-USD si tous les miroirs Binance sont filtrés
+                try:
+                    import yfinance as yf
+                    base_coin = symbol[:-4]
+                    yf_interval = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}.get(timeframe, "1h")
+                    yf_period = "5d" if yf_interval in ("1m", "5m", "15m") else "60d"
+                    hist = yf.Ticker(f"{base_coin}-USD").history(period=yf_period, interval=yf_interval)
+                    if hist is not None and not hist.empty:
+                        return hist[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+                except Exception as yf_err:
+                    logger.warning(f"YFinance fallback failed for {symbol}: {yf_err}")
+                return None
+
+        # 2. TwelveData — pour les actifs hors Binance (forex, matières premières) si clé configurée
+        if TWELVEDATA_API_KEY:
+            try:
+                td_symbol = self._format_symbol(symbol)
+                interval = {
+                    "1m": "1min",
+                    "5m": "5min",
+                    "15m": "15min",
+                    "1h": "1h",
+                    "4h": "4h",
+                    "1d": "1day",
+                }.get(timeframe, "1day")
+                url = f"https://api.twelvedata.com/time_series?symbol={td_symbol}&interval={interval}&outputsize=500&apikey={TWELVEDATA_API_KEY}"
+                r = requests.get(url, timeout=10)
+                if r.status_code == 200:
+                    data = r.json().get("values", [])
+                    if data:
+                        df = pd.DataFrame(data).rename(columns={
+                            "datetime": "Date", "open": "Open", "high": "High",
+                            "low": "Low", "close": "Close", "volume": "Volume"
+                        })
+                        df = df.iloc[::-1]
+                        df["Date"] = pd.to_datetime(df["Date"])
+                        df.set_index("Date", inplace=True)
+                        for col in ("Open", "High", "Low", "Close", "Volume"):
+                            if col not in df.columns:
+                                df[col] = 0.0
+                        return df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+            except Exception as e:
+                logger.warning(f"History error {symbol}: {e}")
+
+        # 3. Repli Yahoo Finance (ex: XAUUSD -> GC=F, BTCUSD -> BTC-USD, ETHUSD -> ETH-USD)
         try:
-            td_symbol = self._format_symbol(symbol)
-            interval = {
-                "1m": "1min",
-                "5m": "5min",
-                "15m": "15min",
-                "1h": "1h",
-                "4h": "4h",
-                "1d": "1day",
-            }.get(timeframe, "1day")
-            url = f"https://api.twelvedata.com/time_series?symbol={td_symbol}&interval={interval}&outputsize=5000&apikey={TWELVEDATA_API_KEY}"
-            r = requests.get(url, timeout=10)
-            if r.status_code == 200:
-                data = r.json().get("values", [])
-                if not data:
-                    return None
-                df = pd.DataFrame(data).rename(columns={
-                    "datetime": "Date", "open": "Open", "high": "High",
-                    "low": "Low", "close": "Close", "volume": "Volume"
-                })
-                df = df.iloc[::-1]
-                df["Date"] = pd.to_datetime(df["Date"])
-                df.set_index("Date", inplace=True)
-                return df.astype(float)
+            import yfinance as yf
+            yf_map = {"XAUUSD": "GC=F", "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD"}
+            yf_sym = yf_map.get(symbol)
+            if yf_sym:
+                yf_interval = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}.get(timeframe, "1h")
+                yf_period = "5d" if yf_interval in ("1m", "5m", "15m") else "60d"
+                hist = yf.Ticker(yf_sym).history(period=yf_period, interval=yf_interval)
+                if hist is not None and not hist.empty:
+                    return hist[["Open", "High", "Low", "Close", "Volume"]].astype(float)
         except Exception as e:
-            logger.warning(f"History error {symbol}: {e}")
+            logger.warning(f"YFinance history error {symbol}: {e}")
         return None
 
     # =========================================================

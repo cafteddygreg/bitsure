@@ -463,16 +463,24 @@ async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Commande /account — Visualisation complète du solde, PnL et positions Binance."""
+    """Commande /account (et /balance, /solde) — Visualisation complète du solde, PnL et positions Binance."""
     user_id = update.effective_user.id
     config = get_config(user_id)
 
     try:
         info = get_full_account_info(user_id, market_type=config.market_type)
-    except BinanceClientError as e:
-        msg = f"❌ {e}"
+    except Exception as e:
+        logger.error("cmd_account failed for user=%s: %s", user_id, e)
+        msg = (
+            f"❌ Impossible de récupérer le solde Binance ({config.market_type.upper()}) :\n"
+            f"{e}\n\n"
+            "💡 Vérifie tes clés avec `/setapikeys` ou change de marché avec `/setmarket spot` / `/setmarket futures`."
+        )
         if update.callback_query:
-            await update.callback_query.edit_message_text(msg)
+            try:
+                await update.callback_query.edit_message_text(msg)
+            except Exception:
+                await update.callback_query.message.reply_text(msg)
         else:
             await update.message.reply_text(msg)
         return
@@ -481,7 +489,7 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💼 *Tableau de Bord Compte Binance ({info['market_type'].upper()})*",
         "━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"💰 *Solde Total* : `{info['total_wallet_balance']:.2f} USDT`",
-        f"💵 *Disponible* : `{info['available_balance']:.2f} USDT`",
+        f"💵 *Montant Disponible* : `{info['available_balance']:.2f} USDT`",
         f"📊 *PnL Non Réalisé* : `{info['unrealized_pnl']:+.2f} USDT`",
     ]
 
@@ -490,13 +498,13 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines.append("\n🪙 *Détail des Actifs* :")
     if info["assets"]:
-        for a in info["assets"][:5]:
+        for a in info["assets"][:8]:
             if info["market_type"] == "futures":
-                lines.append(f"  • *{a['asset']}* : {a['wallet']:.4f} (PnL: {a.get('unrealized_pnl', 0):+.2f})")
+                lines.append(f"  • *{a['asset']}* : {a['wallet']:.4f} (Dispo: {a.get('available', 0):.2f} | PnL: {a.get('unrealized_pnl', 0):+.2f})")
             else:
                 lines.append(f"  • *{a['asset']}* : {a['total']:.4f} (~{a.get('usdt_value', 0):.2f} USDT)")
     else:
-        lines.append("  *Aucun actif actif.*")
+        lines.append("  • Aucun actif actif.")
 
     lines.append("\n📈 *Positions Ouvertes Binance* :")
     if info["positions"]:
@@ -507,7 +515,7 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"    PnL: `{p['unrealized_pnl']:+.2f} USDT` | Liq: {p['liquidation_price']:.4f}"
             )
     else:
-        lines.append("  *Aucune position ouverte sur Binance.*")
+        lines.append("  • Aucune position ouverte sur Binance.")
 
     if info.get("recent_trades"):
         lines.append(f"\n💸 *Commissions Récentes* : `{info['total_commissions']:.4f} USDT`")
@@ -519,11 +527,20 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
     markup = InlineKeyboardMarkup(keyboard)
+    full_text = "\n".join(lines)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text("\n".join(lines), reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+        try:
+            await update.callback_query.edit_message_text(full_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            plain = full_text.replace("*", "").replace("`", "")
+            await update.callback_query.message.reply_text(plain, reply_markup=markup)
     else:
-        await update.message.reply_text("\n".join(lines), reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+        try:
+            await update.message.reply_text(full_text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            plain = full_text.replace("*", "").replace("`", "")
+            await update.message.reply_text(plain, reply_markup=markup)
 
 
 async def cmd_trade_history(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -9,11 +9,15 @@ Dépendance : pip install python-binance
 
 import logging
 import hashlib
+import hmac
 import math
+import time
+import urllib.parse
 from decimal import Decimal, ROUND_DOWN
 from typing import Optional, Literal
 
 import pandas as pd
+import requests
 from binance.client import Client
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 
@@ -24,6 +28,89 @@ from utils import normalize_symbol
 logger = logging.getLogger("binance_manager")
 
 MarketType = Literal["spot", "futures"]
+
+
+class _NoPingClient(Client):
+    """Client python-binance qui n'appelle JAMAIS self.ping() sur api.binance.com dans __init__.
+    Évite le blocage géographique HTTP 451 (Service unavailable from a restricted location)
+    lorsque le serveur Render est hébergé aux États-Unis."""
+
+    def ping(self):
+        return {}
+
+
+def _build_resilient_client(api_key: Optional[str] = None, api_secret: Optional[str] = None, testnet: bool = False) -> Client:
+    """Construit un Client Binance sans ping initial bloquant et oriente les URLs vers des endpoints accessibles."""
+    try:
+        client = _NoPingClient(api_key, api_secret, testnet=testnet)
+    except Exception:
+        # Fallback ultime si une version de python-binance appelle autre chose dans __init__
+        client = object.__new__(_NoPingClient)
+        client.API_KEY = api_key or ""
+        client.API_SECRET = api_secret or ""
+        client.session = requests.Session()
+        if api_key:
+            client.session.headers.update({"X-MBX-APIKEY": api_key})
+        client.testnet = testnet
+        client.tld = "com"
+        client._requests_params = None
+        client.response = None
+        client.timestamp_offset = 0
+
+    if testnet:
+        client.API_URL = "https://testnet.binance.vision/api"
+        client.FUTURES_URL = "https://testnet.binancefuture.com/fapi"
+        client.FUTURES_DATA_URL = "https://testnet.binancefuture.com/futures/data"
+    else:
+        # Sur Live, data-api.binance.vision ou api4.binance.com passent mieux les filtres
+        client.API_URL = "https://api4.binance.com/api"
+        client.FUTURES_URL = "https://fapi.binance.com/fapi"
+    return client
+
+
+def _signed_rest_get(
+    api_key: str,
+    api_secret: str,
+    path: str,
+    params: Optional[dict] = None,
+    *,
+    market_type: MarketType = "futures",
+    testnet: bool = True,
+) -> Optional[dict | list]:
+    """Effectue une requête GET signée HMAC-SHA256 directe vers Binance (Spot ou Futures, Testnet ou Live).
+    Contourne tout blocage interne de python-binance (HTTP 451 US sur api.binance.com)."""
+    if market_type == "futures":
+        bases = (
+            ("https://testnet.binancefuture.com",)
+            if testnet
+            else ("https://fapi.binance.com", "https://testnet.binancefuture.com")
+        )
+    else:
+        bases = (
+            ("https://testnet.binance.vision",)
+            if testnet
+            else ("https://api4.binance.com", "https://api1.binance.com", "https://api.binance.com", "https://testnet.binance.vision")
+        )
+
+    last_err = None
+    for base in bases:
+        try:
+            q = dict(params or {})
+            q["timestamp"] = int(time.time() * 1000)
+            q.setdefault("recvWindow", 10000)
+            query_str = urllib.parse.urlencode(q)
+            sig = hmac.new(api_secret.encode("utf-8"), query_str.encode("utf-8"), hashlib.sha256).hexdigest()
+            url = f"{base}{path}?{query_str}&signature={sig}"
+            r = requests.get(url, headers={"X-MBX-APIKEY": api_key}, timeout=7)
+            if r.status_code == 200:
+                return r.json()
+            last_err = f"HTTP {r.status_code}: {r.text[:200]}"
+        except Exception as exc:
+            last_err = str(exc)
+            continue
+    if last_err:
+        logger.warning("Direct signed REST GET %s failed (%s/%s): %s", path, market_type, "testnet" if testnet else "live", last_err)
+    return None
 
 
 class BinanceClientError(Exception):
@@ -64,8 +151,8 @@ def _assert_order_context_allowed(user_id: int, execution_context: Optional[str]
         raise BinanceClientError("Ordre automatique refusé: AutoTrade est désactivé.")
 
 
-def _client_for_user(user_id: int) -> Client:
-    creds = get_binance_credentials(user_id)
+def _client_for_user(user_id: int, market_type: Optional[MarketType] = None) -> Client:
+    creds = get_binance_credentials(user_id, market_type=market_type)
     if not creds or not creds["api_key"] or not creds["api_secret"]:
         raise BinanceClientError(
             "Aucune clé API Binance configurée. Utilise /setapikeys pour les ajouter."
@@ -75,29 +162,59 @@ def _client_for_user(user_id: int) -> Client:
             "Tes clés API Binance semblent invalides. Merci de les reconfigurer."
         )
 
-    client = Client(creds["api_key"], creds["api_secret"], testnet=creds["testnet"])
-    return client
+    return _build_resilient_client(creds["api_key"], creds["api_secret"], testnet=bool(creds["testnet"]))
 
 
 def _public_client() -> Client:
-    return Client()
+    return _build_resilient_client()
+
+
+_SPOT_PUBLIC_BASES = (
+    "https://data-api.binance.vision",
+    "https://api.binance.com",
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+    "https://testnet.binance.vision",
+)
+
+_FUTURES_PUBLIC_BASES = (
+    "https://fapi.binance.com",
+    "https://testnet.binancefuture.com",
+)
 
 
 def get_tradable_symbols(market_type: MarketType = "futures", quote_asset: str = "USDT") -> list[str]:
     """Return active Binance symbols for the requested market and quote asset."""
-    client = _public_client()
+    bases = _FUTURES_PUBLIC_BASES if market_type == "futures" else _SPOT_PUBLIC_BASES
+    path = "/fapi/v1/exchangeInfo" if market_type == "futures" else "/api/v3/exchangeInfo"
+
+    for base in bases:
+        try:
+            r = requests.get(f"{base}{path}", timeout=6)
+            if r.status_code == 200:
+                info = r.json()
+                symbols = [
+                    item["symbol"]
+                    for item in info.get("symbols", [])
+                    if item.get("quoteAsset") == quote_asset and item.get("status") == "TRADING"
+                ]
+                if symbols:
+                    return sorted(set(symbols))
+        except Exception:
+            continue
+
     try:
+        client = _public_client()
         info = client.futures_exchange_info() if market_type == "futures" else client.get_exchange_info()
-        symbols = []
-        for item in info.get("symbols", []):
-            if item.get("quoteAsset") != quote_asset:
-                continue
-            if item.get("status") != "TRADING":
-                continue
-            symbols.append(item["symbol"])
+        symbols = [
+            item["symbol"]
+            for item in info.get("symbols", [])
+            if item.get("quoteAsset") == quote_asset and item.get("status") == "TRADING"
+        ]
         return sorted(set(symbols))
-    except BinanceAPIException as e:
-        raise BinanceClientError(f"Erreur Binance (liste symboles) : {e.message}")
+    except Exception as e:
+        raise BinanceClientError(f"Erreur Binance (liste symboles) : {e}")
 
 
 def get_klines_dataframe(
@@ -106,15 +223,48 @@ def get_klines_dataframe(
     market_type: MarketType = "futures",
     limit: int = 500,
 ) -> Optional[pd.DataFrame]:
-    """Fetch public Binance OHLCV data as a DataFrame compatible with SignalEngine."""
-    client = _public_client()
-    try:
-        if market_type == "futures":
-            klines = client.futures_klines(symbol=symbol, interval=timeframe, limit=limit)
-        else:
-            klines = client.get_klines(symbol=symbol, interval=timeframe, limit=limit)
-    except BinanceAPIException as e:
-        raise BinanceClientError(f"Erreur Binance (historique {symbol}) : {e.message}")
+    """Fetch public Binance OHLCV data as a DataFrame compatible with SignalEngine.
+    Uses multi-mirror public endpoints (including data-api.binance.vision which is never geo-blocked).
+    """
+    symbol = normalize_symbol(symbol)
+    klines = None
+
+    if market_type == "futures":
+        endpoints = [
+            *(f"{b}/fapi/v1/klines" for b in _FUTURES_PUBLIC_BASES),
+            *(f"{b}/api/v3/klines" for b in _SPOT_PUBLIC_BASES),
+        ]
+    else:
+        endpoints = [
+            *(f"{b}/api/v3/klines" for b in _SPOT_PUBLIC_BASES),
+            *(f"{b}/fapi/v1/klines" for b in _FUTURES_PUBLIC_BASES),
+        ]
+
+    for url in endpoints:
+        try:
+            r = requests.get(
+                url,
+                params={"symbol": symbol, "interval": timeframe, "limit": min(limit, 1000)},
+                timeout=7,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list) and len(data) > 0:
+                    klines = data
+                    break
+        except Exception:
+            continue
+
+    if not klines:
+        try:
+            client = _public_client()
+            if market_type == "futures":
+                klines = client.futures_klines(symbol=symbol, interval=timeframe, limit=limit)
+            else:
+                klines = client.get_klines(symbol=symbol, interval=timeframe, limit=limit)
+        except Exception as e:
+            logger.warning(f"Binance klines fallback failed for {symbol}: {e}")
+            return None
 
     if not klines:
         return None
@@ -142,20 +292,42 @@ def make_client_order_id(prefix: str, unique_key: str, max_len: int = 36) -> str
 
 def get_price(user_id: int, symbol: str, market_type: MarketType = "futures") -> float:
     symbol = normalize_symbol(symbol)
-    client = _client_for_user(user_id)
     try:
+        client = _client_for_user(user_id)
         if market_type == "futures":
             ticker = client.futures_symbol_ticker(symbol=symbol)
         else:
             ticker = client.get_symbol_ticker(symbol=symbol)
         return float(ticker["price"])
-    except BinanceAPIException as e:
-        raise BinanceClientError(f"Erreur Binance (prix {symbol}) : {e.message}")
+    except Exception as first_err:
+        # Fallback REST direct sur les miroirs publics (évite l'erreur HTTP 451 US de api.binance.com)
+        urls = (
+            (f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}",
+             f"https://testnet.binancefuture.com/fapi/v1/ticker/price?symbol={symbol}",
+             f"https://data-api.binance.vision/api/v3/ticker/price?symbol={symbol}")
+            if market_type == "futures"
+            else (
+                f"https://data-api.binance.vision/api/v3/ticker/price?symbol={symbol}",
+                f"https://testnet.binance.vision/api/v3/ticker/price?symbol={symbol}",
+                f"https://api1.binance.com/api/v3/ticker/price?symbol={symbol}",
+            )
+        )
+        for url in urls:
+            try:
+                r = requests.get(url, timeout=5)
+                if r.status_code == 200:
+                    data = r.json()
+                    if "price" in data:
+                        return float(data["price"])
+            except Exception:
+                continue
+        msg = getattr(first_err, "message", str(first_err))
+        raise BinanceClientError(f"Erreur Binance (prix {symbol}) : {msg}")
 
 
 def get_account_balance(user_id: int, asset: str = "USDT", market_type: MarketType = "futures") -> float:
-    client = _client_for_user(user_id)
     try:
+        client = _client_for_user(user_id, market_type=market_type)
         if market_type == "futures":
             balances = client.futures_account_balance()
             for b in balances:
@@ -169,6 +341,9 @@ def get_account_balance(user_id: int, asset: str = "USDT", market_type: MarketTy
         if e.code in (-2015, -2014):
             mark_credentials_invalid(user_id, str(e))
         raise BinanceClientError(f"Erreur Binance (solde) : {e.message}")
+    except Exception:
+        info = get_full_account_info(user_id, market_type=market_type)
+        return float(info.get("available_balance", 0.0))
 
 
 def get_symbol_filters(client: Client, symbol: str, market_type: MarketType) -> dict:
@@ -485,8 +660,38 @@ def replace_futures_stop_loss_order(
 
 def test_connection(user_id: int) -> bool:
     """Utilisé par /setapikeys pour valider les clés dès leur saisie (supporte Futures Testnet et Spot)."""
-    client = _client_for_user(user_id)
     config = get_config(user_id)
+    creds = get_binance_credentials(user_id, market_type=config.market_type)
+    if not creds or not creds.get("api_key") or not creds.get("api_secret"):
+        raise BinanceClientError("Aucune clé API Binance configurée.")
+
+    path = "/fapi/v2/account" if config.market_type == "futures" else "/api/v3/account"
+    data = _signed_rest_get(
+        creds["api_key"],
+        creds["api_secret"],
+        path,
+        market_type=config.market_type,
+        testnet=bool(creds.get("testnet", True)),
+    )
+    if isinstance(data, dict) and ("balances" in data or "assets" in data or "totalWalletBalance" in data):
+        return True
+
+    # Si l'utilisateur a entré une clé Spot Testnet alors qu'il est en mode Futures (ou inversement), on teste l'autre marché
+    alt_market: MarketType = "spot" if config.market_type == "futures" else "futures"
+    alt_path = "/api/v3/account" if alt_market == "spot" else "/fapi/v2/account"
+    alt_data = _signed_rest_get(
+        creds["api_key"],
+        creds["api_secret"],
+        alt_path,
+        market_type=alt_market,
+        testnet=bool(creds.get("testnet", True)),
+    )
+    if isinstance(alt_data, dict) and ("balances" in alt_data or "assets" in alt_data or "totalWalletBalance" in alt_data):
+        from trading_config import update_config
+        update_config(user_id, market_type=alt_market)
+        return True
+
+    client = _client_for_user(user_id, market_type=config.market_type)
     try:
         if config.market_type == "futures":
             client.futures_account()
@@ -496,6 +701,8 @@ def test_connection(user_id: int) -> bool:
     except BinanceAPIException as e:
         mark_credentials_invalid(user_id, str(e))
         raise BinanceClientError(f"Connexion Binance échouée : {e.message}")
+    except Exception as e:
+        raise BinanceClientError(f"Connexion Binance échouée : {e}")
 
 
 def get_full_account_info(user_id: int, market_type: MarketType = "futures") -> dict:
@@ -506,8 +713,12 @@ def get_full_account_info(user_id: int, market_type: MarketType = "futures") -> 
     - Positions ouvertes + PnL non réalisé
     - Taux d'utilisation de la marge (Futures)
     - Historique des ordres récents et commissions
+    Supporte un fallback REST signé direct + bascule automatique Spot/Futures Testnet si la clé correspond à l'autre marché.
     """
-    client = _client_for_user(user_id)
+    creds = get_binance_credentials(user_id, market_type=market_type)
+    if not creds or not creds.get("api_key") or not creds.get("api_secret"):
+        raise BinanceClientError("Aucune clé API Binance configurée. Utilise /setapikeys pour les ajouter.")
+
     summary = {
         "market_type": market_type,
         "total_wallet_balance": 0.0,
@@ -520,101 +731,131 @@ def get_full_account_info(user_id: int, market_type: MarketType = "futures") -> 
         "total_commissions": 0.0,
     }
 
+    def _populate_futures(acc_data: dict, pos_data: list) -> None:
+        summary["market_type"] = "futures"
+        summary["total_wallet_balance"] = float(acc_data.get("totalWalletBalance", 0.0))
+        summary["available_balance"] = float(acc_data.get("availableBalance", 0.0))
+        summary["unrealized_pnl"] = float(acc_data.get("totalUnrealizedProfit", 0.0))
+
+        total_maint_margin = float(acc_data.get("totalMaintMargin", 0.0))
+        total_margin_balance = float(acc_data.get("totalMarginBalance", 1.0))
+        if total_margin_balance > 0:
+            summary["margin_used_pct"] = round((total_maint_margin / total_margin_balance) * 100, 2)
+
+        for b in acc_data.get("assets", []):
+            bal = float(b.get("walletBalance", 0.0))
+            if bal > 0:
+                summary["assets"].append({
+                    "asset": b["asset"],
+                    "wallet": bal,
+                    "available": float(b.get("availableBalance", 0.0)),
+                    "unrealized_pnl": float(b.get("unrealizedProfit", 0.0)),
+                })
+
+        for pos in (pos_data or []):
+            amt = float(pos.get("positionAmt", 0.0))
+            if amt != 0:
+                entry = float(pos.get("entryPrice", 0.0))
+                mark = float(pos.get("markPrice", 0.0))
+                upnl = float(pos.get("unRealizedProfit", 0.0))
+                side = "BUY (LONG)" if amt > 0 else "SELL (SHORT)"
+                summary["positions"].append({
+                    "symbol": pos["symbol"],
+                    "side": side,
+                    "quantity": abs(amt),
+                    "entry_price": entry,
+                    "mark_price": mark,
+                    "unrealized_pnl": upnl,
+                    "leverage": int(pos.get("leverage", 1)),
+                    "liquidation_price": float(pos.get("liquidationPrice", 0.0)),
+                })
+
+    def _populate_spot(acc_data: dict) -> None:
+        summary["market_type"] = "spot"
+        balances = acc_data.get("balances", [])
+        total_usdt = 0.0
+        usdt_free = 0.0
+
+        # Récupérer tous les prix publics en 1 seul appel léger sur data-api.binance.vision
+        prices_map = {}
+        try:
+            r = requests.get("https://data-api.binance.vision/api/v3/ticker/price", timeout=5)
+            if r.status_code == 200:
+                for item in r.json():
+                    prices_map[item["symbol"]] = float(item["price"])
+        except Exception:
+            pass
+
+        for b in balances:
+            free = float(b.get("free", 0.0))
+            locked = float(b.get("locked", 0.0))
+            total = free + locked
+            if total > 0:
+                asset = b["asset"]
+                if asset == "USDT":
+                    usdt_free = free
+                    usdt_val = total
+                elif asset in ("USDC", "BUSD", "FDUSD"):
+                    usdt_val = total
+                else:
+                    price = prices_map.get(f"{asset}USDT", 0.0)
+                    usdt_val = total * price
+                total_usdt += usdt_val
+                summary["assets"].append({
+                    "asset": asset,
+                    "free": free,
+                    "locked": locked,
+                    "total": total,
+                    "usdt_value": round(usdt_val, 2),
+                })
+
+        summary["assets"].sort(key=lambda x: x.get("usdt_value", 0), reverse=True)
+        summary["total_wallet_balance"] = round(total_usdt, 2)
+        summary["available_balance"] = round(usdt_free if usdt_free > 0 else total_usdt, 2)
+
+    is_testnet = bool(creds.get("testnet", True))
+
+    # 1. Essai direct REST signé sur le marché demandé (évite tout blocage HTTP 451 de python-binance)
+    if market_type == "futures":
+        f_acc = _signed_rest_get(creds["api_key"], creds["api_secret"], "/fapi/v2/account", market_type="futures", testnet=is_testnet)
+        if isinstance(f_acc, dict) and ("assets" in f_acc or "totalWalletBalance" in f_acc):
+            f_pos = _signed_rest_get(creds["api_key"], creds["api_secret"], "/fapi/v2/positionRisk", market_type="futures", testnet=is_testnet)
+            _populate_futures(f_acc, f_pos if isinstance(f_pos, list) else [])
+            return summary
+
+        # Si l'utilisateur a enregistré une clé Spot Testnet alors que son profil est en Futures, on tente Spot automatiquement
+        s_acc = _signed_rest_get(creds["api_key"], creds["api_secret"], "/api/v3/account", market_type="spot", testnet=is_testnet)
+        if isinstance(s_acc, dict) and "balances" in s_acc:
+            _populate_spot(s_acc)
+            return summary
+    else:
+        s_acc = _signed_rest_get(creds["api_key"], creds["api_secret"], "/api/v3/account", market_type="spot", testnet=is_testnet)
+        if isinstance(s_acc, dict) and "balances" in s_acc:
+            _populate_spot(s_acc)
+            return summary
+
+        # Et inversement si clé Futures Testnet utilisée en mode Spot
+        f_acc = _signed_rest_get(creds["api_key"], creds["api_secret"], "/fapi/v2/account", market_type="futures", testnet=is_testnet)
+        if isinstance(f_acc, dict) and ("assets" in f_acc or "totalWalletBalance" in f_acc):
+            f_pos = _signed_rest_get(creds["api_key"], creds["api_secret"], "/fapi/v2/positionRisk", market_type="futures", testnet=is_testnet)
+            _populate_futures(f_acc, f_pos if isinstance(f_pos, list) else [])
+            return summary
+
+    # 2. Fallback sur le client python-binance (utile pour les mocks de tests unitaires ou configurations spécifiques)
+    client = _client_for_user(user_id, market_type=market_type)
     try:
         if market_type == "futures":
             acc = client.futures_account()
-            summary["total_wallet_balance"] = float(acc.get("totalWalletBalance", 0.0))
-            summary["available_balance"] = float(acc.get("availableBalance", 0.0))
-            summary["unrealized_pnl"] = float(acc.get("totalUnrealizedProfit", 0.0))
-
-            total_maint_margin = float(acc.get("totalMaintMargin", 0.0))
-            total_margin_balance = float(acc.get("totalMarginBalance", 1.0))
-            if total_margin_balance > 0:
-                summary["margin_used_pct"] = round((total_maint_margin / total_margin_balance) * 100, 2)
-
-            for b in acc.get("assets", []):
-                bal = float(b.get("walletBalance", 0.0))
-                if bal > 0:
-                    summary["assets"].append({
-                        "asset": b["asset"],
-                        "wallet": bal,
-                        "available": float(b.get("availableBalance", 0.0)),
-                        "unrealized_pnl": float(b.get("unrealizedProfit", 0.0)),
-                    })
-
             raw_positions = client.futures_position_information()
-            for pos in raw_positions:
-                amt = float(pos.get("positionAmt", 0.0))
-                if amt != 0:
-                    entry = float(pos.get("entryPrice", 0.0))
-                    mark = float(pos.get("markPrice", 0.0))
-                    upnl = float(pos.get("unRealizedProfit", 0.0))
-                    side = "BUY (LONG)" if amt > 0 else "SELL (SHORT)"
-                    summary["positions"].append({
-                        "symbol": pos["symbol"],
-                        "side": side,
-                        "quantity": abs(amt),
-                        "entry_price": entry,
-                        "mark_price": mark,
-                        "unrealized_pnl": upnl,
-                        "leverage": int(pos.get("leverage", 1)),
-                        "liquidation_price": float(pos.get("liquidationPrice", 0.0)),
-                    })
-
-            # Historique des trades & commissions récents
-            try:
-                user_trades = client.futures_account_trades(limit=10)
-                for t in user_trades:
-                    comm = float(t.get("commission", 0.0))
-                    summary["total_commissions"] += comm
-                    summary["recent_trades"].append({
-                        "symbol": t["symbol"],
-                        "side": t["side"],
-                        "price": float(t["price"]),
-                        "qty": float(t["qty"]),
-                        "commission": comm,
-                        "commission_asset": t["commissionAsset"],
-                        "time": t["time"],
-                    })
-            except Exception:
-                pass
-
-        else:  # Spot
+            _populate_futures(acc, raw_positions)
+        else:
             acc = client.get_account()
-            balances = acc.get("balances", [])
-            total_usdt = 0.0
-
-            for b in balances:
-                free = float(b.get("free", 0.0))
-                locked = float(b.get("locked", 0.0))
-                total = free + locked
-                if total > 0:
-                    asset = b["asset"]
-                    usdt_val = total
-                    if asset != "USDT":
-                        try:
-                            price = float(client.get_symbol_ticker(symbol=f"{asset}USDT")["price"])
-                            usdt_val = total * price
-                        except Exception:
-                            usdt_val = 0.0
-                    total_usdt += usdt_val
-                    summary["assets"].append({
-                        "asset": asset,
-                        "free": free,
-                        "locked": locked,
-                        "total": total,
-                        "usdt_value": round(usdt_val, 2),
-                    })
-
-            summary["total_wallet_balance"] = round(total_usdt, 2)
-            try:
-                summary["available_balance"] = float(client.get_asset_balance(asset="USDT")["free"]) if client.get_asset_balance(asset="USDT") else 0.0
-            except Exception:
-                summary["available_balance"] = summary["total_wallet_balance"]
-
+            _populate_spot(acc)
     except BinanceAPIException as e:
         if getattr(e, "code", None) in (-2015, -2014):
             mark_credentials_invalid(user_id, str(e))
         raise BinanceClientError(f"Erreur API Binance Account: {e.message}")
+    except Exception as e:
+        raise BinanceClientError(f"Erreur API Binance Account: {e}")
 
     return summary

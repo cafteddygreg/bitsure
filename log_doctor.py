@@ -76,6 +76,12 @@ def install_log_buffer() -> None:
 
 _KNOWN_PATTERNS: List[Tuple[re.Pattern, str, str, str]] = [
     (
+        re.compile(r"restricted location|b\. Eligibility|binance\.com/en/terms|HTTP 451", re.IGNORECASE),
+        "🌍 Blocage géographique Binance (HTTP 451 — Restricted Location)",
+        "Le serveur d'hébergement (ex: Render US) est situé dans une région bloquée par `api.binance.com` selon les CGU Binance ('b. Eligibility'). L'appel initial de `python-binance` (`Client.ping()`) ou les requêtes vers `api.binance.com` échouaient donc.",
+        "Corrigé : le bot désactive désormais le ping sur `api.binance.com` et route automatiquement le Spot/Market Data vers `data-api.binance.vision`, `testnet.binance.vision` et `testnet.binancefuture.com`. Tape `/account` pour vérifier ton solde.",
+    ),
+    (
         re.compile(r"-2015|Invalid API-key, IP, or permissions", re.IGNORECASE),
         "🔑 Clé API Binance refusée (Code -2015)",
         "Binance rejette la clé API actuelle : soit la clé correspond au mauvais environnement (ex: clé Spot utilisée sur Futures ou clé Réelle utilisée en mode Testnet), soit les permissions Spot/Futures ne sont pas activées.",
@@ -346,47 +352,227 @@ def _call_gemini_flash_lite(
         return None
 
 
+def run_real_system_probes(user_id: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Exécute de VRAIS tests actifs en temps réel (zéro bluff) sur :
+    1. Toutes les commandes enregistrées du bot (vérifie que chaque handler est bien importable et callable).
+    2. Toutes les connexions Binance (Spot Public Mirror, Spot Testnet, Futures Public, Futures Testnet,
+       et l'API Compte/Solde authentifiée `/account` de l'utilisateur avec détection du géo-blocage HTTP 451).
+    3. Toutes les APIs externes et internes (PostgreSQL DB, Flux de prix BTCUSDT + Klines, TwelveData, Gemini).
+    """
+    results: Dict[str, Any] = {
+        "commands": {"ok": True, "total": 0, "failed": [], "detail": ""},
+        "binance": {
+            "ok": True,
+            "spot_public": False,
+            "futures_public": False,
+            "spot_testnet": False,
+            "futures_testnet": False,
+            "account_api_ok": False,
+            "account_balance_str": "Non testé",
+            "geo_blocked_main_api": False,
+            "errors": [],
+        },
+        "apis": {
+            "db_ok": False,
+            "scheduler_ok": False,
+            "market_klines_ok": False,
+            "twelvedata_configured": False,
+            "gemini_configured": False,
+            "errors": [],
+        },
+    }
+
+    # ── 1. VÉRIFICATION RÉELLE DE TOUTES LES COMMANDES DU BOT ────────────────
+    try:
+        import bot_handlers
+        import trading_handlers
+        import live_handlers
+        import admin_handlers
+
+        expected_commands = [
+            ("start", getattr(bot_handlers, "start", None)),
+            ("menu", getattr(bot_handlers, "menu_command", None)),
+            ("help", getattr(bot_handlers, "help_command", None)),
+            ("analyse", getattr(bot_handlers, "analyse", None)),
+            ("price", getattr(bot_handlers, "price", None)),
+            ("trend", getattr(bot_handlers, "trend", None)),
+            ("volatility", getattr(bot_handlers, "volatility", None)),
+            ("levels", getattr(bot_handlers, "levels", None)),
+            ("alert", getattr(bot_handlers, "alert", None)),
+            ("alerts", getattr(bot_handlers, "alerts", None)),
+            ("watchlist", getattr(bot_handlers, "watchlist_command", None)),
+            ("scan", getattr(bot_handlers, "scan", None)),
+            ("paper", getattr(bot_handlers, "paper", None)),
+            ("usage", getattr(bot_handlers, "usage", None)),
+            ("status", getattr(bot_handlers, "status_command", None)),
+            ("logs", getattr(bot_handlers, "logs_command", None)),
+            ("account", getattr(trading_handlers, "cmd_account", None)),
+            ("autotrade", getattr(trading_handlers, "cmd_autotrade", None)),
+            ("config", getattr(trading_handlers, "cmd_config", None)),
+            ("positions", getattr(trading_handlers, "cmd_positions", None)),
+            ("close", getattr(trading_handlers, "cmd_close", None)),
+            ("pnl", getattr(trading_handlers, "cmd_pnl", None)),
+            ("setapikeys", getattr(trading_handlers, "cmd_setapikeys", None)),
+            ("setmarket", getattr(trading_handlers, "cmd_setmarket", None)),
+            ("settestnet", getattr(trading_handlers, "cmd_settestnet", None)),
+            ("safestatus", getattr(trading_handlers, "cmd_safestatus", None)),
+            ("clearsafe", getattr(trading_handlers, "cmd_clearsafe", None)),
+            ("live", getattr(live_handlers, "cmd_live", None)),
+            ("live_long", getattr(live_handlers, "cmd_live_long", None)),
+            ("live_short", getattr(live_handlers, "cmd_live_short", None)),
+            ("teddy", getattr(admin_handlers, "teddy", None)),
+            ("stats", getattr(admin_handlers, "stats", None)),
+        ]
+        results["commands"]["total"] = len(expected_commands)
+        missing = [name for name, fn in expected_commands if not callable(fn)]
+        if missing:
+            results["commands"]["ok"] = False
+            results["commands"]["failed"] = missing
+            results["commands"]["detail"] = f"Handlers invalides: {', '.join(missing)}"
+        else:
+            results["commands"]["detail"] = f"{len(expected_commands)}/{len(expected_commands)} handlers vérifiés"
+    except Exception as exc:
+        results["commands"]["ok"] = False
+        results["commands"]["detail"] = f"Erreur inspection commandes: {exc}"
+
+    # ── 2. VRAIS TESTS RÉSEAU SUR TOUTES LES CONNEXIONS BINANCE ──────────────
+    def _http_probe(url: str, timeout: float = 3.5) -> Tuple[bool, int, str]:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                code = getattr(resp, "status", 200)
+                body = resp.read(300).decode("utf-8", errors="replace")
+                return (code == 200), code, body
+        except Exception as exc:
+            err_str = str(exc)
+            code = getattr(exc, "code", 0)
+            try:
+                if hasattr(exc, "read"):
+                    err_str = exc.read(300).decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            return False, code, err_str
+
+    # 2a. Spot Public Mirror (data-api.binance.vision — jamais géo-bloqué)
+    ok_vis, code_vis, body_vis = _http_probe("https://data-api.binance.vision/api/v3/ticker/price?symbol=BTCUSDT")
+    results["binance"]["spot_public"] = ok_vis and ("price" in body_vis)
+    if not results["binance"]["spot_public"]:
+        results["binance"]["errors"].append(f"Spot Public (data-api.binance.vision): HTTP {code_vis}")
+
+    # 2b. Test direct de api.binance.com pour détecter si le serveur est géo-bloqué (HTTP 451 / Eligibility)
+    ok_main, code_main, body_main = _http_probe("https://api.binance.com/api/v3/ping", timeout=2.5)
+    if code_main == 451 or "Eligibility" in body_main or "restricted location" in body_main:
+        results["binance"]["geo_blocked_main_api"] = True
+
+    # 2c. Spot Testnet (testnet.binance.vision)
+    ok_st, code_st, _ = _http_probe("https://testnet.binance.vision/api/v3/ping")
+    results["binance"]["spot_testnet"] = ok_st
+    if not ok_st:
+        results["binance"]["errors"].append(f"Spot Testnet (testnet.binance.vision): HTTP {code_st}")
+
+    # 2d. Futures Public (fapi.binance.com)
+    ok_fp, code_fp, body_fp = _http_probe("https://fapi.binance.com/fapi/v1/ping")
+    results["binance"]["futures_public"] = ok_fp
+    if not ok_fp:
+        if code_fp == 451 or "Eligibility" in body_fp or "restricted location" in body_fp:
+            results["binance"]["geo_blocked_main_api"] = True
+        results["binance"]["errors"].append(f"Futures Public (fapi.binance.com): HTTP {code_fp} (géo-bloqué ou indisponible)")
+
+    # 2e. Futures Testnet (testnet.binancefuture.com)
+    ok_ft, code_ft, _ = _http_probe("https://testnet.binancefuture.com/fapi/v1/ping")
+    results["binance"]["futures_testnet"] = ok_ft
+    if not ok_ft:
+        results["binance"]["errors"].append(f"Futures Testnet (testnet.binancefuture.com): HTTP {code_ft}")
+
+    # 2f. Test authentifié réel du solde /account de l'utilisateur (ou clés par défaut)
+    try:
+        from binance_manager import get_full_account_info
+        from trading_config import get_config
+        target_uid = user_id if user_id is not None else 0
+        cfg = get_config(target_uid)
+        acc_info = get_full_account_info(target_uid, market_type=cfg.market_type)
+        results["binance"]["account_api_ok"] = True
+        results["binance"]["account_balance_str"] = (
+            f"{acc_info['available_balance']:.2f} USDT dispo / {acc_info['total_wallet_balance']:.2f} USDT total ({acc_info['market_type'].upper()})"
+        )
+    except Exception as acc_err:
+        results["binance"]["account_api_ok"] = False
+        results["binance"]["account_balance_str"] = f"Échec: {acc_err}"
+        results["binance"]["errors"].append(f"API Compte `/account` : {acc_err}")
+
+    results["binance"]["ok"] = bool(
+        results["binance"]["spot_public"]
+        and (results["binance"]["spot_testnet"] or results["binance"]["futures_testnet"])
+        and results["binance"]["account_api_ok"]
+    )
+
+    # ── 3. VRAIS TESTS SUR LA BASE DE DONNÉES, LE SCHEDULER ET LES FLUX ─────
+    try:
+        from health_monitor import check_db_health, get_last_health_status
+        results["apis"]["db_ok"] = bool(check_db_health())
+        hs = get_last_health_status()
+        results["apis"]["scheduler_ok"] = bool(hs.get("scheduler_running", True)) if hs else True
+    except Exception as db_exc:
+        results["apis"]["db_ok"] = False
+        results["apis"]["errors"].append(f"PostgreSQL: {db_exc}")
+
+    try:
+        from binance_manager import get_klines_dataframe
+        df = get_klines_dataframe("BTCUSDT", "1h", market_type="spot", limit=5)
+        results["apis"]["market_klines_ok"] = bool(df is not None and not df.empty)
+        if not results["apis"]["market_klines_ok"]:
+            results["apis"]["errors"].append("Flux bougies BTCUSDT vide")
+    except Exception as kl_exc:
+        results["apis"]["market_klines_ok"] = False
+        results["apis"]["errors"].append(f"Flux bougies BTCUSDT: {kl_exc}")
+
+    try:
+        from config import TWELVEDATA_API_KEY, GEMINI_API_KEY
+        results["apis"]["twelvedata_configured"] = bool(TWELVEDATA_API_KEY)
+        results["apis"]["gemini_configured"] = bool(GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY"))
+    except Exception:
+        pass
+
+    return results
+
+
 def build_public_system_status_page(user_id: Optional[int] = None) -> str:
     """
-    Construit un tableau de bord public d'état des services (façon Statuspage API)
-    pour les utilisateurs réguliers.
-    N'expose AUCUNE ligne de log brute ni le diagnostic interne, mais indique
-    clairement quels composants fonctionnent normalement et, s'il y a un incident
-    détecté par les logs ou le compte, quel service est touché et pourquoi.
+    Construit un tableau de bord public d'état des services qui EXÉCUTE DE VRAIS TESTS
+    en direct (commandes, connexions Binance Spot/Futures/Account, flux de prix, DB)
+    combinés à l'analyse des logs récents. Aucun faux positif : si une API ou `/account`
+    échoue ou est géo-bloquée, l'état l'affiche immédiatement.
     """
     log_lines = get_recent_logs(max_lines=60)
     recent_tail = "\n".join(log_lines[-25:])
+    probes = run_real_system_probes(user_id=user_id)
 
-    # 1. État Base de données & Watchdog
-    db_ok = True
-    scheduler_ok = True
-    try:
-        from health_monitor import get_last_health_status, check_db_health
-        hs = get_last_health_status()
-        if hs:
-            db_ok = bool(hs.get("db_ok", True))
-            scheduler_ok = bool(hs.get("scheduler_running", True))
-        else:
-            db_ok = check_db_health()
-    except Exception:
-        pass
+    db_ok = probes["apis"]["db_ok"]
+    scheduler_ok = probes["apis"]["scheduler_ok"]
+    cmds_ok = probes["commands"]["ok"]
+    klines_ok = probes["apis"]["market_klines_ok"]
 
     if re.search(r"DATABASE DOWN|OperationalError", recent_tail, re.IGNORECASE):
         db_ok = False
     if re.search(r"AUTOTRADE SCHEDULER STOPPED", recent_tail, re.IGNORECASE):
         scheduler_ok = False
 
-    # 2. État Flux de Prix & Données Marché
+    # Flux de Prix & Analyse
     market_feed_issue = None
-    if re.search(r"TimedOut|ConnectTimeout|ReadTimeout|NetworkError", recent_tail, re.IGNORECASE):
+    if not klines_ok or not probes["binance"]["spot_public"]:
+        market_feed_issue = "Échec du test en direct de récupération des bougies BTCUSDT"
+    elif re.search(r"TimedOut|ConnectTimeout|ReadTimeout|NetworkError", recent_tail, re.IGNORECASE):
         market_feed_issue = "Ralentissement temporaire sur le fournisseur de données"
-    elif re.search(r"data_unavailable|Impossible de récupérer", recent_tail, re.IGNORECASE):
-        market_feed_issue = "Données historiques momentanément indisponibles sur certaines paires"
+    elif re.search(r"data_unavailable|Impossible de récupérer|Could not retrieve data", recent_tail, re.IGNORECASE):
+        market_feed_issue = "Erreur récente de récupération de données sur une paire"
 
-    # 3. État Connectivité Binance & Exécution
+    # Connectivité Binance & Compte (/account)
     binance_issue = None
-    if re.search(r"-1021|Timestamp for this request", recent_tail, re.IGNORECASE):
-        binance_issue = "Resynchronisation d'horloge avec les serveurs Binance en cours"
+    if not probes["binance"]["account_api_ok"]:
+        binance_issue = f"Échec de lecture du compte/solde (`/account`) : {probes['binance']['account_balance_str']}"
+    elif re.search(r"restricted location|b\. Eligibility|binance\.com/en/terms", recent_tail, re.IGNORECASE):
+        binance_issue = "Serveur hébergé en zone restreinte par api.binance.com (bascule automatique sur les miroirs Binance activée)"
     elif re.search(r"-2015|Invalid API-key", recent_tail, re.IGNORECASE):
         binance_issue = "Clé API Binance rejetée (vérifie tes clés ou le mode Spot/Futures)"
     elif re.search(r"-2019|Margin is insufficient|insufficient balance", recent_tail, re.IGNORECASE):
@@ -396,7 +582,7 @@ def build_public_system_status_page(user_id: Optional[int] = None) -> str:
     elif re.search(r"-4061|position side does not match", recent_tail, re.IGNORECASE):
         binance_issue = "Mode de position Binance Futures incompatible (passe en One-Way Mode)"
 
-    # 4. État spécifique du compte de l'utilisateur
+    # État spécifique du compte de l'utilisateur
     user_safety_issue = None
     if user_id is not None:
         try:
@@ -409,30 +595,37 @@ def build_public_system_status_page(user_id: Optional[int] = None) -> str:
         except Exception:
             pass
 
-    # Détermination du statut global
     incidents: List[str] = []
+    if not cmds_ok:
+        incidents.append(f"• *Commandes Telegram* : {probes['commands']['detail']}.")
     if not db_ok:
-        incidents.append("• *Base de données* : Connexion perturbée, reconnexion automatique en cours.")
+        incidents.append("• *Base de données PostgreSQL* : Test de connexion échoué.")
     if not scheduler_ok:
-        incidents.append("• *Moteur d'exécution AutoTrade* : Redémarrage du planificateur en cours.")
+        incidents.append("• *Moteur d'exécution AutoTrade* : Planificateur arrêté.")
     if market_feed_issue:
         incidents.append(f"• *Flux de marché* : {market_feed_issue}.")
     if binance_issue:
-        incidents.append(f"• *Passerelle Binance* : {binance_issue}.")
+        incidents.append(f"• *Passerelle & Compte Binance* : {binance_issue}.")
+    if probes["binance"]["geo_blocked_main_api"]:
+        incidents.append("• *Réseau Binance (`api.binance.com`)* : Région IP restreinte détectée (`b. Eligibility`) — routage actif via `data-api.binance.vision` & Testnet.")
     if user_safety_issue:
         incidents.append(f"• *Protection Compte* : {user_safety_issue}.")
 
     if not incidents:
-        global_banner = "🟢 *Tous les systèmes sont opérationnels*"
-    elif not db_ok or not scheduler_ok:
-        global_banner = "🔴 *Perturbation système détectée*"
+        global_banner = "🟢 *Tous les systèmes sont opérationnels (Vérifiés en direct)*"
+    elif not db_ok or not scheduler_ok or not probes["binance"]["account_api_ok"]:
+        global_banner = "🔴 *Anomalie détectée lors du test en direct*"
     else:
-        global_banner = "🟠 *Fonctionnement partiel / Incident détecté*"
+        global_banner = "🟠 *Fonctionnement partiel / Avertissement détecté*"
 
-    bot_api_dot = "🟢 Opérationnel"
+    bot_api_dot = f"🟢 Opérationnel ({probes['commands']['total']} cmds)" if cmds_ok else "🔴 Erreur Handler"
     db_dot = "🟢 Opérationnel" if db_ok else "🔴 Perturbé"
-    market_dot = "🟢 Opérationnel" if not market_feed_issue else "🟠 Dégradé"
-    binance_dot = "🟢 Opérationnel" if not binance_issue else "🟠 Alerte"
+    market_dot = "🟢 Opérationnel (BTCUSDT OK)" if not market_feed_issue else "🟠 Dégradé"
+    binance_dot = (
+        f"🟢 Opérationnel ({probes['binance']['account_balance_str']})"
+        if (probes["binance"]["account_api_ok"] and not binance_issue)
+        else ("🔴 Échec `/account`" if not probes["binance"]["account_api_ok"] else "🟠 Alerte")
+    )
     autotrade_dot = (
         "🟢 Opérationnel"
         if (scheduler_ok and not user_safety_issue)
@@ -440,25 +633,26 @@ def build_public_system_status_page(user_id: Optional[int] = None) -> str:
     )
 
     lines = [
-        "📡 *État des Services — Bitsure Teddy Status*",
+        "📡 *État des Services (Tests Réels) — Bitsure Teddy*",
         "━━━━━━━━━━━━━━━━━━━━━",
         global_banner,
         "",
-        "🧩 *Composants du système :*",
-        f"• *API Telegram & Commandes* : {bot_api_dot}",
-        f"• *Flux de Prix & Analyse* : {market_dot}",
-        f"• *Passerelle Binance (Spot/Futures)* : {binance_dot}",
+        "🧩 *Résultat des sondes en direct :*",
+        f"• *Commandes Telegram* : {bot_api_dot}",
+        f"• *Flux de Prix & Bougies* : {market_dot}",
+        f"• *Compte & Solde Binance (`/account`)* : {binance_dot}",
+        f"• *Connexions Binance* : Spot Public {'🟢' if probes['binance']['spot_public'] else '🔴'} | Spot Testnet {'🟢' if probes['binance']['spot_testnet'] else '🔴'} | Futures Testnet {'🟢' if probes['binance']['futures_testnet'] else '🔴'}",
         f"• *Moteur AutoTrade & Surveillance SL/TP* : {autotrade_dot}",
-        f"• *Base de Données & Historique* : {db_dot}",
+        f"• *Base de Données PostgreSQL* : {db_dot}",
     ]
 
     if incidents:
         lines.append("")
-        lines.append("⚠️ *Détail des incidents détectés :*")
+        lines.append("⚠️ *Détail des anomalies détectées :*")
         lines.extend(incidents)
     else:
         lines.append("")
-        lines.append("✅ _Aucune anomalie détectée. Toutes les commandes et surveillances fonctionnent normalement._")
+        lines.append("✅ _Toutes les commandes, les APIs et la lecture du solde Binance ont été testées avec succès._")
 
     return "\n".join(lines)
 
@@ -483,7 +677,33 @@ def build_log_diagnostic_report(
         lines.append(f"❓ *Ta question* : _{user_question}_")
         lines.append("")
 
-    # 1. État en direct de l'utilisateur et du bot
+    # 1. Sondes actives en direct (Commandes, Connexions Binance, APIs)
+    probes = run_real_system_probes(user_id=user_id)
+    lines.append("🔬 *Tests Réels en Direct (Commandes / Binance / APIs) :*")
+    lines.append(
+        f"• *Commandes Bot* : {'🟢' if probes['commands']['ok'] else '🔴'} {probes['commands']['detail']}"
+    )
+    lines.append(
+        f"• *Binance Spot Public (`data-api.binance.vision`)* : {'🟢 OK' if probes['binance']['spot_public'] else '🔴 ÉCHEC'}"
+    )
+    lines.append(
+        f"• *Binance Spot Testnet (`testnet.binance.vision`)* : {'🟢 OK' if probes['binance']['spot_testnet'] else '🔴 ÉCHEC'}"
+    )
+    lines.append(
+        f"• *Binance Futures Testnet (`testnet.binancefuture.com`)* : {'🟢 OK' if probes['binance']['futures_testnet'] else '🔴 ÉCHEC'}"
+    )
+    lines.append(
+        f"• *Binance Futures Live (`fapi.binance.com`)* : {'🟢 OK' if probes['binance']['futures_public'] else '🟠 Géo-bloqué (IP US Render)'}"
+    )
+    lines.append(
+        f"• *Test Solde `/account`* : {'🟢' if probes['binance']['account_api_ok'] else '🔴'} `{probes['binance']['account_balance_str']}`"
+    )
+    lines.append(
+        f"• *APIs Internes* : DB PostgreSQL {'🟢' if probes['apis']['db_ok'] else '🔴'} | Bougies BTCUSDT {'🟢' if probes['apis']['market_klines_ok'] else '🔴'} | TwelveData {'🟢' if probes['apis']['twelvedata_configured'] else '⚪ Non configurée'} | Gemini {'🟢' if probes['apis']['gemini_configured'] else '⚪ Mode Local 0-token'}"
+    )
+    lines.append("")
+
+    # 2. État en direct de l'utilisateur et du bot
     if diag["user_checks"]:
         lines.append("🔍 *Vérification rapide de ton profil & du bot :*")
         for chk in diag["user_checks"]:

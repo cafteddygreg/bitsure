@@ -73,8 +73,9 @@ def check_binance_health(user_id: int) -> tuple[bool, Optional[str]]:
         if not creds.get("is_valid"):
             return False, "Clés API masquées ou invalidées"
         
+        cfg = get_config(user_id)
         # Test léger d'un appel réseau sans ordre (fetch ticker price)
-        get_price("BTCUSDT")
+        get_price(user_id, "BTCUSDT", market_type=cfg.market_type)
         return True, "Connexion Binance opérationnelle"
     except Exception as e:
         return False, f"Erreur réseau/client Binance: {e}"

@@ -126,22 +126,54 @@ class TestLogDoctor(unittest.TestCase):
         self.assertTrue(um.confirm_binance_payment(999, force=True))
 
     def test_public_system_status_page_hides_raw_logs_and_shows_service_health(self):
+        fake_probes_ok = {
+            "commands": {"ok": True, "total": 32, "failed": [], "detail": "32/32 handlers vérifiés"},
+            "binance": {
+                "ok": True,
+                "spot_public": True,
+                "futures_public": True,
+                "spot_testnet": True,
+                "futures_testnet": True,
+                "account_api_ok": True,
+                "account_balance_str": "1000.00 USDT dispo / 1000.00 USDT total (SPOT)",
+                "geo_blocked_main_api": False,
+                "errors": [],
+            },
+            "apis": {
+                "db_ok": True,
+                "scheduler_ok": True,
+                "market_klines_ok": True,
+                "twelvedata_configured": False,
+                "gemini_configured": False,
+                "errors": [],
+            },
+        }
         with patch("log_doctor.get_recent_logs", return_value=[]), \
-             patch("health_monitor.get_last_health_status", return_value={"db_ok": True, "scheduler_running": True}):
+             patch("log_doctor.run_real_system_probes", return_value=fake_probes_ok):
             status_healthy = log_doctor.build_public_system_status_page(user_id=None)
             self.assertIn("État des Services", status_healthy)
             self.assertIn("Tous les systèmes sont opérationnels", status_healthy)
-            self.assertIn("API Telegram & Commandes", status_healthy)
-            self.assertIn("Passerelle Binance", status_healthy)
+            self.assertIn("Commandes Telegram", status_healthy)
+            self.assertIn("1000.00 USDT dispo", status_healthy)
 
-        # En cas d'incident détecté dans les logs, la page publique affiche l'incident sans exposer la ligne de log brute
+        # En cas d'incident détecté dans les logs ou d'échec /account, la page publique affiche l'incident sans exposer la ligne de log brute
         with patch("log_doctor.get_recent_logs", return_value=[
             "2026-10-05 16:30:00 | ERROR | trading | APIError(code=-2019): Margin is insufficient"
-        ]), patch("health_monitor.get_last_health_status", return_value={"db_ok": True, "scheduler_running": True}):
+        ]), patch("log_doctor.run_real_system_probes", return_value=fake_probes_ok):
             status_incident = log_doctor.build_public_system_status_page(user_id=None)
-            self.assertIn("Fonctionnement partiel / Incident détecté", status_incident)
+            self.assertIn("Fonctionnement partiel", status_incident)
             self.assertIn("Marge / Solde USDT insuffisant", status_incident)
             self.assertNotIn("2026-10-05 16:30:00 | ERROR", status_incident)
+
+    def test_detects_binance_geo_block_eligibility_error(self):
+        diag = log_doctor.analyze_logs_locally(
+            [
+                "d location according to 'b. Eligibility' in https://www.binance.com/en/terms. Please contact customer service if you believe you received this message in error."
+            ],
+            user_id=None,
+        )
+        titles = [f["title"] for f in diag["findings"]]
+        self.assertTrue(any("HTTP 451" in t or "Blocage géographique" in t for t in titles))
 
 
 if __name__ == "__main__":
