@@ -60,6 +60,37 @@ async def respond(update: Update, text: str, **kwargs):
 async def handle_pending_alert_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not update.message or not update.message.text:
         return False
+
+    text_input = update.message.text.strip()
+
+    # Mode conversationnel de l'interpréteur de logs (ou question directe sur les logs / erreurs)
+    lower_text = text_input.lower()
+    is_awaiting_log = bool(context.user_data.get("awaiting_log_question"))
+    looks_like_log_query = (
+        any(kw in lower_text for kw in ("que signifient les logs", "explique les logs", "interprète les logs", "interprete les logs", "pourquoi la commande", "pourquoi le bot", "erreur dans les logs"))
+        or ("traceback" in lower_text)
+        or ("apierror(code=" in lower_text)
+    )
+    if is_awaiting_log or looks_like_log_query:
+        context.user_data.pop("awaiting_log_question", None)
+        from log_doctor import build_log_diagnostic_report
+        report = build_log_diagnostic_report(
+            user_id=update.effective_user.id,
+            user_question=text_input,
+            use_gemini=True,
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Réanalyser les logs", callback_data="cmd_logs_refresh"),
+             InlineKeyboardButton("💬 Poser une autre question", callback_data="cmd_logs_ask")],
+            [InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")],
+        ])
+        try:
+            await update.message.reply_text(report, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            plain = report.replace("*", "").replace("_", "").replace("`", "")
+            await update.message.reply_text(plain, reply_markup=kb)
+        return True
+
     pending_symbol = context.user_data.get("pending_alert_symbol")
     pending_cond = context.user_data.get("pending_alert_cond")
     if not pending_symbol or not pending_cond:
@@ -164,6 +195,7 @@ def _build_main_menu_keyboard(lang: str) -> list:
         [InlineKeyboardButton("💼 Mon Compte (Solde & PnL)", callback_data="menu_account")],
         [InlineKeyboardButton("🤖 AutoTrade Binance", callback_data="menu_autotrade")],
         [InlineKeyboardButton("🚨 Live Trading", callback_data="menu_live")],
+        [InlineKeyboardButton("🩺 Diagnostic & Logs", callback_data="cmd_logs_refresh")],
         [InlineKeyboardButton(get_text(lang, "menu_parametres"), callback_data="menu_parametres")],
     ]
 
@@ -508,6 +540,30 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = [[InlineKeyboardButton(get_text(lang, "back"), callback_data="menu_parametres"), InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")]]
             await safe_edit(get_text(lang, "support"), kb)
 
+        elif cmd == "logs_refresh":
+            from log_doctor import build_log_diagnostic_report
+            report = build_log_diagnostic_report(user_id=user_id, use_gemini=True)
+            kb = [
+                [InlineKeyboardButton("🔄 Réanalyser", callback_data="cmd_logs_refresh"),
+                 InlineKeyboardButton("💬 Poser une question sur les logs", callback_data="cmd_logs_ask")],
+                [InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")],
+            ]
+            await safe_edit(report, kb, parse_mode=ParseMode.MARKDOWN)
+
+        elif cmd == "logs_ask":
+            context.user_data["awaiting_log_question"] = True
+            kb = [[InlineKeyboardButton("⬅️ Retour Diagnostic", callback_data="cmd_logs_refresh"),
+                   InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")]]
+            await safe_edit(
+                "💬 *Mode Interpréteur de Logs actif*\n\n"
+                "Écris directement ton message ou colle une ligne d'erreur maintenant :\n"
+                "• _« Pourquoi ma commande /autotrade ne répond pas ? »_\n"
+                "• _« Qu'est-ce que la dernière erreur dans les logs veut dire ? »_\n"
+                "• Ou colle un message d'erreur Binance / Telegram.",
+                kb,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
         else:
             kb = [[InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")]]
             await safe_edit(get_text(lang, "unknown_command"), kb)
@@ -696,6 +752,31 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @check_limit
 async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(get_text(get_user_lang(update), "support"))
+
+
+async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Interpréteur de logs et diagnostic interactif (/logs ou /diag).
+    Accessible directement sans être bloqué par le quota ou les CGU si une commande ne répond pas.
+    """
+    user_id = update.effective_user.id
+    question = " ".join(context.args).strip() if context.args else None
+    from log_doctor import build_log_diagnostic_report
+    report = build_log_diagnostic_report(
+        user_id=user_id,
+        user_question=question,
+        use_gemini=True,
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Réanalyser les logs", callback_data="cmd_logs_refresh"),
+         InlineKeyboardButton("💬 Poser une question", callback_data="cmd_logs_ask")],
+        [InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")],
+    ])
+    try:
+        await update.message.reply_text(report, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+    except Exception:
+        plain = report.replace("*", "").replace("_", "").replace("`", "")
+        await update.message.reply_text(plain, reply_markup=kb)
 
 # ---------- UPGRADE ----------
 @check_limit

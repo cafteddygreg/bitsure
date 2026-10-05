@@ -35,21 +35,43 @@ CRITICAL_AUTOTRADE_FIELDS = {
     "analysis_timeframe", "analysis_interval_minutes", "testnet", "cooldown_seconds",
 }
 
+from config import (
+    AUTO_TRADE_DEFAULT,
+    PERIODIC_ANALYSIS_DEFAULT,
+    DEFAULT_LEVERAGE,
+    DEFAULT_RISK_PER_TRADE,
+    DEFAULT_MAX_POSITIONS,
+    DEFAULT_MIN_SCORE,
+    DEFAULT_MAX_DAILY_LOSS,
+    DEFAULT_TRAILING_STOP,
+    DEFAULT_DCA_ENABLED,
+    DEFAULT_MARKET_TYPE,
+    DEFAULT_TRADING_STYLE,
+    DEFAULT_ANALYSIS_TIMEFRAME,
+    DEFAULT_ANALYSIS_INTERVAL_MINUTES,
+    BINANCE_TESTNET,
+    DEFAULT_SAFETY_LOCK_TTL_SECONDS,
+    DEFAULT_BINANCE_TESTNET_API_KEY,
+    DEFAULT_BINANCE_TESTNET_API_SECRET,
+    DEFAULT_BINANCE_SPOT_TESTNET_API_KEY,
+    DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET,
+)
+
 DEFAULTS = {
-    "auto_trade": os.getenv("AUTO_TRADE_DEFAULT", "False") == "True",
-    "periodic_analysis_enabled": os.getenv("PERIODIC_ANALYSIS_DEFAULT", "False") == "True",
-    "leverage": int(os.getenv("DEFAULT_LEVERAGE", 1)),
-    "risk_per_trade": float(os.getenv("DEFAULT_RISK_PER_TRADE", 1.0)),
-    "max_positions": int(os.getenv("DEFAULT_MAX_POSITIONS", 3)),
-    "min_score": int(os.getenv("DEFAULT_MIN_SCORE", 70)),
-    "max_daily_loss": float(os.getenv("DEFAULT_MAX_DAILY_LOSS", 5.0)),
-    "trailing_stop": os.getenv("DEFAULT_TRAILING_STOP", "False") == "True",
-    "dca_enabled": os.getenv("DEFAULT_DCA_ENABLED", "False") == "True",
-    "market_type": os.getenv("DEFAULT_MARKET_TYPE", "futures"),
-    "trading_style": os.getenv("DEFAULT_TRADING_STYLE", "day"),
-    "analysis_timeframe": os.getenv("DEFAULT_ANALYSIS_TIMEFRAME", "1h"),
-    "analysis_interval_minutes": int(os.getenv("DEFAULT_ANALYSIS_INTERVAL_MINUTES", 5)),
-    "testnet": os.getenv("BINANCE_TESTNET", "True") == "True",
+    "auto_trade": AUTO_TRADE_DEFAULT,
+    "periodic_analysis_enabled": PERIODIC_ANALYSIS_DEFAULT,
+    "leverage": DEFAULT_LEVERAGE,
+    "risk_per_trade": DEFAULT_RISK_PER_TRADE,
+    "max_positions": DEFAULT_MAX_POSITIONS,
+    "min_score": DEFAULT_MIN_SCORE,
+    "max_daily_loss": DEFAULT_MAX_DAILY_LOSS,
+    "trailing_stop": DEFAULT_TRAILING_STOP,
+    "dca_enabled": DEFAULT_DCA_ENABLED,
+    "market_type": DEFAULT_MARKET_TYPE,
+    "trading_style": DEFAULT_TRADING_STYLE,
+    "analysis_timeframe": DEFAULT_ANALYSIS_TIMEFRAME,
+    "analysis_interval_minutes": DEFAULT_ANALYSIS_INTERVAL_MINUTES,
+    "testnet": BINANCE_TESTNET,
 }
 
 
@@ -94,7 +116,7 @@ class TradingConfig:
     safety_warn: bool = False
     safety_warn_reason: Optional[str] = None
     safety_warn_at: Optional[float] = None
-    safety_lock_ttl_seconds: int = int(os.getenv("DEFAULT_SAFETY_LOCK_TTL_SECONDS", "3600"))
+    safety_lock_ttl_seconds: int = DEFAULT_SAFETY_LOCK_TTL_SECONDS
 
 
 def ensure_config_row(user_id: int) -> None:
@@ -244,7 +266,7 @@ def save_binance_credentials(user_id: int, api_key: str, api_secret: str, testne
         conn.close()
 
 
-def get_binance_credentials(user_id: int) -> Optional[dict]:
+def get_binance_credentials(user_id: int, market_type: Optional[str] = None) -> Optional[dict]:
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -257,6 +279,26 @@ def get_binance_credentials(user_id: int) -> Optional[dict]:
         conn.close()
 
     if not row:
+        effective_market = market_type
+        if not effective_market:
+            try:
+                effective_market = get_config(user_id).market_type
+            except Exception:
+                effective_market = DEFAULT_MARKET_TYPE
+        if effective_market == "spot" and DEFAULT_BINANCE_SPOT_TESTNET_API_KEY and DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET:
+            return {
+                "api_key": DEFAULT_BINANCE_SPOT_TESTNET_API_KEY,
+                "api_secret": DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET,
+                "testnet": True,
+                "is_valid": True,
+            }
+        if DEFAULT_BINANCE_TESTNET_API_KEY and DEFAULT_BINANCE_TESTNET_API_SECRET:
+            return {
+                "api_key": DEFAULT_BINANCE_TESTNET_API_KEY,
+                "api_secret": DEFAULT_BINANCE_TESTNET_API_SECRET,
+                "testnet": True,
+                "is_valid": True,
+            }
         return None
     return {"api_key": row[0], "api_secret": row[1], "testnet": row[2], "is_valid": row[3]}
 

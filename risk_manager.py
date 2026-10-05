@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+from config import MAX_POSITION_EXPOSURE_PCT
 from trading_config import TradingConfig, record_daily_loss
 from binance_manager import (
     get_account_balance,
@@ -29,12 +30,12 @@ from trading_safety import SafetyError, assert_trading_allowed
 
 logger = logging.getLogger("risk_manager")
 
-# Plafond d'exposition par position en % du capital total
-MAX_EXPOSURE_PCT: float = float(os.getenv("MAX_POSITION_EXPOSURE_PCT", "50.0"))
+# Plafond d'exposition par position en % du capital total (défini dans config.py)
+MAX_EXPOSURE_PCT: float = float(MAX_POSITION_EXPOSURE_PCT)
 # Distance minimale en % entre le prix d'entrée et le Stop Loss
-MIN_STOP_DISTANCE_PCT: float = float(os.getenv("MIN_STOP_DISTANCE_PCT", "0.05"))
+MIN_STOP_DISTANCE_PCT: float = 0.05
 # Seuil mathématique absolu (epsilon) pour prévenir toute division par zéro
-EPSILON: float = float(os.getenv("RISK_PRICE_EPSILON", "1e-8"))
+EPSILON: float = 1e-8
 
 
 @dataclass

@@ -13,6 +13,12 @@ _thread_state = threading.local()
 
 
 def _load_database_url():
+    try:
+        from config import DATABASE_URL as _cfg_db_url
+        if _cfg_db_url:
+            return _cfg_db_url
+    except Exception:
+        pass
     database_url = os.getenv("DATABASE_URL")
     if database_url:
         return database_url

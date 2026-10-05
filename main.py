@@ -67,6 +67,7 @@ from bot_handlers import (
     successful_payment,
     pay_binance,
     support,
+    logs_command,
     historique,
     menu_command,
     menu_callback,
@@ -192,6 +193,9 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+from log_doctor import install_log_buffer
+install_log_buffer()
+
 logger = logging.getLogger(__name__)
 
 # =========================================================
@@ -218,6 +222,7 @@ def main():
             BotCommand("live", "Menu Live Trading"),
             BotCommand("account", "Menu compte Binance"),
             BotCommand("settings", "Menu paramètres"),
+            BotCommand("logs", "Diagnostic et interpréteur de logs"),
             BotCommand("upgrade", "Offre PRO"),
             BotCommand("support", "Support & contact"),
             BotCommand("myid", "Mon ID Telegram"),
@@ -297,6 +302,8 @@ def main():
         ("usage", usage),
         ("upgrade", upgrade),
         ("support", support),
+        ("logs", logs_command),
+        ("diag", logs_command),
         ("pay_binance", pay_binance),
         ("historique", historique),
 

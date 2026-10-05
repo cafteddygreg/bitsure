@@ -13,14 +13,12 @@ from collections import deque
 from contextlib import contextmanager
 from typing import Optional
 
+from config import SIGNAL_VALIDITY_SECONDS, DEFAULT_SAFETY_LOCK_TTL_SECONDS
 from database import get_connection
 from trading_config import TradingConfig, update_config
 from trading_logger import get_trading_logger
 
 logger = get_trading_logger("trading_safety")
-
-SIGNAL_VALIDITY_SECONDS = int(os.getenv("SIGNAL_VALIDITY_SECONDS", "900"))
-DEFAULT_SAFETY_LOCK_TTL_SECONDS = int(os.getenv("DEFAULT_SAFETY_LOCK_TTL_SECONDS", "3600"))
 
 # File asynchrone de notifications lorsque context.bot n'est pas disponible immédiatement
 _pending_safety_notifications: deque[tuple[int, str]] = deque(maxlen=500)

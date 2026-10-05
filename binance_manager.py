@@ -484,10 +484,14 @@ def replace_futures_stop_loss_order(
 
 
 def test_connection(user_id: int) -> bool:
-    """Utilisé par /setapikeys pour valider les clés dès leur saisie."""
+    """Utilisé par /setapikeys pour valider les clés dès leur saisie (supporte Futures Testnet et Spot)."""
     client = _client_for_user(user_id)
+    config = get_config(user_id)
     try:
-        client.get_account()
+        if config.market_type == "futures":
+            client.futures_account()
+        else:
+            client.get_account()
         return True
     except BinanceAPIException as e:
         mark_credentials_invalid(user_id, str(e))

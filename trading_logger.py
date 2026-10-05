@@ -46,6 +46,12 @@ def get_trading_logger(name: str = "trading") -> logging.Logger:
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
 
+    try:
+        from log_doctor import install_log_buffer
+        install_log_buffer()
+    except Exception:
+        pass
+
     return logger
 
 

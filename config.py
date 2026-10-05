@@ -1,8 +1,12 @@
 import os
 
 # =========================================================
-# IDENTIFIANTS
+# 1. LES SEULES VARIABLES À ENREGISTRER SUR RENDER / .ENV
 # =========================================================
+# Tu n'as besoin de configurer que ces 3 variables (et éventuellement TWELVEDATA_API_KEY) :
+# - TELEGRAM_TOKEN
+# - ADMIN_ID
+# - DATABASE_URL
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN:
@@ -12,14 +16,72 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 if ADMIN_ID == 0:
     raise ValueError("❌ ADMIN_ID manquant ou invalide dans l'environnement")
 
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Optionnel (uniquement si tu analyses XAUUSD / Forex hors Binance ou reçois des paiements Binance Pay)
+TWELVEDATA_API_KEY = os.environ.get("TWELVEDATA_API_KEY", "")
+BINANCE_ID = os.environ.get("BINANCE_ID", "")
+
+# Optionnel : Clé API Gemini pour l'interpréteur de logs (/logs)
+# Utilise par défaut gemini-3.1-flash-lite (ultra-rapide et très économe en tokens).
+# Si vide, l'interpréteur de logs fonctionne quand même à 100% grâce à son moteur de diagnostic local (0 token).
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_LOG_MODEL = os.environ.get("GEMINI_LOG_MODEL", "gemini-3.1-flash-lite")
+
 # =========================================================
-# CLÉS API
+# 2. CONFIGURATION PAR DÉFAUT AUTOTRADE & SÉCURITÉ
+# (Tout est géré ici directement en Python, aucune variable Render requise)
 # =========================================================
 
-TWELVEDATA_API_KEY = os.environ.get("TWELVEDATA_API_KEY")
+# Mode Testnet par défaut (False = Argent réel sur Binance, True = Testnet)
+BINANCE_TESTNET = True
+
+# Clés Binance Futures Testnet par défaut (https://testnet.binancefuture.com)
+DEFAULT_BINANCE_TESTNET_API_KEY = os.environ.get(
+    "BINANCE_TESTNET_API_KEY",
+    "QNdiAbB7f2k4GRhnRdztYBP67ZhRheBV8TneqgAA0aXUGGJ7krr4CiJlIvnDGufr",
+)
+DEFAULT_BINANCE_TESTNET_API_SECRET = os.environ.get(
+    "BINANCE_TESTNET_API_SECRET",
+    "OGzSc3BkNUZoSs754hfXWUeJRSIfK5vsKJxECbdzgO540jyKkdaVAmNKVnFAa5u7",
+)
+
+# Clés Binance Spot Testnet par défaut (https://testnet.binance.vision)
+DEFAULT_BINANCE_SPOT_TESTNET_API_KEY = os.environ.get(
+    "BINANCE_SPOT_TESTNET_API_KEY",
+    "wTKgkH0mkEre1MKPjDfZ5Re09YNhPV6BLdRReGbTRIM9gnu3aDHloAPat6VvJEFl",
+)
+DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET = os.environ.get(
+    "BINANCE_SPOT_TESTNET_API_SECRET",
+    "SgEARZTSzEMOZ1VHorVQrY9JX0RHisGi4GUDApkJl1LEgd6JOvqLLkC4JOK7iFVd",
+)
+
+# Paramètres par défaut d'un profil de trading
+AUTO_TRADE_DEFAULT = False
+PERIODIC_ANALYSIS_DEFAULT = False
+DEFAULT_MARKET_TYPE = "futures"          # "futures" ou "spot"
+DEFAULT_TRADING_STYLE = "day"            # "scalping", "scalping_15m", "day", "swing", "position"
+DEFAULT_ANALYSIS_TIMEFRAME = "1h"        # "5m", "15m", "1h", "4h", "1d"
+DEFAULT_ANALYSIS_INTERVAL_MINUTES = 5    # 5 ou 10 minutes
+DEFAULT_LEVERAGE = 1                     # Levier x1 par défaut
+DEFAULT_RISK_PER_TRADE = 1.0             # 1.0% du capital risqué par trade
+DEFAULT_MAX_POSITIONS = 3                # Max 3 positions simultanées
+DEFAULT_MIN_SCORE = 70                   # Score Teddy minimum (sur 100)
+DEFAULT_MAX_DAILY_LOSS = 5.0             # Perte journalière max (5%)
+DEFAULT_TRAILING_STOP = False
+DEFAULT_DCA_ENABLED = False
+
+# Plafonds de risque et délais de sécurité
+MAX_POSITION_EXPOSURE_PCT = 50.0         # Exposition max par position (50% du capital)
+SIGNAL_VALIDITY_SECONDS = 900            # Validité d'un signal (15 minutes)
+DEFAULT_SAFETY_LOCK_TTL_SECONDS = 3600   # Auto-downgrade du safe_mode critique après 1h (3600s)
+
+# Pool PostgreSQL
+DB_POOL_MINCONN = 1
+DB_POOL_MAXCONN = 10
 
 # =========================================================
-# ACCÈS & UTILISATEURS
+# 3. ACCÈS & UTILISATEURS
 # =========================================================
 
 ACCESS_MODE = "approved_only"
@@ -30,7 +92,7 @@ USER_ROLES = ["tester", "pro", "admin"]
 PREMIUM_ROLES = ["pro", "admin"]
 
 # =========================================================
-# LIMITES UTILISATEURS
+# 4. LIMITES UTILISATEURS
 # =========================================================
 
 FREE_DAILY_REQUESTS = 5
@@ -42,25 +104,17 @@ MAX_ALERTS_TESTER = 20
 MAX_ALERTS_PRO = 100
 
 # =========================================================
-# CACHE
+# 5. CACHE & ANALYSE TECHNIQUE
 # =========================================================
 
 PRICE_CACHE_TTL = 900
 HISTORY_CACHE_TTL = 300
-
-# =========================================================
-# ANALYSE TECHNIQUE
-# =========================================================
 
 DEFAULT_TIMEFRAME = "1h"
 HISTORY_PERIOD = "6mo"
 ATR_PERIOD = 14
 ATR_MULTIPLIER_SL = 1.5
 RR_RATIO_TARGET = 2.0
-
-# =========================================================
-# CONFIGURATION DES SYMBOLS
-# =========================================================
 
 SYMBOL_CONFIGS = {
     "BTCUSD": {"adx_min": 23, "rsi_buy_low": 48, "rsi_buy_high": 68, "rsi_sell_low": 32, "rsi_sell_high": 52, "atr_max_pct": 5.5, "min_cond": 4},
@@ -70,41 +124,15 @@ SYMBOL_CONFIGS = {
     "XAUUSD": {"adx_min": 24, "rsi_buy_low": 48, "rsi_buy_high": 74, "rsi_sell_low": 26, "rsi_sell_high": 52, "atr_max_pct": 3.0, "min_cond": 4},
 }
 
-# =========================================================
-# DOSSIERS & FICHIERS
-# =========================================================
-
 DATA_DIR = "data"
-
-# =========================================================
-# WEBSOCKETS
-# =========================================================
-
 TWELVEDATA_WS_URL = "wss://ws.twelvedata.com/v1/quotes/price"
 
 # =========================================================
-# PAPER TRADING
+# 6. PAPER TRADING
 # =========================================================
 
-# Capital virtuel initial (en USDT)
 PAPER_DEFAULT_CAPITAL  = 10_000_000_000.0
-
-# Frais de trading simulés (en %) appliqués à l'entrée ET à la sortie
-# Exemple : 0.10 = 0.10% par trade (maker/taker crypto standard)
 PAPER_FEES_PCT         = 0.10
-
-# Slippage simulé (en %) — écart entre le prix théorique et le prix d'exécution réel
-# Exemple : 0.05 = 0.05% (très conservateur pour du crypto liquide)
 PAPER_SLIPPAGE_PCT     = 0.05
-
-# Levier par défaut (1.0 = sans levier)
 PAPER_DEFAULT_LEVERAGE = 1.0
-
-# Levier maximum autorisé
 PAPER_MAX_LEVERAGE     = 10.0
-
-# =========================================================
-# AUTRES
-# =========================================================
-
-BINANCE_ID = os.environ.get("BINANCE_ID", "")
