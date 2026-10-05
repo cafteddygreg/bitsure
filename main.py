@@ -24,7 +24,7 @@ async def myid_handler(update, context):
     await update.message.reply_text(
         f"🆔 Your ID: {user.id}\n"
         f"👤 Name: {username}\n\n"
-        f"Send this ID to @btsr_teddy09 to get an invitation."
+        f"Send this ID to @btsrteddy to get an invitation."
     )
 
 from alert_manager import AlertManager
@@ -67,6 +67,7 @@ from bot_handlers import (
     successful_payment,
     pay_binance,
     support,
+    status_command,
     logs_command,
     historique,
     menu_command,
@@ -140,10 +141,12 @@ autotrade_scheduler = None
 
 def start_autotrade_scheduler(app):
     global autotrade_scheduler
-    if autotrade_scheduler is not None:
+    if autotrade_scheduler is not None and getattr(autotrade_scheduler, "running", False):
+        app.bot_data["autotrade_scheduler"] = autotrade_scheduler
         return
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     autotrade_scheduler = AsyncIOScheduler(timezone="UTC")
+    app.bot_data["autotrade_scheduler"] = autotrade_scheduler
     autotrade_scheduler.add_job(
         scheduled_signal_scan, "interval", seconds=20,
         kwargs={"context": app},
@@ -171,7 +174,8 @@ def start_autotrade_scheduler(app):
         kwargs={"context": app},
         id="reconcile_all_accounts", replace_existing=True
     )
-    from health_monitor import scheduled_health_check_job
+    from health_monitor import scheduled_health_check_job, set_active_scheduler
+    set_active_scheduler(autotrade_scheduler)
     autotrade_scheduler.add_job(
         scheduled_health_check_job, "interval", minutes=1,
         kwargs={"context": app},
@@ -222,7 +226,7 @@ def main():
             BotCommand("live", "Menu Live Trading"),
             BotCommand("account", "Menu compte Binance"),
             BotCommand("settings", "Menu paramètres"),
-            BotCommand("logs", "Diagnostic et interpréteur de logs"),
+            BotCommand("status", "État des services du bot"),
             BotCommand("upgrade", "Offre PRO"),
             BotCommand("support", "Support & contact"),
             BotCommand("myid", "Mon ID Telegram"),
@@ -232,6 +236,11 @@ def main():
             logger.info("Telegram menu commands updated.")
         except Exception as e:
             logger.warning(f"Failed to set Telegram commands: {e}")
+
+        try:
+            start_autotrade_scheduler(application)
+        except Exception as e:
+            logger.warning(f"Post-init AutoTrade scheduler check failed: {e}")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.bot_data["data_fetcher"] = DataFetcher.get_instance()
@@ -302,6 +311,7 @@ def main():
         ("usage", usage),
         ("upgrade", upgrade),
         ("support", support),
+        ("status", status_command),
         ("logs", logs_command),
         ("diag", logs_command),
         ("pay_binance", pay_binance),
@@ -352,6 +362,8 @@ def main():
 
         ("stats", stats),
         ("teddy", teddy),
+        ("adduser", teddy),
+        ("approve", teddy),
         ("broadcast", broadcast),
         ("switchapi", switchapi),
         ("find_memo", find_memo),

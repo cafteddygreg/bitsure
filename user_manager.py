@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 from config import (
     FREE_DAILY_REQUESTS,
     ADMIN_ID,
+    ADMIN_USERNAME,
     TRIAL_DAYS,
     ACCESS_MODE,
     ALLOW_AUTO_REGISTER,
@@ -67,8 +68,43 @@ class UserManager:
         ).fetchone()
         return row is not None
 
-    def is_admin(self, user_id: int) -> bool:
-        return int(user_id) == ADMIN_ID
+    def is_admin(self, user_id: int, username: Optional[str] = None) -> bool:
+        if ADMIN_ID and int(user_id) == int(ADMIN_ID):
+            return True
+        target_handle = (ADMIN_USERNAME or "@btsrteddy").lstrip("@").lower()
+        if username and username.lstrip("@").lower() == target_handle:
+            return True
+        try:
+            row = self.conn.execute(
+                "SELECT username, role FROM users WHERE user_id = %s", (user_id,)
+            ).fetchone()
+            if row:
+                db_user = (row["username"] or "").lstrip("@").lower()
+                if db_user == target_handle or row["role"] == "admin":
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def resolve_user_target(self, target: str) -> Optional[int]:
+        """Résout un identifiant utilisateur (numérique ou @username) en user_id int."""
+        if not target:
+            return None
+        cleaned = target.strip()
+        if cleaned.lstrip("-").isdigit():
+            return int(cleaned)
+        handle = cleaned.lstrip("@").lower()
+        try:
+            rows = self.conn.execute(
+                "SELECT user_id, username FROM users WHERE username IS NOT NULL"
+            ).fetchall()
+            for r in rows:
+                u_str = (r["username"] or "").lstrip("@").lower()
+                if u_str == handle:
+                    return int(r["user_id"])
+        except Exception:
+            pass
+        return None
 
     def is_approved(self, user_id: int) -> bool:
         if self.is_admin(user_id):
@@ -278,16 +314,34 @@ class UserManager:
         return [row["user_id"] for row in rows]
 
     # =========================================================
-    # ADMIN: CONFIRM PAYMENT
+    # ADMIN: PENDING BINANCE & CONFIRM PAYMENT
     # =========================================================
 
-    def confirm_binance_payment(self, user_id: int) -> bool:
-        """Passe un utilisateur en rôle 'pro' après paiement confirmé."""
+    def add_pending_binance(self, user_id: int, memo: str):
+        """Enregistre un mémo de paiement Binance en attente pour l'utilisateur."""
+        self.get_user(user_id)
+        self.conn.execute(
+            "UPDATE users SET memo = %s WHERE user_id = %s",
+            (memo, user_id),
+        )
+        self.conn.commit()
+
+    def has_pending_binance_payment(self, user_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT memo FROM users WHERE user_id = %s",
+            (user_id,),
+        ).fetchone()
+        return bool(row and row.get("memo"))
+
+    def confirm_binance_payment(self, user_id: int, *, force: bool = False) -> bool:
+        """Passe un utilisateur en rôle 'pro' et approuvé=1 après paiement confirmé."""
         user = self.get_user(user_id)
         if not user:
             return False
+        if not force and not user.get("memo"):
+            return False
         self.conn.execute(
-            "UPDATE users SET role = 'pro' WHERE user_id = %s",
+            "UPDATE users SET role = 'pro', approved = 1, memo = NULL WHERE user_id = %s",
             (user_id,)
         )
         self.conn.commit()
@@ -297,14 +351,24 @@ class UserManager:
     # ADMIN: APPROVE TESTER
     # =========================================================
 
-    def approve_user(self, user_id: int) -> bool:
-        """Approuve un utilisateur comme testeur."""
+    def approve_user(self, user_id: int, role: str = "tester") -> bool:
+        """Approuve un utilisateur (et le crée s'il n'a pas encore fait /start)."""
         user = self.get_user(user_id)
         if not user:
-            return False
+            now = time.time()
+            self.conn.execute(
+                """
+                INSERT INTO users (user_id, role, lang, timeframe, risk, terms_accepted, trial_start, created_at, approved, username)
+                VALUES (%s, %s, 'fr', '1h', 'medium', 1, %s, %s, 1, NULL)
+                ON CONFLICT (user_id) DO UPDATE SET role = EXCLUDED.role, approved = 1
+                """,
+                (user_id, role, now, now),
+            )
+            self.conn.commit()
+            return True
         self.conn.execute(
-            "UPDATE users SET role = 'tester', approved = 1 WHERE user_id = %s",
-            (user_id,)
+            "UPDATE users SET role = %s, approved = 1 WHERE user_id = %s",
+            (role, user_id)
         )
         self.conn.commit()
         return True

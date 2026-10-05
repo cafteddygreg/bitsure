@@ -17,6 +17,34 @@ from trading_logger import get_trading_logger
 logger = get_trading_logger("health_monitor")
 
 _last_health_status: Dict[str, Any] = {}
+_active_scheduler = None
+
+
+def set_active_scheduler(scheduler) -> None:
+    """Enregistre la référence directe au scheduler actif (évite le piège __main__ vs main)."""
+    global _active_scheduler
+    _active_scheduler = scheduler
+
+
+def _resolve_scheduler(context=None):
+    """Récupère l'instance d'APScheduler quel que soit le mode de lancement (`python main.py` ou import)."""
+    if _active_scheduler is not None:
+        return _active_scheduler
+    if context is not None:
+        bot_data = getattr(context, "bot_data", None)
+        if isinstance(bot_data, dict) and bot_data.get("autotrade_scheduler") is not None:
+            return bot_data["autotrade_scheduler"]
+        app = getattr(context, "application", None)
+        if app is not None and isinstance(getattr(app, "bot_data", None), dict):
+            if app.bot_data.get("autotrade_scheduler") is not None:
+                return app.bot_data["autotrade_scheduler"]
+    import sys
+    for mod_name in ("__main__", "main"):
+        mod = sys.modules.get(mod_name)
+        sched = getattr(mod, "autotrade_scheduler", None) if mod else None
+        if sched is not None:
+            return sched
+    return None
 
 
 def check_db_health() -> bool:
@@ -80,8 +108,8 @@ def run_health_check(context=None) -> Dict[str, Any]:
         return report
 
     # 2. Vérification APScheduler et Restauration si Job Disparu
-    from main import autotrade_scheduler
-    if autotrade_scheduler and autotrade_scheduler.running:
+    autotrade_scheduler = _resolve_scheduler(context)
+    if autotrade_scheduler and getattr(autotrade_scheduler, "running", False):
         report["scheduler_running"] = True
         existing_job_ids = {job.id for job in autotrade_scheduler.get_jobs()}
 
@@ -124,40 +152,44 @@ def run_health_check(context=None) -> Dict[str, Any]:
         report["scheduler_running"] = False
         logger.critical("[HealthMonitor] AUTOTRADE SCHEDULER STOPPED OR NOT INITIALIZED !")
 
-    # 3. Métriques d'activité (dernière analyse & dernier trade)
+    # 3. Métriques d'activité (dernière analyse & dernier trade) & 4. Liste des utilisateurs
+    cur_users = []
     conn = get_connection()
     try:
-        with conn.cursor() as cur:
-            # Dernier signal généré (horodatage créé)
-            cur.execute("SELECT MAX(created_at) FROM signals")
-            row = cur.fetchone()
-            if row and row[0]:
-                report["last_analysis_time"] = float(row[0])
+        try:
+            with conn.cursor() as cur:
+                # Dernier signal généré (horodatage créé)
+                cur.execute("SELECT MAX(created_at) FROM signals")
+                row = cur.fetchone()
+                if row and row[0]:
+                    report["last_analysis_time"] = float(row[0])
 
-            # Dernier trade ouvert ou fermé
-            cur.execute("SELECT MAX(opened_at) FROM trades")
-            row_tr = cur.fetchone()
-            if row_tr and row_tr[0]:
-                report["last_trade_time"] = float(row_tr[0])
+                # Dernier trade ouvert ou fermé
+                cur.execute("SELECT MAX(opened_at) FROM trades")
+                row_tr = cur.fetchone()
+                if row_tr and row_tr[0]:
+                    report["last_trade_time"] = float(row_tr[0])
 
-            # Erreurs récentes dans les signaux (signaux rejetés dernière heure)
-            one_hour_ago = time.time() - 3600
-            cur.execute("SELECT COUNT(*) FROM signals WHERE status = 'rejected' AND created_at > %s", (one_hour_ago,))
-            row_err = cur.fetchone()
-            if row_err:
-                report["recent_errors_count"] = row_err[0]
-    except Exception as e:
-        logger.error(f"[HealthMonitor] Erreur lecture métriques: {e}")
+                # Erreurs récentes dans les signaux (signaux rejetés dernière heure)
+                one_hour_ago = time.time() - 3600
+                cur.execute("SELECT COUNT(*) FROM signals WHERE status = 'rejected' AND created_at > %s", (one_hour_ago,))
+                row_err = cur.fetchone()
+                if row_err:
+                    report["recent_errors_count"] = row_err[0]
+        except Exception as e:
+            logger.error(f"[HealthMonitor] Erreur lecture métriques: {e}")
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT user_id FROM trading_config UNION SELECT user_id FROM users")
+                cur_users = [row[0] for row in cur.fetchall() if row[0] is not None]
+        except Exception as e:
+            logger.error(f"[HealthMonitor] Erreur lecture liste utilisateurs: {e}")
     finally:
         conn.close()
 
     # 4. Cohérence des états de sécurité & connexions utilisateurs
     try:
-        cur_users = []
-        with conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT user_id FROM trading_config UNION SELECT user_id FROM users")
-            cur_users = [row[0] for row in cur.fetchall() if row[0] is not None]
-
         for user_id in cur_users:
             cfg = get_config(user_id)
             binance_ok, binance_msg = check_binance_health(user_id)

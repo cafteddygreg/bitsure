@@ -97,7 +97,7 @@ TEXTS = {
         "help_admin": "\n\n🛠 *Commandes Admin :*\n/stats, /teddy, /broadcast, /switchapi, /find_memo, /confirm_payment, /refreshhistory, /clearhistory, /deleteuser, /exportsignals, /dbquery, /cleanwaits, /trading_stats, /trades, /forceclose",
 
         # ----- Support / Upgrade -----
-        "support": "📞 Besoin d'aide ?\n\nContactez l'administrateur : @btsr_teddy09",
+        "support": "📞 Besoin d'aide ?\n\nContactez l'administrateur : @btsrteddy",
         "upgrade_title": (
             "💳 *Passez à Bitsure Teddy PRO*\n\n"
             "• Analyses illimitées avec score Teddy\n"
@@ -513,7 +513,7 @@ TEXTS = {
         "help_admin": "\n\n🛠 *Admin Commands:*\n/stats, /teddy, /broadcast, /switchapi, /find_memo, /confirm_payment, /refreshhistory, /clearhistory, /deleteuser, /exportsignals, /dbquery, /cleanwaits, /trading_stats, /trades, /forceclose",
 
         # ----- Support / Upgrade -----
-        "support": "📞 Need help?\n\nContact admin: @btsr_teddy09",
+        "support": "📞 Need help?\n\nContact admin: @btsrteddy",
         "upgrade_title": (
             "💳 *Upgrade to Bitsure Teddy PRO*\n\n"
             "• Unlimited analyses with Teddy score\n"

@@ -82,6 +82,43 @@ class HealthMonitorUnitTests(unittest.TestCase):
     def test_health_monitor_basic_unittest(self):
         test_health_monitor_basic()
 
+    def test_health_monitor_resolves_scheduler_and_reuses_db_connection_safely(self):
+        from unittest.mock import patch
+        import health_monitor
+
+        mock_cur = MagicMock()
+        mock_cur.fetchone.side_effect = [(1700000000.0,), (1700000100.0,), (0,)]
+        mock_cur.fetchall.return_value = [(42,)]
+        mock_cur.__enter__.return_value = mock_cur
+        mock_cur.__exit__.return_value = False
+
+        class DummyConn:
+            def __init__(self):
+                self._conn = MagicMock()
+            def cursor(self):
+                if self._conn is None:
+                    raise AttributeError("'NoneType' object has no attribute 'cursor'")
+                return mock_cur
+            def close(self):
+                self._conn = None
+
+        mock_sched = MagicMock()
+        mock_sched.running = True
+        mock_sched.get_jobs.return_value = []
+        health_monitor.set_active_scheduler(mock_sched)
+        try:
+            with patch.object(health_monitor, "check_db_health", return_value=True), \
+                 patch.object(health_monitor, "get_connection", side_effect=DummyConn), \
+                 patch.object(health_monitor, "get_config") as mock_cfg, \
+                 patch.object(health_monitor, "check_binance_health", return_value=(True, "OK")):
+                mock_cfg.return_value.auto_trade = False
+                report = health_monitor.run_health_check()
+                self.assertTrue(report["db_ok"])
+                self.assertTrue(report["scheduler_running"])
+                self.assertIn(42, report["user_statuses"])
+        finally:
+            health_monitor.set_active_scheduler(None)
+
 
 if __name__ == "__main__":
     unittest.main()

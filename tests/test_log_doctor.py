@@ -112,6 +112,37 @@ class TestLogDoctor(unittest.TestCase):
             self.assertIn("Analyse Gemini Flash-Lite", report)
             self.assertIn("Tape /setmarket spot", report)
 
+    def test_approve_user_and_confirm_binance_payment_logic(self):
+        from user_manager import UserManager
+        um = UserManager.__new__(UserManager)
+        um.conn = MagicMock()
+        um.get_user = MagicMock(return_value={"user_id": 999, "role": "tester", "approved": 0, "memo": None})
+
+        # Sans memo en attente, confirm_binance_payment(999) doit renvoyer False pour laisser /teddy approuver en tester
+        self.assertFalse(um.confirm_binance_payment(999))
+        self.assertTrue(um.approve_user(999))
+
+        # Avec force=True (ou /teddy <id> pro), confirm_binance_payment passe l'utilisateur en pro et approved=1
+        self.assertTrue(um.confirm_binance_payment(999, force=True))
+
+    def test_public_system_status_page_hides_raw_logs_and_shows_service_health(self):
+        with patch("log_doctor.get_recent_logs", return_value=[]), \
+             patch("health_monitor.get_last_health_status", return_value={"db_ok": True, "scheduler_running": True}):
+            status_healthy = log_doctor.build_public_system_status_page(user_id=None)
+            self.assertIn("État des Services", status_healthy)
+            self.assertIn("Tous les systèmes sont opérationnels", status_healthy)
+            self.assertIn("API Telegram & Commandes", status_healthy)
+            self.assertIn("Passerelle Binance", status_healthy)
+
+        # En cas d'incident détecté dans les logs, la page publique affiche l'incident sans exposer la ligne de log brute
+        with patch("log_doctor.get_recent_logs", return_value=[
+            "2026-10-05 16:30:00 | ERROR | trading | APIError(code=-2019): Margin is insufficient"
+        ]), patch("health_monitor.get_last_health_status", return_value={"db_ok": True, "scheduler_running": True}):
+            status_incident = log_doctor.build_public_system_status_page(user_id=None)
+            self.assertIn("Fonctionnement partiel / Incident détecté", status_incident)
+            self.assertIn("Marge / Solde USDT insuffisant", status_incident)
+            self.assertNotIn("2026-10-05 16:30:00 | ERROR", status_incident)
+
 
 if __name__ == "__main__":
     unittest.main()

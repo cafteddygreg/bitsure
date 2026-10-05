@@ -63,8 +63,10 @@ async def handle_pending_alert_input(update: Update, context: ContextTypes.DEFAU
 
     text_input = update.message.text.strip()
 
-    # Mode conversationnel de l'interpréteur de logs (ou question directe sur les logs / erreurs)
+    # Mode conversationnel de l'interpréteur de logs : réservé exclusivement à l'administrateur
     lower_text = text_input.lower()
+    user_obj = update.effective_user
+    is_adm = user_mgr.is_admin(user_obj.id, getattr(user_obj, "username", None)) if user_obj else False
     is_awaiting_log = bool(context.user_data.get("awaiting_log_question"))
     looks_like_log_query = (
         any(kw in lower_text for kw in ("que signifient les logs", "explique les logs", "interprète les logs", "interprete les logs", "pourquoi la commande", "pourquoi le bot", "erreur dans les logs"))
@@ -73,6 +75,16 @@ async def handle_pending_alert_input(update: Update, context: ContextTypes.DEFAU
     )
     if is_awaiting_log or looks_like_log_query:
         context.user_data.pop("awaiting_log_question", None)
+        if not is_adm:
+            from log_doctor import build_public_system_status_page
+            status_page = build_public_system_status_page(user_id=user_obj.id if user_obj else None)
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Actualiser l'état", callback_data="cmd_status_refresh")],
+                [InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")],
+            ])
+            await update.message.reply_text(status_page, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+            return True
+
         from log_doctor import build_log_diagnostic_report
         report = build_log_diagnostic_report(
             user_id=update.effective_user.id,
@@ -123,28 +135,32 @@ def check_limit(func):
         user_id = update.effective_user.id
         lang = get_user_lang(update)
         logger.debug(f"[check_limit] func={func.__name__}, user={user_id}")
-        if not user_mgr.can_access_bot(user_id):
+        username_str = getattr(update.effective_user, "username", None)
+        if username_str:
+            user_mgr.update_username(user_id, f"@{username_str.lstrip('@')}")
+        is_adm = user_mgr.is_admin(user_id, username_str)
+        if not user_mgr.can_access_bot(user_id) and not is_adm:
             if update.callback_query:
-                await update.callback_query.answer("🚧 Access by invitation only. Contact @btsr_teddy09", show_alert=True)
+                await update.callback_query.answer("🚧 Access by invitation only. Contact @btsrteddy", show_alert=True)
                 return
             else:
-                await update.message.reply_text("🚧 Access by invitation only.\n\nContact @btsr_teddy09 to get an invitation.")
+                await update.message.reply_text("🚧 Access by invitation only.\n\nContact @btsrteddy to get an invitation.")
                 return
-        if func.__name__ != "start" and not user_mgr.has_accepted_terms(user_id) and not user_mgr.is_admin(user_id):
+        if func.__name__ != "start" and not user_mgr.has_accepted_terms(user_id) and not is_adm:
             if update.callback_query:
                 await update.callback_query.answer(get_text(lang, "terms_must_accept"), show_alert=True)
                 return
             else:
                 await update.message.reply_text(get_text(lang, "terms_must_accept"))
                 return
-        if not user_mgr.check_limit(user_id):
+        if not user_mgr.check_limit(user_id) and not is_adm:
             if update.callback_query:
                 await update.callback_query.answer(get_text(lang, "limit_reached"), show_alert=True)
                 return
             else:
                 await update.message.reply_text(get_text(lang, "limit_reached"))
                 return
-        if not user_mgr.is_admin(user_id):
+        if not is_adm:
             user_mgr.increment_usage(user_id)
         return await func(update, context, *args, **kwargs)
     return wrapper
@@ -195,7 +211,7 @@ def _build_main_menu_keyboard(lang: str) -> list:
         [InlineKeyboardButton("💼 Mon Compte (Solde & PnL)", callback_data="menu_account")],
         [InlineKeyboardButton("🤖 AutoTrade Binance", callback_data="menu_autotrade")],
         [InlineKeyboardButton("🚨 Live Trading", callback_data="menu_live")],
-        [InlineKeyboardButton("🩺 Diagnostic & Logs", callback_data="cmd_logs_refresh")],
+        [InlineKeyboardButton("📡 État des Services (Status)", callback_data="cmd_status_refresh")],
         [InlineKeyboardButton(get_text(lang, "menu_parametres"), callback_data="menu_parametres")],
     ]
 
@@ -540,22 +556,47 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = [[InlineKeyboardButton(get_text(lang, "back"), callback_data="menu_parametres"), InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")]]
             await safe_edit(get_text(lang, "support"), kb)
 
+        elif cmd == "status_refresh":
+            from log_doctor import build_public_system_status_page
+            is_adm = user_mgr.is_admin(user_id, getattr(update.effective_user, "username", None))
+            status_page = build_public_system_status_page(user_id=user_id)
+            kb = [[InlineKeyboardButton("🔄 Actualiser l'état", callback_data="cmd_status_refresh")]]
+            if is_adm:
+                kb.append([InlineKeyboardButton("🩺 Diagnostic Logs (Admin)", callback_data="cmd_logs_refresh")])
+            kb.append([InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")])
+            await safe_edit(status_page, kb, parse_mode=ParseMode.MARKDOWN)
+
         elif cmd == "logs_refresh":
+            is_adm = user_mgr.is_admin(user_id, getattr(update.effective_user, "username", None))
+            if not is_adm:
+                from log_doctor import build_public_system_status_page
+                status_page = build_public_system_status_page(user_id=user_id)
+                kb = [
+                    [InlineKeyboardButton("🔄 Actualiser l'état", callback_data="cmd_status_refresh")],
+                    [InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")],
+                ]
+                await safe_edit(status_page, kb, parse_mode=ParseMode.MARKDOWN)
+                return
             from log_doctor import build_log_diagnostic_report
             report = build_log_diagnostic_report(user_id=user_id, use_gemini=True)
             kb = [
                 [InlineKeyboardButton("🔄 Réanalyser", callback_data="cmd_logs_refresh"),
                  InlineKeyboardButton("💬 Poser une question sur les logs", callback_data="cmd_logs_ask")],
+                [InlineKeyboardButton("📡 Vue Utilisateur (Status)", callback_data="cmd_status_refresh")],
                 [InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")],
             ]
             await safe_edit(report, kb, parse_mode=ParseMode.MARKDOWN)
 
         elif cmd == "logs_ask":
+            is_adm = user_mgr.is_admin(user_id, getattr(update.effective_user, "username", None))
+            if not is_adm:
+                await safe_edit("⛔ Le diagnostic détaillé des logs est réservé à l'administrateur.", [[InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")]])
+                return
             context.user_data["awaiting_log_question"] = True
             kb = [[InlineKeyboardButton("⬅️ Retour Diagnostic", callback_data="cmd_logs_refresh"),
                    InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")]]
             await safe_edit(
-                "💬 *Mode Interpréteur de Logs actif*\n\n"
+                "💬 *Mode Interpréteur de Logs (Admin)*\n\n"
                 "Écris directement ton message ou colle une ligne d'erreur maintenant :\n"
                 "• _« Pourquoi ma commande /autotrade ne répond pas ? »_\n"
                 "• _« Qu'est-ce que la dernière erreur dans les logs veut dire ? »_\n"
@@ -678,7 +719,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     if not user_mgr.can_access_bot(user_id):
-        await update.message.reply_text("🚧 Access by invitation only.\n\nContact @btsr_teddy09 to get an invitation.")
+        await update.message.reply_text("🚧 Access by invitation only.\n\nContact @btsrteddy to get an invitation.")
         return
     role = user_mgr.get_role(user_id)
     if role == "free" and user_mgr.is_trial_valid(user_id):
@@ -754,12 +795,38 @@ async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(get_text(get_user_lang(update), "support"))
 
 
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Page publique d'état des services (/status), façon Statuspage API.
+    Accessible à tous les utilisateurs pour voir si le bot fonctionne normalement
+    et, en cas d'incident, quel service est touché.
+    """
+    user = update.effective_user
+    user_id = user.id if user else None
+    is_adm = user_mgr.is_admin(user_id, getattr(user, "username", None)) if user else False
+    from log_doctor import build_public_system_status_page
+    status_page = build_public_system_status_page(user_id=user_id)
+    rows = [[InlineKeyboardButton("🔄 Actualiser l'état", callback_data="cmd_status_refresh")]]
+    if is_adm:
+        rows.append([InlineKeyboardButton("🩺 Diagnostic Logs (Admin)", callback_data="cmd_logs_refresh")])
+    rows.append([InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")])
+    kb = InlineKeyboardMarkup(rows)
+    await update.message.reply_text(status_page, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+
+
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Interpréteur de logs et diagnostic interactif (/logs ou /diag).
-    Accessible directement sans être bloqué par le quota ou les CGU si une commande ne répond pas.
+    STRICTEMENT RÉSERVÉ À L'ADMINISTRATEUR (@btsrteddy).
+    Si un utilisateur non-admin tape /logs, il reçoit uniquement la page publique d'état des services.
     """
-    user_id = update.effective_user.id
+    user = update.effective_user
+    user_id = user.id if user else 0
+    is_adm = user_mgr.is_admin(user_id, getattr(user, "username", None)) if user else False
+    if not is_adm:
+        await status_command(update, context)
+        return
+
     question = " ".join(context.args).strip() if context.args else None
     from log_doctor import build_log_diagnostic_report
     report = build_log_diagnostic_report(
@@ -770,6 +837,7 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Réanalyser les logs", callback_data="cmd_logs_refresh"),
          InlineKeyboardButton("💬 Poser une question", callback_data="cmd_logs_ask")],
+        [InlineKeyboardButton("📡 Vue Utilisateur (Status)", callback_data="cmd_status_refresh")],
         [InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")],
     ])
     try:

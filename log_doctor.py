@@ -160,6 +160,12 @@ _KNOWN_PATTERNS: List[Tuple[re.Pattern, str, str, str]] = [
         "Problème réseau temporaire. Réessaie la commande dans quelques secondes.",
     ),
     (
+        re.compile(r"AUTOTRADE SCHEDULER STOPPED|NoneType' object has no attribute 'cursor'", re.IGNORECASE),
+        "🔄 Watchdog HealthMonitor (Scheduler / Curseur DB)",
+        "Lors du lancement via `python main.py`, le module `__main__` était distinct de `main` et la connexion DB était fermée avant la 2e requête du HealthMonitor.",
+        "Corrigé dans `health_monitor.py` et `main.py` : redéploie / relance le service pour charger la nouvelle version.",
+    ),
+    (
         re.compile(r"data_unavailable|Impossible de récupérer|empty|No data", re.IGNORECASE),
         "📉 Données de marché indisponibles pour ce symbole",
         "Le fournisseur de prix n'a pas renvoyé de bougies historiques pour cette paire ou ce timeframe.",
@@ -338,6 +344,123 @@ def _call_gemini_flash_lite(
         return text or None
     except Exception:
         return None
+
+
+def build_public_system_status_page(user_id: Optional[int] = None) -> str:
+    """
+    Construit un tableau de bord public d'état des services (façon Statuspage API)
+    pour les utilisateurs réguliers.
+    N'expose AUCUNE ligne de log brute ni le diagnostic interne, mais indique
+    clairement quels composants fonctionnent normalement et, s'il y a un incident
+    détecté par les logs ou le compte, quel service est touché et pourquoi.
+    """
+    log_lines = get_recent_logs(max_lines=60)
+    recent_tail = "\n".join(log_lines[-25:])
+
+    # 1. État Base de données & Watchdog
+    db_ok = True
+    scheduler_ok = True
+    try:
+        from health_monitor import get_last_health_status, check_db_health
+        hs = get_last_health_status()
+        if hs:
+            db_ok = bool(hs.get("db_ok", True))
+            scheduler_ok = bool(hs.get("scheduler_running", True))
+        else:
+            db_ok = check_db_health()
+    except Exception:
+        pass
+
+    if re.search(r"DATABASE DOWN|OperationalError", recent_tail, re.IGNORECASE):
+        db_ok = False
+    if re.search(r"AUTOTRADE SCHEDULER STOPPED", recent_tail, re.IGNORECASE):
+        scheduler_ok = False
+
+    # 2. État Flux de Prix & Données Marché
+    market_feed_issue = None
+    if re.search(r"TimedOut|ConnectTimeout|ReadTimeout|NetworkError", recent_tail, re.IGNORECASE):
+        market_feed_issue = "Ralentissement temporaire sur le fournisseur de données"
+    elif re.search(r"data_unavailable|Impossible de récupérer", recent_tail, re.IGNORECASE):
+        market_feed_issue = "Données historiques momentanément indisponibles sur certaines paires"
+
+    # 3. État Connectivité Binance & Exécution
+    binance_issue = None
+    if re.search(r"-1021|Timestamp for this request", recent_tail, re.IGNORECASE):
+        binance_issue = "Resynchronisation d'horloge avec les serveurs Binance en cours"
+    elif re.search(r"-2015|Invalid API-key", recent_tail, re.IGNORECASE):
+        binance_issue = "Clé API Binance rejetée (vérifie tes clés ou le mode Spot/Futures)"
+    elif re.search(r"-2019|Margin is insufficient|insufficient balance", recent_tail, re.IGNORECASE):
+        binance_issue = "Marge / Solde USDT insuffisant sur le compte Binance pour le dernier ordre"
+    elif re.search(r"-4164|MIN_NOTIONAL", recent_tail, re.IGNORECASE):
+        binance_issue = "Montant du dernier ordre inférieur au minimum Binance (MIN_NOTIONAL)"
+    elif re.search(r"-4061|position side does not match", recent_tail, re.IGNORECASE):
+        binance_issue = "Mode de position Binance Futures incompatible (passe en One-Way Mode)"
+
+    # 4. État spécifique du compte de l'utilisateur
+    user_safety_issue = None
+    if user_id is not None:
+        try:
+            from trading_config import get_config
+            cfg = get_config(user_id)
+            if cfg.safety_lock:
+                user_safety_issue = f"Safe Mode activé par sécurité ({cfg.safety_lock_reason or 'protection du capital'})"
+            elif cfg.safety_warn:
+                user_safety_issue = f"Avertissement mineur ({cfg.safety_warn_reason or 'synchronisation'})"
+        except Exception:
+            pass
+
+    # Détermination du statut global
+    incidents: List[str] = []
+    if not db_ok:
+        incidents.append("• *Base de données* : Connexion perturbée, reconnexion automatique en cours.")
+    if not scheduler_ok:
+        incidents.append("• *Moteur d'exécution AutoTrade* : Redémarrage du planificateur en cours.")
+    if market_feed_issue:
+        incidents.append(f"• *Flux de marché* : {market_feed_issue}.")
+    if binance_issue:
+        incidents.append(f"• *Passerelle Binance* : {binance_issue}.")
+    if user_safety_issue:
+        incidents.append(f"• *Protection Compte* : {user_safety_issue}.")
+
+    if not incidents:
+        global_banner = "🟢 *Tous les systèmes sont opérationnels*"
+    elif not db_ok or not scheduler_ok:
+        global_banner = "🔴 *Perturbation système détectée*"
+    else:
+        global_banner = "🟠 *Fonctionnement partiel / Incident détecté*"
+
+    bot_api_dot = "🟢 Opérationnel"
+    db_dot = "🟢 Opérationnel" if db_ok else "🔴 Perturbé"
+    market_dot = "🟢 Opérationnel" if not market_feed_issue else "🟠 Dégradé"
+    binance_dot = "🟢 Opérationnel" if not binance_issue else "🟠 Alerte"
+    autotrade_dot = (
+        "🟢 Opérationnel"
+        if (scheduler_ok and not user_safety_issue)
+        else ("🟠 Safe Mode / Alerte" if scheduler_ok else "🔴 Arrêté")
+    )
+
+    lines = [
+        "📡 *État des Services — Bitsure Teddy Status*",
+        "━━━━━━━━━━━━━━━━━━━━━",
+        global_banner,
+        "",
+        "🧩 *Composants du système :*",
+        f"• *API Telegram & Commandes* : {bot_api_dot}",
+        f"• *Flux de Prix & Analyse* : {market_dot}",
+        f"• *Passerelle Binance (Spot/Futures)* : {binance_dot}",
+        f"• *Moteur AutoTrade & Surveillance SL/TP* : {autotrade_dot}",
+        f"• *Base de Données & Historique* : {db_dot}",
+    ]
+
+    if incidents:
+        lines.append("")
+        lines.append("⚠️ *Détail des incidents détectés :*")
+        lines.extend(incidents)
+    else:
+        lines.append("")
+        lines.append("✅ _Aucune anomalie détectée. Toutes les commandes et surveillances fonctionnent normalement._")
+
+    return "\n".join(lines)
 
 
 def build_log_diagnostic_report(

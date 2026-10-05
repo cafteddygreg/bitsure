@@ -6,8 +6,7 @@ USER_COMMAND_CATEGORIES = [
         ("/help", "Afficher cette aide et les commandes disponibles"),
         ("/menu", "Ouvrir le menu principal interactif"),
         ("/myid", "Afficher ton identifiant Telegram"),
-        ("/logs [question]", "🩺 Interpréter les logs ou diagnostiquer une erreur / commande muette"),
-        ("/diag [question]", "Alias de /logs (diagnostic rapide du bot)"),
+        ("/status", "📡 Voir l'état de fonctionnement des services du bot"),
         ("/support", "Contacter l'administrateur / support"),
         ("/usage", "Voir votre consommation et quota de requêtes"),
         ("/upgrade", "Découvrir et souscrire aux offres PRO"),
@@ -92,6 +91,8 @@ USER_COMMAND_CATEGORIES = [
 
 ADMIN_COMMAND_CATEGORIES = [
     ("🛠 Administration (Réservé Admin)", [
+        ("/logs [question]", "🩺 Interpréteur de logs IA & diagnostic complet (Admin)"),
+        ("/diag [question]", "Alias de /logs (diagnostic Admin)"),
         ("/stats", "Statistiques globales du bot et des utilisateurs"),
         ("/teddy", "Tableau de bord de gestion des autorisations"),
         ("/broadcast <message>", "Diffuser un message à tous les utilisateurs"),

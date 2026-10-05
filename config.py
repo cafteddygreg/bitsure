@@ -12,9 +12,15 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN:
     raise ValueError("❌ TELEGRAM_TOKEN manquant dans l'environnement")
 
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
-if ADMIN_ID == 0:
-    raise ValueError("❌ ADMIN_ID manquant ou invalide dans l'environnement")
+_raw_admin_id = os.environ.get("ADMIN_ID", "@btsrteddy").strip()
+try:
+    ADMIN_ID = int(_raw_admin_id)
+except ValueError:
+    ADMIN_ID = 0
+
+ADMIN_USERNAME = _raw_admin_id if not _raw_admin_id.lstrip("-").isdigit() else "@btsrteddy"
+if not ADMIN_USERNAME.startswith("@"):
+    ADMIN_USERNAME = f"@{ADMIN_USERNAME}"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
