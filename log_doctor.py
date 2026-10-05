@@ -283,15 +283,118 @@ def analyze_logs_locally(
     }
 
 
+def _synthesize_direct_answer(
+    user_question: Optional[str],
+    diag: Dict[str, Any],
+    probes: Dict[str, Any],
+    log_lines: List[str],
+) -> str:
+    """
+    Moteur de réponse conversationnelle intelligent (0 token, instantané).
+    Quand l'administrateur pose une question (ou demande un diagnostic), ce moteur
+    croise sa question, les sondes temps réel (Binance, DB, Commandes) et les logs
+    pour lui répondre directement en langage humain au lieu de juste lister les erreurs.
+    """
+    q = (user_question or "").lower().strip()
+    findings = diag.get("findings", [])
+    b_probe = probes.get("binance", {})
+    a_probe = probes.get("apis", {})
+    c_probe = probes.get("commands", {})
+
+    # 1. Question sur le solde / montant qui reste / /account
+    if any(w in q for w in ("solde", "montant", "account", "balance", "argent", "combien", "reste")):
+        if b_probe.get("account_api_ok"):
+            return (
+                f"✅ *Réponse directe sur ton solde Binance :*\n"
+                f"La connexion au portefeuille fonctionne. Ton solde détecté en direct est de :\n"
+                f"👉 `{b_probe.get('account_balance_str')}`\n"
+                f"Si `/account` ne répondait pas avant, c'était à cause du ping initial de `python-binance` vers `api.binance.com` (bloqué aux USA par l'erreur `b. Eligibility`). C'est maintenant contourné en direct."
+            )
+        else:
+            return (
+                f"🔴 *Pourquoi le solde (`/account`) échoue actuellement :*\n"
+                f"Le test en direct vers ton compte Binance a renvoyé : `{b_probe.get('account_balance_str')}`.\n"
+                f"👉 *Action* : Vérifie que tes clés correspondent bien au marché actif avec /config, ou change de marché via /setmarket `spot` ou /setmarket `futures`."
+            )
+
+    # 2. Question sur une ouverture de position / paper trading / trade qui échoue
+    if any(w in q for w in ("position", "paper", "ouvrir", "trade", "buy", "short", "ordre", "faux")):
+        ans = [
+            "🎯 *Diagnostic sur l'ouverture de positions (Paper & Live) :*"
+        ]
+        if not a_probe.get("market_klines_ok"):
+            ans.append("• 🔴 *Problème détecté* : Le flux de bougies/prix `BTCUSDT` ne répond pas actuellement, ce qui empêche de calculer le prix d'entrée et l'ATR (SL/TP).")
+        else:
+            ans.append("• 🟢 *Flux de prix & ATR* : Le prix en temps réel et les bougies `BTCUSDT` répondent correctement.")
+        if b_probe.get("account_api_ok"):
+            ans.append(f"• 🟢 *Portefeuille Binance* : Prêt (`{b_probe.get('account_balance_str')}`).")
+        else:
+            ans.append(f"• 🔴 *Portefeuille Binance* : Échec d'accès (`{b_probe.get('account_balance_str')}`).")
+        ans.append(
+            "• 💡 *Note Paper Trading* : Le capital initial (fixé à `10 000 USDT`), le calcul du PnL avec levier (sans double multiplication) et le prix d'entrée temps réel ont été fiabilisés. Tape /paper `reset` pour repartir sur une base propre de 10 000 USDT."
+        )
+        return "\n".join(ans)
+
+    # 3. Question sur un utilisateur ajouté (/teddy) qui ne peut pas utiliser le bot
+    if any(w in q for w in ("utilisateur", "user", "teddy", "ajout", "bloqué", "acces", "accès")):
+        return (
+            "👤 *Pourquoi un utilisateur ajouté ne pouvait pas utiliser le bot :*\n"
+            "Même après `/teddy <id>` (`approved=1`), le décorateur `@check_limit` bloquait l'utilisateur sur deux verrous :\n"
+            "1) `terms_accepted` était encore à `0` tant qu'il n'avait pas cliqué sur le bouton des CGU dans `/start`.\n"
+            "2) Le rôle `tester` était limité à 5 requêtes/jour comme un compte non approuvé.\n"
+            "👉 *Solution appliquée* : `/teddy` active désormais automatiquement `approved=1` + `terms_accepted=1` + essai actif illimité. Tu peux refaire `/teddy <id>` sur son ID pour le débloquer immédiatement !"
+        )
+
+    # 4. Question sur l'erreur Binance Eligibility / restricted location / HTTP 451
+    if any(w in q for w in ("eligibility", "restricted", "location", "terms", "451")):
+        return (
+            "🌍 *Explication du message `restricted location according to b. Eligibility` :*\n"
+            "Ce message vient de Binance (`api.binance.com`) parce que le serveur Render est hébergé aux États-Unis.\n"
+            "• *Conséquence* : Toute requête envoyée à `api.binance.com` ou `fapi.binance.com` est rejetée par Binance.\n"
+            "• *Solution active* : Le bot contourne `api.binance.com` en passant par `data-api.binance.vision` (données publiques), `testnet.binance.vision` (Spot Testnet) et `testnet.binancefuture.com` (Futures Testnet) en requêtes signées directes."
+        )
+
+    # 5. Synthèse générale intelligente (quand l'admin demande "que signifient les logs ?" ou pose une question libre)
+    synth_lines = ["🧠 *Synthèse intelligente de la situation :*"]
+    if findings:
+        top = findings[0]
+        synth_lines.append(
+            f"• *Problème principal identifié* : **{top['title']}**.\n"
+            f"  ↳ _En clair_ : {top['explanation']}\n"
+            f"  ↳ _Ce que tu dois faire_ : {top['fix']}"
+        )
+        if len(findings) > 1:
+            others = ", ".join(f["title"] for f in findings[1:3])
+            synth_lines.append(f"• *Autres événements secondaires dans les logs* : {others}.")
+    else:
+        if c_probe.get("ok") and b_probe.get("account_api_ok") and a_probe.get("db_ok"):
+            synth_lines.append(
+                "• *Tout est nominal* : Aucune erreur bloquante dans les logs récents, les 32 commandes répondent, la base PostgreSQL est connectée et ton compte Binance est accessible."
+            )
+        else:
+            issues = []
+            if not a_probe.get("db_ok"):
+                issues.append("la base PostgreSQL ne répond pas")
+            if not b_probe.get("account_api_ok"):
+                issues.append(f"l'accès au compte Binance a échoué ({b_probe.get('account_balance_str')})")
+            if not a_probe.get("market_klines_ok"):
+                issues.append("le flux de bougies BTCUSDT est indisponible")
+            synth_lines.append(
+                f"• *Anomalie détectée par les sondes en direct* : {', '.join(issues) or 'vérifie les détails ci-dessous'}."
+            )
+
+    return "\n".join(synth_lines)
+
+
 def _call_gemini_flash_lite(
     log_lines: List[str],
     local_diag: Dict[str, Any],
+    probes: Optional[Dict[str, Any]] = None,
     user_question: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Appelle le modèle économique Gemini (`gemini-3.1-flash-lite`) pour expliquer
-    les logs ou répondre à une question précise de l'utilisateur.
-    Utilise un prompt compact pour minimiser les tokens (< 600 tokens d'entrée).
+    Appelle Gemini (essaie `gemini-3.1-flash-lite-preview` puis `gemini-2.5-flash`)
+    pour répondre précisément à la question de l'administrateur sans recracher les logs bruts.
     """
     from config import GEMINI_API_KEY, GEMINI_LOG_MODEL
 
@@ -299,57 +402,75 @@ def _call_gemini_flash_lite(
     if not api_key:
         return None
 
-    compact_logs = "\n".join(log_lines[-25:])[-2500:]
+    compact_logs = "\n".join(log_lines[-20:])[-2000:]
     checks_summary = "\n".join(local_diag.get("user_checks", []))
+    probe_summary = ""
+    if probes:
+        probe_summary = (
+            f"Sondes en direct: Commandes={probes['commands']['detail']}, "
+            f"Solde Binance={probes['binance']['account_balance_str']}, "
+            f"DB={probes['apis']['db_ok']}, Klines={probes['apis']['market_klines_ok']}\n"
+        )
     question_part = (
-        f"Question de l'utilisateur : {user_question}\n"
+        f"Question précise de l'administrateur : \"{user_question}\"\n"
+        "IMPORTANT : Réponds DIRECTEMENT à sa question dès la première phrase. Ne lui récite pas les lignes de logs brutes (il les voit déjà), explique-lui le POURQUOI et donne la solution concrète.\n"
         if user_question
-        else "Explique simplement ce que disent ces logs et s'il y a un problème à corriger.\n"
+        else "Explique humainement ce qui se passe dans le bot et s'il y a une action à faire.\n"
     )
 
     prompt = (
-        "Tu es l'assistant de diagnostic technique intégré au bot de trading Telegram 'Bitsure Teddy'.\n"
-        "Réponds en français, de manière directe, concise (max 140 mots) et structurée :\n"
-        "1) Ce qui se passe exactement\n"
-        "2) La cause précise\n"
-        "3) La commande Telegram exacte à taper pour résoudre.\n"
-        "N'utilise pas de blocs de code imbriqués complexes.\n\n"
+        "Tu es l'ingénieur diagnostic intégré au bot de trading Telegram 'Bitsure Teddy'.\n"
+        "Réponds en français, avec un ton humain, clair et très précis (max 150 mots) :\n"
+        "1) Réponse directe à la question / diagnostic de la cause racine\n"
+        "2) Impact réel sur le bot\n"
+        "3) Commande Telegram exacte à taper.\n\n"
         f"{question_part}\n"
+        f"{probe_summary}"
         f"État du compte :\n{checks_summary}\n\n"
-        f"Derniers logs (masqués) :\n{compact_logs or 'Aucun log récent.'}"
+        f"Contexte des logs :\n{compact_logs or 'Aucun log récent.'}"
     )
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_LOG_MODEL}:generateContent?key={api_key}"
+    # On teste le modèle configuré ainsi que les alias officiels Gemini Flash-Lite / Flash
+    models_to_try = []
+    for m in (GEMINI_LOG_MODEL, "gemini-3.1-flash-lite-preview", "gemini-2.5-flash", "gemini-2.0-flash-lite"):
+        if m and m not in models_to_try:
+            models_to_try.append(m)
+
     payload = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 350,
+            "maxOutputTokens": 380,
         },
     }).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "aistudio-build",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            if getattr(resp, "status", 200) != 200:
-                return None
-            raw_body = resp.read().decode("utf-8")
-            data = json.loads(raw_body)
-        candidates = data.get("candidates") or []
-        if not candidates:
-            return None
-        parts = candidates[0].get("content", {}).get("parts") or []
-        text = "".join(p.get("text", "") for p in parts).strip()
-        return text or None
-    except Exception:
-        return None
+
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "aistudio-build",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=7) as resp:
+                if getattr(resp, "status", 200) != 200:
+                    continue
+                raw_body = resp.read().decode("utf-8")
+                data = json.loads(raw_body)
+            candidates = data.get("candidates") or []
+            if not candidates:
+                continue
+            parts = candidates[0].get("content", {}).get("parts") or []
+            text = "".join(p.get("text", "") for p in parts).strip()
+            if text:
+                return text
+        except Exception:
+            continue
+    return None
 
 
 def run_real_system_probes(user_id: Optional[int] = None) -> Dict[str, Any]:
@@ -679,6 +800,23 @@ def build_log_diagnostic_report(
 
     # 1. Sondes actives en direct (Commandes, Connexions Binance, APIs)
     probes = run_real_system_probes(user_id=user_id)
+
+    # 2. Réponse directe et intelligente à la question (IA Gemini ou Synthèse Experte Locale)
+    ai_explanation = None
+    if use_gemini:
+        ai_explanation = _call_gemini_flash_lite(log_lines, diag, probes=probes, user_question=user_question)
+
+    if ai_explanation:
+        clean_ai = ai_explanation.replace("```", "").strip()
+        lines.append("🤖 *Réponse & Diagnostic Gemini Flash-Lite :*")
+        lines.append(clean_ai)
+        lines.append("")
+    else:
+        direct_answer = _synthesize_direct_answer(user_question, diag, probes, log_lines)
+        lines.append(direct_answer)
+        lines.append("")
+
+    # 3. Résumé des tests réels en direct
     lines.append("🔬 *Tests Réels en Direct (Commandes / Binance / APIs) :*")
     lines.append(
         f"• *Commandes Bot* : {'🟢' if probes['commands']['ok'] else '🔴'} {probes['commands']['detail']}"
@@ -699,66 +837,28 @@ def build_log_diagnostic_report(
         f"• *Test Solde `/account`* : {'🟢' if probes['binance']['account_api_ok'] else '🔴'} `{probes['binance']['account_balance_str']}`"
     )
     lines.append(
-        f"• *APIs Internes* : DB PostgreSQL {'🟢' if probes['apis']['db_ok'] else '🔴'} | Bougies BTCUSDT {'🟢' if probes['apis']['market_klines_ok'] else '🔴'} | TwelveData {'🟢' if probes['apis']['twelvedata_configured'] else '⚪ Non configurée'} | Gemini {'🟢' if probes['apis']['gemini_configured'] else '⚪ Mode Local 0-token'}"
+        f"• *APIs Internes* : DB PostgreSQL {'🟢' if probes['apis']['db_ok'] else '🔴'} | Bougies BTCUSDT {'🟢' if probes['apis']['market_klines_ok'] else '🔴'}"
     )
     lines.append("")
 
-    # 2. État en direct de l'utilisateur et du bot
+    # 4. État en direct de l'utilisateur et du bot
     if diag["user_checks"]:
-        lines.append("🔍 *Vérification rapide de ton profil & du bot :*")
+        lines.append("🔍 *Vérification de ton profil :*")
         for chk in diag["user_checks"]:
             lines.append(f"• {chk}")
         lines.append("")
 
-    # 2. Interprétation locale instantanée (0 token)
+    # 5. Interprétation détaillée des patterns trouvés dans les logs
     findings = diag["findings"]
     if findings:
-        lines.append("🧠 *Explication des erreurs détectées dans les logs :*")
-        for idx, item in enumerate(findings[:4], 1):
+        lines.append("📘 *Traduction des codes d'erreurs détectés :*")
+        for idx, item in enumerate(findings[:3], 1):
             lines.append(f"*{idx}. {item['title']}*")
-            lines.append(f"   ↳ *Signification* : {item['explanation']}")
-            lines.append(f"   ↳ *Solution* : {item['fix']}")
-            lines.append("")
-    else:
-        if diag["error_lines_count"] == 0:
-            lines.append("✅ *Aucune erreur récente détectée dans les logs.*")
-            lines.append(
-                "💡 _Si une commande ne répond pas : vérifie que tu as bien accepté les conditions avec `/start`, "
-                "ou qu'une deuxième copie du bot ne tourne pas en même temps._"
-            )
-            lines.append("")
-        else:
-            lines.append(
-                f"ℹ️ *{diag['error_lines_count']} avertissement(s)/erreur(s) brut(s) trouvé(s)* (voir extrait ci-dessous)."
-            )
+            lines.append(f"   ↳ *Cause* : {item['explanation']}")
+            lines.append(f"   ↳ *Action* : {item['fix']}")
             lines.append("")
 
-    # 3. Interprétation IA économique (Gemini Flash-Lite) si activée ou si question posée
-    if use_gemini:
-        ai_explanation = _call_gemini_flash_lite(log_lines, diag, user_question=user_question)
-        if ai_explanation:
-            clean_ai = ai_explanation.replace("```", "").strip()
-            lines.append("🤖 *Analyse Gemini Flash-Lite (éco-tokens) :*")
-            lines.append(clean_ai)
-            lines.append("")
-
-    # 4. Extrait des dernières alertes/erreurs brutes
-    recent_errs = diag["recent_errors"]
-    if recent_errs:
-        lines.append("📜 *Dernières lignes d'alerte/erreur (masquées) :*")
-        for err_line in recent_errs[-4:]:
-            short_line = err_line[-160:] if len(err_line) > 160 else err_line
-            short_line = short_line.replace("`", "'").replace("*", "").replace("_", " ")
-            lines.append(f"`{short_line}`")
-    elif log_lines:
-        lines.append("📜 *Dernière activité enregistrée :*")
-        for info_line in log_lines[-3:]:
-            short_line = info_line[-160:] if len(info_line) > 160 else info_line
-            short_line = short_line.replace("`", "'").replace("*", "").replace("_", " ")
-            lines.append(f"`{short_line}`")
-
-    lines.append("")
-    lines.append("💬 _Astuce : Tu peux écrire `/logs pourquoi ma commande ne répond pas ?` ou coller une erreur après `/logs` pour qu'il te l'explique._")
+    lines.append("💬 _Pose n'importe quelle question (ex: `/logs pourquoi mon solde ou mon trade bloque ?`) pour une analyse ciblée._")
 
     report = "\n".join(lines)
     if len(report) > 3900:

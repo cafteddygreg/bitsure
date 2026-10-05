@@ -42,12 +42,17 @@ class PaperTrader:
     """
 
     def __init__(self):
-        from database import get_db
-        self.conn = get_db()
+        try:
+            from database import get_connection
+            self.conn = get_connection()
+        except Exception as e:
+            logger.warning(f"[PaperTrader.__init__] BDD non disponible (mode mémoire): {e}")
+            self.conn = None
         self.positions: Dict[str, List[Dict]] = {}
         self.closed_positions: Dict[str, List[Dict]] = {}
         self.capitals: Dict[str, float] = {}
-        self._load()
+        if self.conn is not None:
+            self._load()
 
     # ------------------------------------------------------------------
     # CHARGEMENT / SAUVEGARDE
@@ -77,7 +82,11 @@ class PaperTrader:
 
             caps = self.conn.execute("SELECT * FROM paper_capitals").fetchall()
             for c in caps:
-                self.capitals[str(c["user_id"])] = float(c["capital"])
+                val = float(c["capital"])
+                # Correction automatique des comptes initialisés avec l'ancien bug à 10 milliards USDT
+                if val > 100_000_000.0:
+                    val = PAPER_DEFAULT_CAPITAL
+                self.capitals[str(c["user_id"])] = val
         except Exception as e:
             logger.error(f"[PaperTrader._load] Erreur : {e}")
 
@@ -195,6 +204,9 @@ class PaperTrader:
                   qty: float, leverage: float) -> Tuple[float, float]:
         """
         Calcule le PnL brut (avant frais de sortie).
+        Note : `qty` est déjà la quantité notionnelle totale (marge * leverage / entry),
+        donc `pnl_usdt = (exit_p - entry) * qty`. Le `pnl_pct` (ROE sur marge) est
+        bien multiplié par `leverage`.
 
         Returns:
             (pnl_usdt, pnl_pct)
@@ -202,11 +214,11 @@ class PaperTrader:
         if entry <= 0:
             return 0.0, 0.0
         if side == "BUY":
-            pnl_usdt = (exit_p - entry) * qty * leverage
-            pnl_pct  = (exit_p - entry) / entry * 100 * leverage
+            pnl_usdt = (exit_p - entry) * qty
+            pnl_pct  = ((exit_p - entry) / entry) * 100.0 * leverage
         else:  # SELL / short
-            pnl_usdt = (entry - exit_p) * qty * leverage
-            pnl_pct  = (entry - exit_p) / entry * 100 * leverage
+            pnl_usdt = (entry - exit_p) * qty
+            pnl_pct  = ((entry - exit_p) / entry) * 100.0 * leverage
         return pnl_usdt, pnl_pct
 
     @staticmethod
@@ -563,7 +575,11 @@ class PaperTrader:
         total_cl = len(closed)
 
         unrealized = sum(p.get("pnl_usdt", 0) for p in open_pos)
-        equity = capital + unrealized
+        locked_margin = sum(
+            (float(p.get("entry_price", 0)) * float(p.get("qty", 0))) / max(1.0, float(p.get("leverage", 1.0)))
+            for p in open_pos
+        )
+        equity = capital + locked_margin + unrealized
 
         return {
             "capital":        round(capital, 4),

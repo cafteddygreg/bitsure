@@ -103,6 +103,30 @@ async def handle_pending_alert_input(update: Update, context: ContextTypes.DEFAU
             await update.message.reply_text(plain, reply_markup=kb)
         return True
 
+    # Mode interactif de création / changement du code PIN de sécurité
+    if context.user_data.get("awaiting_security_pin"):
+        context.user_data.pop("awaiting_security_pin", None)
+        from security_manager import set_initial_code, change_code
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        parts = text_input.split()
+        uid = update.effective_user.id
+        if len(parts) == 1:
+            ok_pin, msg_pin = set_initial_code(uid, parts[0])
+        elif len(parts) >= 2:
+            ok_pin, msg_pin = change_code(uid, parts[0], parts[1])
+        else:
+            ok_pin, msg_pin = False, "Format invalide."
+        prefix = "✅" if ok_pin else "❌"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Retour Paramètres", callback_data="menu_parametres"),
+             InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")]
+        ])
+        await context.bot.send_message(chat_id=uid, text=f"{prefix} {msg_pin}", reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+        return True
+
     pending_symbol = context.user_data.get("pending_alert_symbol")
     pending_cond = context.user_data.get("pending_alert_cond")
     if not pending_symbol or not pending_cond:
@@ -147,11 +171,19 @@ def check_limit(func):
                 await update.message.reply_text("🚧 Access by invitation only.\n\nContact @btsrteddy to get an invitation.")
                 return
         if func.__name__ != "start" and not user_mgr.has_accepted_terms(user_id) and not is_adm:
+            terms_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Accepter les conditions d'utilisation", callback_data="terms_accept")],
+                [InlineKeyboardButton("📜 Lire les conditions", callback_data="terms_show")],
+            ])
             if update.callback_query:
                 await update.callback_query.answer(get_text(lang, "terms_must_accept"), show_alert=True)
+                try:
+                    await update.callback_query.message.reply_text(get_text(lang, "terms_must_accept"), reply_markup=terms_kb)
+                except Exception:
+                    pass
                 return
             else:
-                await update.message.reply_text(get_text(lang, "terms_must_accept"))
+                await update.message.reply_text(get_text(lang, "terms_must_accept"), reply_markup=terms_kb)
                 return
         if not user_mgr.check_limit(user_id) and not is_adm:
             if update.callback_query:
@@ -555,6 +587,30 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif cmd == "support":
             kb = [[InlineKeyboardButton(get_text(lang, "back"), callback_data="menu_parametres"), InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")]]
             await safe_edit(get_text(lang, "support"), kb)
+
+        elif cmd == "setsecurity":
+            from security_manager import has_security_code
+            has_pin = has_security_code(user_id)
+            context.user_data["awaiting_security_pin"] = True
+            kb = [[InlineKeyboardButton("⬅️ Retour Paramètres", callback_data="menu_parametres"),
+                   InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")]]
+            if has_pin:
+                prompt_txt = (
+                    "🔐 *Modifier ton Code PIN de Sécurité*\n\n"
+                    "Un code PIN est déjà actif sur ton compte.\n"
+                    "• Écris maintenant dans le chat : `<ancien_code> <nouveau_code_6_chiffres>` (ex: `123456 654321`)\n"
+                    "• Ou utilise la commande : /setsecurity `<ancien_code> <nouveau_code>`\n\n"
+                    "🔒 _Ton message sera automatiquement supprimé dès réception pour protéger ton code._"
+                )
+            else:
+                prompt_txt = (
+                    "🔐 *Créer ton Code PIN de Sécurité (6 chiffres)*\n\n"
+                    "Ce code protège les actions critiques (`/clearsafe`, `/autotrade on`, `/close`, `/setleverage`, `/setrisk`).\n\n"
+                    "• Écris directement un code à **6 chiffres** maintenant dans le chat (ex: `123456`)\n"
+                    "• Ou tape : /setsecurity `123456` (ou /pin `123456`)\n\n"
+                    "🔒 _Ton message sera automatiquement supprimé dès réception pour protéger ton code._"
+                )
+            await safe_edit(prompt_txt, kb, parse_mode=ParseMode.MARKDOWN)
 
         elif cmd == "status_refresh":
             from log_doctor import build_public_system_status_page
@@ -1236,11 +1292,15 @@ async def send_settings_menu(lang: str, tf: str, style: str, uid: int,
     }
     style_display = style_names.get(style, style)
 
+    from security_manager import has_security_code
+    pin_status = "🟢 Configuré" if has_security_code(uid) else "⚪ Non configuré"
+
     recap_lines = [
         f"*{get_text(lang, 'settings_title')}*",
         f"{get_text(lang, 'settings_timeframe')} : `{tf}`",
         f"{get_text(lang, 'settings_style')} : {style_display}",
         f"{get_text(lang, 'settings_lang')} : {lang.upper()}",
+        f"🔐 Code PIN de Sécurité : *{pin_status}*",
         "",
         get_text(lang, "settings_edit"),
     ]
@@ -1250,6 +1310,7 @@ async def send_settings_menu(lang: str, tf: str, style: str, uid: int,
         [InlineKeyboardButton(get_text(lang, "btn_settimeframe"), callback_data="cmd_settimeframe")],
         [InlineKeyboardButton(get_text(lang, "btn_setlanguage"),  callback_data="cmd_setlanguage")],
         [InlineKeyboardButton("🎯 Trading Style",                  callback_data="cmd_setstyle")],
+        [InlineKeyboardButton(f"🔐 Code PIN de Sécurité ({pin_status})", callback_data="cmd_setsecurity")],
         [InlineKeyboardButton(get_text(lang, "btn_historique"),   callback_data="cmd_historique")],
         [InlineKeyboardButton(get_text(lang, "btn_support"),      callback_data="cmd_support")],
         [InlineKeyboardButton(get_text(lang, "back"),             callback_data="menu_back")],
@@ -1542,7 +1603,15 @@ async def paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── STATUS ───────────────────────────────────────────────────────────
     elif action == "status":
+        if paper_trader.get_capital(user_id) > 100_000_000.0:
+            paper_trader.reset_account(user_id, 10_000.0)
         paper_kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Retour Paper", callback_data="menu_paper"), InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")]]) if update.callback_query else None
+        # Rafraîchir les prix courants avant d'afficher le statut
+        positions = paper_trader.get_positions(user_id)
+        for p in positions:
+            rt = await fetcher.get_realtime_price(p["symbol"])
+            if rt and "price" in rt:
+                paper_trader.update_price(p["symbol"], float(rt["price"]))
         stats     = paper_trader.get_stats(user_id)
         positions = paper_trader.get_positions(user_id)
         msg = get_text(
@@ -1560,9 +1629,9 @@ async def paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lev_str = f" x{p.get('leverage', 1.0):.0f}" if p.get('leverage', 1.0) > 1 else ""
                 pnl_sign = "+" if p.get("pnl_usdt", 0) >= 0 else ""
                 msg += (
-                    f"\n{side_emoji} *{p['symbol']}*{lev_str} @ {p['entry_price']:.4f}"
+                    f"\n{side_emoji} *{p['symbol']}*{lev_str} @ {p['entry_price']:.4f} (Actuel: {p.get('current_price', p['entry_price']):.4f})"
                     f" | SL: {sl_str} | TP: {tp_str}"
-                    f" | PnL: {pnl_sign}{p.get('pnl_usdt', 0):.2f}$"
+                    f" | PnL: {pnl_sign}{p.get('pnl_usdt', 0):.2f}$ ({pnl_sign}{p.get('pnl_pct', 0):.2f}%)"
                 )
         else:
             msg += "\n" + get_text(lang, "paper_no_open_positions")
@@ -1578,7 +1647,10 @@ async def paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         leverage = float(context.args[2]) if len(context.args) >= 3 else 1.0
         leverage = max(1.0, min(leverage, float(PAPER_MAX_LEVERAGE)))
 
-        price_data = fetcher.get_cached_price(symbol)
+        if paper_trader.get_capital(user_id) > 100_000_000.0:
+            paper_trader.reset_account(user_id, 10_000.0)
+
+        price_data = await fetcher.get_realtime_price(symbol, force_fresh=True)
         if not price_data or "price" not in price_data:
             df = await fetcher.get_historical_data(symbol, timeframe="5m")
             if df is None or df.empty:
@@ -1627,11 +1699,11 @@ async def paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await respond(
             update,
             f"{emoji} Position {side} ouverte : *{symbol}*{lev_str}"
-            f"\n📍 Entrée : {pos['entry_price']:.4f}"
-            f" | SL : {sl:.4f} | TP : {tp:.4f}"
-            f"\n📐 Qty : {qty:.6f}"
-            f"\n💸 Frais entrée : {fees_str} USDT"
-            f"\n💰 Capital restant : {new_capital:.2f} USDT",
+            f"\n📍 Entrée : `{pos['entry_price']:.4f}` (Marge engagée : `{margin_to_use:.2f} USDT`)"
+            f"\n🎯 SL : `{sl:.4f}` | TP : `{tp:.4f}`"
+            f"\n📐 Quantité : `{qty:.6f}` (Valeur position : `{notional_value:.2f} USDT`)"
+            f"\n💸 Frais entrée : `{fees_str} USDT`"
+            f"\n💰 Capital disponible restant : `{new_capital:.2f} USDT`",
             parse_mode=ParseMode.MARKDOWN,
         )
 
@@ -1649,7 +1721,7 @@ async def paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         nb_closed = 0
         for pos in list(positions):
             if pos["symbol"] == symbol and pos["side"] == "BUY":
-                price_data = fetcher.get_cached_price(symbol)
+                price_data = await fetcher.get_realtime_price(symbol, force_fresh=True)
                 exit_price = (
                     float(price_data["price"])
                     if (price_data and "price" in price_data)
@@ -1678,7 +1750,7 @@ async def paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         nb_closed = 0
         for pos in list(positions):
             if pos["symbol"] == symbol:
-                price_data = fetcher.get_cached_price(symbol)
+                price_data = await fetcher.get_realtime_price(symbol, force_fresh=True)
                 exit_price = (
                     float(price_data["price"])
                     if (price_data and "price" in price_data)

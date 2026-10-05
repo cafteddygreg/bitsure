@@ -1080,6 +1080,7 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
                 InlineKeyboardButton("💰 PnL", callback_data="menu_pnl"),
                 InlineKeyboardButton("🕓 Historique", callback_data="menu_history_trades"),
             ],
+            [InlineKeyboardButton("🔐 Code PIN de Sécurité (/setsecurity)", callback_data="cmd_setsecurity")],
             [InlineKeyboardButton("⬅️ Retour AutoTrade", callback_data="menu_autotrade"), InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")]
         ])
         await query.edit_message_text(

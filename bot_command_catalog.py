@@ -40,14 +40,17 @@ USER_COMMAND_CATEGORIES = [
         ("/paper stats", "Statistiques détaillées de performance paper"),
         ("/paper reset", "Réinitialiser le compte virtuel ($10,000)"),
     ]),
-    ("⚙️ Paramètres utilisateur", [
+    ("⚙️ Paramètres & Sécurité", [
         ("/settings", "Afficher vos préférences actuelles"),
+        ("/setsecurity <code_6_chiffres>", "🔐 Créer ou modifier votre code PIN de sécurité à 6 chiffres"),
+        ("/pin <code_6_chiffres>", "Alias rapide de /setsecurity pour définir votre code PIN"),
         ("/settimeframe <5m|15m|1h|4h|1d>", "Modifier le timeframe par défaut"),
         ("/setstyle <scalping|day|swing|position>", "Modifier votre style de trading"),
         ("/setlanguage <fr|en>", "Changer la langue de l'interface"),
     ]),
     ("🤖 AutoTrade Binance", [
         ("/setapikeys <api_key> <api_secret>", "Enregistrer vos clés API Binance 🔒"),
+        ("/setsecurity <code_6_chiffres>", "🔐 Configurer votre code PIN de sécurité (protège /clearsafe, /autotrade on, /close)"),
         ("/autotrade", "Ouvrir le menu de contrôle AutoTrade"),
         ("/autotrade on", "Activer l'exécution automatique des trades"),
         ("/autotrade off", "Désactiver l'AutoTrade"),
@@ -58,6 +61,7 @@ USER_COMMAND_CATEGORIES = [
         ("/close <id>", "Fermer une position AutoTrade"),
         ("/pnl", "Statistiques PnL globale du compte"),
         ("/account", "Tableau de bord et solde du compte Binance"),
+        ("/balance", "Alias de /account (voir le montant USDT disponible)"),
         ("/history_trades", "Historique des 10 derniers trades réels"),
         ("/setleverage <1-125>", "Définir le levier AutoTrade"),
         ("/setrisk <pct>", "Définir le risque % par trade"),
@@ -123,16 +127,25 @@ def _help_categories(*, include_admin: bool = False):
     return categories
 
 
-def render_help_pages(*, include_admin: bool = False, max_chars: int = TELEGRAM_SAFE_MESSAGE_LIMIT) -> list[str]:
-    """Render /help as Telegram-safe Markdown pages.
-
-    Telegram rejects messages over 4096 characters. Keep a lower ceiling so
-    trial text or future command descriptions cannot make /help fail at send
-    time. Category blocks are kept intact unless a single future category grows
-    beyond max_chars, in which case it is split by command line.
+def _format_clickable_command_line(usage: str, description: str) -> str:
     """
+    Formate une ligne d'aide pour que la commande `/xxx` soit hors des backticks (`...`).
+    Dans Telegram, `/commande` en texte normal (avec `_` échappé en Markdown v1) devient
+    un lien bleu cliquable qui s'envoie automatiquement dès qu'on touche dessus !
+    """
+    parts = usage.strip().split(" ", 1)
+    cmd_part = parts[0].replace("_", r"\_")
+    if len(parts) > 1:
+        args_part = f" `{parts[1]}`"
+    else:
+        args_part = ""
+    return f"• {cmd_part}{args_part} — {description}"
+
+
+def render_help_pages(*, include_admin: bool = False, max_chars: int = TELEGRAM_SAFE_MESSAGE_LIMIT) -> list[str]:
+    """Render /help as Telegram-safe Markdown pages with clickable /commands."""
     pages: list[str] = []
-    current = "📚 *Commandes disponibles*"
+    current = "📚 *Commandes disponibles (clique sur une commande bleue pour la lancer)*"
 
     def flush_current():
         nonlocal current
@@ -149,7 +162,7 @@ def render_help_pages(*, include_admin: bool = False, max_chars: int = TELEGRAM_
 
     for title, commands in _help_categories(include_admin=include_admin):
         header = f"*{title}*"
-        lines = [header] + [f"`{usage}` — {description}" for usage, description in commands]
+        lines = [header] + [_format_clickable_command_line(usage, description) for usage, description in commands]
         block = "\n".join(lines)
         if len(block) <= max_chars:
             append_block(block)

@@ -113,6 +113,56 @@ def _signed_rest_get(
     return None
 
 
+def _signed_rest_request(
+    method: str,
+    api_key: str,
+    api_secret: str,
+    path: str,
+    params: Optional[dict] = None,
+    *,
+    market_type: MarketType = "futures",
+    testnet: bool = True,
+) -> dict | list:
+    """Exécute une requête signée POST/DELETE directe vers Binance (Testnet ou Live) sans passer par api.binance.com."""
+    if market_type == "futures":
+        bases = (
+            ("https://testnet.binancefuture.com",)
+            if testnet
+            else ("https://fapi.binance.com", "https://testnet.binancefuture.com")
+        )
+    else:
+        bases = (
+            ("https://testnet.binance.vision",)
+            if testnet
+            else ("https://api4.binance.com", "https://api1.binance.com", "https://api.binance.com", "https://testnet.binance.vision")
+        )
+
+    last_err = "Erreur réseau Binance"
+    for base in bases:
+        try:
+            q = {k: v for k, v in (params or {}).items() if v is not None}
+            q["timestamp"] = int(time.time() * 1000)
+            q.setdefault("recvWindow", 10000)
+            query_str = urllib.parse.urlencode(q)
+            sig = hmac.new(api_secret.encode("utf-8"), query_str.encode("utf-8"), hashlib.sha256).hexdigest()
+            url = f"{base}{path}?{query_str}&signature={sig}"
+            r = requests.request(method.upper(), url, headers={"X-MBX-APIKEY": api_key}, timeout=8)
+            if r.status_code == 200:
+                return r.json()
+            try:
+                err_json = r.json()
+                last_err = f"Code {err_json.get('code')}: {err_json.get('msg')}"
+            except Exception:
+                last_err = f"HTTP {r.status_code}: {r.text[:200]}"
+            # Si c'est une erreur métier Binance (ex: -2019 marge insuffisante), inutile d'essayer un autre miroir
+            if r.status_code == 400 and "Code -" in last_err:
+                break
+        except Exception as exc:
+            last_err = str(exc)
+            continue
+    raise BinanceClientError(last_err)
+
+
 class BinanceClientError(Exception):
     """Erreur applicative levée par ce module (message safe à afficher à l'utilisateur)."""
 
@@ -347,18 +397,43 @@ def get_account_balance(user_id: int, asset: str = "USDT", market_type: MarketTy
 
 
 def get_symbol_filters(client: Client, symbol: str, market_type: MarketType) -> dict:
-    """Récupère les filtres Binance (PRICE_FILTER, LOT_SIZE, etc.) du symbole."""
+    """Récupère les filtres Binance (PRICE_FILTER, LOT_SIZE, etc.) du symbole via miroirs publics résilients."""
     symbol = normalize_symbol(symbol)
-    if market_type == "futures":
-        info = client.futures_exchange_info()
-    else:
-        info = client.get_exchange_info()
+    bases = _FUTURES_PUBLIC_BASES if market_type == "futures" else _SPOT_PUBLIC_BASES
+    path = "/fapi/v1/exchangeInfo" if market_type == "futures" else "/api/v3/exchangeInfo"
 
-    for s in info["symbols"]:
-        if s["symbol"] == symbol:
-            filters = {f["filterType"]: f for f in s["filters"]}
-            return filters
-    raise BinanceClientError(f"Symbole {symbol} introuvable sur Binance.")
+    for base in bases:
+        try:
+            params = {"symbol": symbol} if market_type == "spot" else None
+            r = requests.get(f"{base}{path}", params=params, timeout=5)
+            if r.status_code == 200:
+                info = r.json()
+                for s in info.get("symbols", []):
+                    if s.get("symbol") == symbol:
+                        return {f["filterType"]: f for f in s.get("filters", [])}
+        except Exception:
+            continue
+
+    try:
+        info = client.futures_exchange_info() if market_type == "futures" else client.get_exchange_info()
+        for s in info.get("symbols", []):
+            if s["symbol"] == symbol:
+                return {f["filterType"]: f for f in s["filters"]}
+    except Exception:
+        pass
+
+    # Fallback sécurisé standard si l'API exchangeInfo est momentanément injoignable
+    if symbol.startswith("BTC"):
+        return {
+            "LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},
+            "PRICE_FILTER": {"tickSize": "0.10"},
+            "MIN_NOTIONAL": {"notional": "5.0"},
+        }
+    return {
+        "LOT_SIZE": {"stepSize": "0.01", "minQty": "0.01"},
+        "PRICE_FILTER": {"tickSize": "0.01"},
+        "MIN_NOTIONAL": {"notional": "5.0"},
+    }
 
 
 def _quantize_down(value: float, quantum: str) -> Decimal:

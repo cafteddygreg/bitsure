@@ -206,6 +206,8 @@ class UserManager:
     def check_limit(self, user_id: int) -> bool:
         if self.is_admin(user_id) or self.is_premium(user_id):
             return True
+        if self.get_role(user_id) == "tester" and self.is_approved(user_id) and self.is_trial_valid(user_id):
+            return True
         used = self._get_usage(user_id)
         return used < FREE_DAILY_REQUESTS
 
@@ -217,6 +219,8 @@ class UserManager:
 
     def get_remaining_requests(self, user_id: int) -> int:
         if self.is_premium(user_id) or self.is_admin(user_id):
+            return -1
+        if self.get_role(user_id) == "tester" and self.is_approved(user_id) and self.is_trial_valid(user_id):
             return -1
         used = self._get_usage(user_id)
         return max(0, FREE_DAILY_REQUESTS - used)
@@ -334,14 +338,14 @@ class UserManager:
         return bool(row and row.get("memo"))
 
     def confirm_binance_payment(self, user_id: int, *, force: bool = False) -> bool:
-        """Passe un utilisateur en rôle 'pro' et approuvé=1 après paiement confirmé."""
+        """Passe un utilisateur en rôle 'pro', approuvé=1 et terms_accepted=1 après validation admin."""
         user = self.get_user(user_id)
         if not user:
             return False
         if not force and not user.get("memo"):
             return False
         self.conn.execute(
-            "UPDATE users SET role = 'pro', approved = 1, memo = NULL WHERE user_id = %s",
+            "UPDATE users SET role = 'pro', approved = 1, terms_accepted = 1, memo = NULL WHERE user_id = %s",
             (user_id,)
         )
         self.conn.commit()
@@ -352,23 +356,24 @@ class UserManager:
     # =========================================================
 
     def approve_user(self, user_id: int, role: str = "tester") -> bool:
-        """Approuve un utilisateur (et le crée s'il n'a pas encore fait /start)."""
+        """Approuve un utilisateur, valide les CGU (terms_accepted=1) et réinitialise sa période d'essai."""
+        now = time.time()
         user = self.get_user(user_id)
         if not user:
-            now = time.time()
             self.conn.execute(
                 """
                 INSERT INTO users (user_id, role, lang, timeframe, risk, terms_accepted, trial_start, created_at, approved, username)
                 VALUES (%s, %s, 'fr', '1h', 'medium', 1, %s, %s, 1, NULL)
-                ON CONFLICT (user_id) DO UPDATE SET role = EXCLUDED.role, approved = 1
+                ON CONFLICT (user_id) DO UPDATE
+                SET role = EXCLUDED.role, approved = 1, terms_accepted = 1, trial_start = EXCLUDED.trial_start
                 """,
                 (user_id, role, now, now),
             )
             self.conn.commit()
             return True
         self.conn.execute(
-            "UPDATE users SET role = %s, approved = 1 WHERE user_id = %s",
-            (role, user_id)
+            "UPDATE users SET role = %s, approved = 1, terms_accepted = 1, trial_start = %s WHERE user_id = %s",
+            (role, now, user_id)
         )
         self.conn.commit()
         return True

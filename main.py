@@ -321,6 +321,7 @@ def main():
 
         ("setapikeys", cmd_setapikeys),
         ("setsecurity", cmd_setsecurity),
+        ("pin", cmd_setsecurity),
         ("confirmmanual", cmd_confirmmanual),
         ("autotrade", cmd_autotrade),
         ("periodic_analysis", cmd_periodic_analysis),

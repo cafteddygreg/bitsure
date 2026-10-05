@@ -109,8 +109,24 @@ class TestLogDoctor(unittest.TestCase):
             self.assertTrue(urlopen_mock.called)
             req_obj = urlopen_mock.call_args[0][0]
             self.assertIn("gemini-3.1-flash-lite", req_obj.full_url)
-            self.assertIn("Analyse Gemini Flash-Lite", report)
+            self.assertIn("Diagnostic Gemini Flash-Lite", report)
             self.assertIn("Tape /setmarket spot", report)
+
+    def test_clickable_help_commands_and_security_pin_documented(self):
+        from bot_command_catalog import render_help
+        help_text = render_help(include_admin=True)
+        # Les commandes doivent commencer par "• /cmd" hors backticks pour être cliquables dans Telegram
+        self.assertIn("• /start —", help_text)
+        self.assertIn("• /setsecurity `<code_6_chiffres>`", help_text)
+        self.assertIn("• /pin `<code_6_chiffres>`", help_text)
+
+    def test_paper_trader_pnl_does_not_double_multiply_leverage(self):
+        from paper_trader import PaperTrader
+        # Si entry=100, exit=110 (+10%), qty=5 (obtenue avec 100$ de marge en levier x5 -> notional 500$ = 5 unités)
+        # Le gain en USDT est (110 - 100) * 5 = +50 USDT (soit +50% sur la marge de 100$), et NON 250 USDT !
+        pnl_usdt, pnl_pct = PaperTrader._calc_pnl("BUY", 100.0, 110.0, qty=5.0, leverage=5.0)
+        self.assertAlmostEqual(pnl_usdt, 50.0)
+        self.assertAlmostEqual(pnl_pct, 50.0)
 
     def test_approve_user_and_confirm_binance_payment_logic(self):
         from user_manager import UserManager

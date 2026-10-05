@@ -137,7 +137,7 @@ TWELVEDATA_WS_URL = "wss://ws.twelvedata.com/v1/quotes/price"
 # 6. PAPER TRADING
 # =========================================================
 
-PAPER_DEFAULT_CAPITAL  = 10_000_000_000.0
+PAPER_DEFAULT_CAPITAL  = 10_000.0
 PAPER_FEES_PCT         = 0.10
 PAPER_SLIPPAGE_PCT     = 0.05
 PAPER_DEFAULT_LEVERAGE = 1.0
