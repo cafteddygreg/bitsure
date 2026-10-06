@@ -139,19 +139,25 @@ class SignalEngine:
     @staticmethod
     def _detect_timeframe_trend(df: Optional[pd.DataFrame]) -> str:
         """Detecte la tendance avec la logique SMA deja utilisee par le moteur."""
-        if df is None or not SignalEngine._valid_df(df, min_len=50):
+        if df is None:
+            return TREND_NEUTRAL
+        if SignalEngine._valid_df(df, min_len=50):
+            fast_p, slow_p = 20, 50
+        elif SignalEngine._valid_df(df, min_len=12):
+            fast_p, slow_p = 5, 12
+        else:
             return TREND_NEUTRAL
 
         close = df["Close"]
-        sma20_val = sma(close, 20).iloc[-1]
-        sma50_val = sma(close, 50).iloc[-1]
+        sma_fast_val = sma(close, fast_p).iloc[-1]
+        sma_slow_val = sma(close, slow_p).iloc[-1]
         last_price = close.iloc[-1]
 
-        if pd.isna(last_price) or pd.isna(sma20_val) or pd.isna(sma50_val):
+        if pd.isna(last_price) or pd.isna(sma_fast_val) or pd.isna(sma_slow_val):
             return TREND_NEUTRAL
-        if last_price > sma20_val > sma50_val:
+        if last_price > sma_fast_val > sma_slow_val:
             return TREND_BULLISH
-        if last_price < sma20_val < sma50_val:
+        if last_price < sma_fast_val < sma_slow_val:
             return TREND_BEARISH
         return TREND_NEUTRAL
 
@@ -179,18 +185,25 @@ class SignalEngine:
     @staticmethod
     def _compute_timeframe_trends(df: pd.DataFrame) -> Dict[str, str]:
         """
-        Construit les tendances 1H, 4H, 1D a partir des donnees disponibles.
-
-        Quand l'index temporel est disponible, les timeframes superieurs sont
-        derives par resampling. Si la granularite source est plus haute que 1H,
-        les timeframes indisponibles restent neutres pour eviter une fausse
-        precision.
+        Construit les tendances multi-timeframes selon la hiérarchie naturelle :
+        - 5m  -> base 5m ("1h"), HTF1 15m ("4h"), HTF2 1h ("1d")
+        - 15m -> base 15m ("1h"), HTF1 1h ("4h"), HTF2 4h ("1d")
+        - 1h  -> base 1h ("1h"), HTF1 4h ("4h"), HTF2 1D ("1d")
+        - 4h  -> base 4h ("4h"), HTF2 1D ("1d")
         """
         inferred_minutes = SignalEngine._infer_timeframe_minutes(df)
         frames = {"1h": None, "4h": None, "1d": None}
 
         if inferred_minutes is None:
             frames["1h"] = df
+        elif inferred_minutes <= 7:
+            frames["1h"] = df
+            frames["4h"] = SignalEngine._resample_ohlc(df, "15min")
+            frames["1d"] = SignalEngine._resample_ohlc(df, "1h")
+        elif inferred_minutes <= 20:
+            frames["1h"] = df
+            frames["4h"] = SignalEngine._resample_ohlc(df, "1h")
+            frames["1d"] = SignalEngine._resample_ohlc(df, "4h")
         elif inferred_minutes <= 90:
             frames["1h"] = df
             frames["4h"] = SignalEngine._resample_ohlc(df, "4h")

@@ -103,17 +103,23 @@ class BacktestSignalEngine:
 
     @staticmethod
     def _detect_timeframe_trend(df: Optional[pd.DataFrame]) -> str:
-        if df is None or not BacktestSignalEngine._valid_df(df, 50):
+        if df is None:
+            return TREND_NEUTRAL
+        if BacktestSignalEngine._valid_df(df, 50):
+            fast_p, slow_p = 20, 50
+        elif BacktestSignalEngine._valid_df(df, 12):
+            fast_p, slow_p = 5, 12
+        else:
             return TREND_NEUTRAL
         close = df["Close"]
-        sma20_val = sma(close, 20).iloc[-1]
-        sma50_val = sma(close, 50).iloc[-1]
+        sma_fast_val = sma(close, fast_p).iloc[-1]
+        sma_slow_val = sma(close, slow_p).iloc[-1]
         last_price = close.iloc[-1]
-        if pd.isna(last_price) or pd.isna(sma20_val) or pd.isna(sma50_val):
+        if pd.isna(last_price) or pd.isna(sma_fast_val) or pd.isna(sma_slow_val):
             return TREND_NEUTRAL
-        if last_price > sma20_val > sma50_val:
+        if last_price > sma_fast_val > sma_slow_val:
             return TREND_BULLISH
-        if last_price < sma20_val < sma50_val:
+        if last_price < sma_fast_val < sma_slow_val:
             return TREND_BEARISH
         return TREND_NEUTRAL
 
@@ -140,6 +146,14 @@ class BacktestSignalEngine:
         frames = {"1h": None, "4h": None, "1d": None}
         if inferred is None:
             frames["1h"] = df
+        elif inferred <= 7:
+            frames["1h"] = df
+            frames["4h"] = BacktestSignalEngine._resample_ohlc(df, "15min")
+            frames["1d"] = BacktestSignalEngine._resample_ohlc(df, "1h")
+        elif inferred <= 20:
+            frames["1h"] = df
+            frames["4h"] = BacktestSignalEngine._resample_ohlc(df, "1h")
+            frames["1d"] = BacktestSignalEngine._resample_ohlc(df, "4h")
         elif inferred <= 90:
             frames["1h"] = df
             frames["4h"] = BacktestSignalEngine._resample_ohlc(df, "4h")

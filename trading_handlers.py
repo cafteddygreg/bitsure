@@ -95,10 +95,6 @@ def _sensitive_authorized(user_id: int, context: ContextTypes.DEFAULT_TYPE, *, r
     return ok, msg
 
 
-def _require_pin(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str) -> tuple[bool, str]:
-    return _sensitive_authorized(update.effective_user.id, context, require_pin=False)
-
-
 def _parse_on_off(value: str) -> bool | None:
     normalized = value.lower()
     if normalized in ("on", "true", "1", "yes", "oui", "activer", "enable"):
@@ -402,8 +398,7 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Max positions : {config.max_positions}\n"
         f"Score minimum : {config.min_score}\n"
         f"Perte max/jour : {config.max_daily_loss}%\n"
-        f"Trailing stop : {'ON' if config.trailing_stop else 'OFF'} ({config.trailing_stop_pct}%)"
-        f"{' — déplacement auto futures non disponible' if config.market_type == 'futures' else ''}\n"
+        f"Trailing stop : {'ON' if config.trailing_stop else 'OFF'} (ATR x{config.trailing_stop_pct})\n"
         f"DCA : {'configuré mais non disponible' if config.dca_enabled else 'OFF'} ({config.dca_steps} étapes, {config.dca_step_pct}%)\n"
         f"Cooldown : {config.cooldown_seconds}s\n"
         f"Testnet : {'OUI' if config.testnet else 'NON — argent réel'}\n"
@@ -894,15 +889,6 @@ async def cmd_emergency_stop(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # Menu principal (boutons)
 # ---------------------------------------------------------------------------
 
-def build_autotrade_menu_buttons() -> list:
-    """À insérer dans build_main_menu() du bot existant."""
-    return [
-        [InlineKeyboardButton("📊 AutoTrade", callback_data="menu_autotrade")],
-        [InlineKeyboardButton("📈 Positions", callback_data="menu_positions")],
-        [InlineKeyboardButton("⚙️ Trading Config", callback_data="menu_trading_config")],
-    ]
-
-
 def _build_autotrade_menu(user_id: int):
     """Construit (texte, clavier) du menu AutoTrade. Réutilisé par /autotrade et le callback menu_autotrade."""
     config = get_config(user_id)
@@ -948,10 +934,18 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
         if config.auto_trade:
             update_config(user_id, auto_trade=False)
         else:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔐 Configurer Code PIN", callback_data="cmd_setsecurity")],
+                [InlineKeyboardButton("⬅️ Retour AutoTrade", callback_data="menu_autotrade"),
+                 InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")],
+            ])
             await _safe_edit(
                 query,
-                "🔐 Activation AutoTrade refusée depuis un bouton non authentifié.\n"
-                "Utilise une commande protégée avec code de sécurité avant d'activer le trading réel.",
+                "🔐 *Activation AutoTrade protégée par Code PIN*\n\n"
+                "Pour activer l'exécution automatique d'ordres réels, utilise la commande :\n"
+                "`/autotrade on <ton_code_pin_6_chiffres>`",
+                reply_markup=kb,
+                parse_mode=ParseMode.MARKDOWN,
             )
             return
         query.data = "menu_autotrade"
@@ -1169,8 +1163,7 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
             f"Style : {config.trading_style}\n"
             f"Max positions : {config.max_positions}\n"
             f"Score minimum : {config.min_score}\n"
-            f"Trailing stop : {trailing_str}"
-            f"{' — déplacement auto futures non disponible' if config.market_type == 'futures' else ''}\n"
+            f"Trailing stop : {trailing_str}\n"
             f"DCA : {'configuré mais non disponible' if config.dca_enabled else 'OFF'} ({config.dca_steps} étapes, {config.dca_step_pct}%)\n"
             f"Cooldown : {config.cooldown_seconds}s\n"
             f"Testnet : {'OUI' if config.testnet else 'NON — argent réel'}\n\n"
@@ -1268,16 +1261,16 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
         config = get_config(user_id)
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("75", callback_data="set_minscore_75"),
-                InlineKeyboardButton("78 (Recommandé)", callback_data="set_minscore_78"),
-                InlineKeyboardButton("82", callback_data="set_minscore_82"),
-                InlineKeyboardButton("85", callback_data="set_minscore_85"),
+                InlineKeyboardButton("65", callback_data="set_minscore_65"),
+                InlineKeyboardButton("68 (Recommandé V4)", callback_data="set_minscore_68"),
+                InlineKeyboardButton("72", callback_data="set_minscore_72"),
+                InlineKeyboardButton("78", callback_data="set_minscore_78"),
             ],
             [InlineKeyboardButton("⬅️ Retour Config", callback_data="menu_trading_config")],
         ])
         await _safe_edit(
             query,
-            f"🧠 *Score minimum actuel pour exécuter un signal : {config.min_score}/100*\n\nChoisis un seuil haute sélectivité (78 recommandé pour gagner plus et perdre moins) ou utilise /setminscore <70-100>.",
+            f"🧠 *Score minimum actuel pour exécuter un signal : {config.min_score}/100*\n\nChoisis un seuil calibré (68 recommandé par validation Walk-Forward V4) ou utilise /setminscore <60-100>.",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -1306,9 +1299,8 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
             [InlineKeyboardButton("⬅️ Retour Config", callback_data="menu_trading_config")],
         ])
         await query.edit_message_text(
-            f"📉 *Trailing Stop*\n\nÉtat : *{t_status}*\nDistance actuelle : *{config.trailing_stop_pct}%*\n"
-            f"Utilise /settrailing <on|off> [pct] ou /settrailing pct <pct>.\n"
-            f"Note : le déplacement automatique d’ordre stop futures n’est pas disponible.",
+            f"📉 *Trailing Stop Dynamique (ATR)*\n\nÉtat : *{t_status}*\nFacteur / Distance actuelle : *{config.trailing_stop_pct}*\n"
+            f"Utilise /settrailing <on|off> [1-20] ou /settrailing pct <1-20>.",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )
