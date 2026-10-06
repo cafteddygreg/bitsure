@@ -980,10 +980,11 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
         )
 
     elif data.startswith("set_market_"):
-        await _safe_edit(
-            query,
-            "🔐 Changement de marché refusé depuis un bouton non authentifié. Utilise /setmarket <spot|futures> <code>.",
-        )
+        new_market = data.replace("set_market_", "").strip().lower()
+        if new_market in ("spot", "futures"):
+            update_config(user_id, market_type=new_market)
+        query.data = "menu_market_mode"
+        await trading_callback_router(update, context)
         return
 
     elif data == "menu_analysis_config":
@@ -1570,7 +1571,7 @@ async def _confirm_open_signal(query, context: ContextTypes.DEFAULT_TYPE, signal
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, user_id, symbol, direction, entry_price, sl, tp, score, status "
+                "SELECT id, user_id, symbol, direction, entry_price, sl, tp, score, status, created_at "
                 "FROM signals WHERE id = %s",
                 (signal_id,),
             )
@@ -1582,7 +1583,7 @@ async def _confirm_open_signal(query, context: ContextTypes.DEFAULT_TYPE, signal
         await query.edit_message_text("Signal introuvable (peut-être déjà expiré).")
         return
 
-    cols = ["id", "user_id", "symbol", "direction", "entry_price", "sl", "tp", "score", "status"]
+    cols = ["id", "user_id", "symbol", "direction", "entry_price", "sl", "tp", "score", "status", "created_at"]
     signal = dict(zip(cols, row))
     if int(signal["user_id"]) != int(query.from_user.id):
         await query.edit_message_text("❌ Ce signal ne t'appartient pas.")
@@ -1605,43 +1606,3 @@ async def _confirm_open_signal(query, context: ContextTypes.DEFAULT_TYPE, signal
         )
     else:
         await query.edit_message_text(f"⚠️ Échec d'ouverture : {trade.get('error_message')}")
-
-
-# ---------------------------------------------------------------------------
-# Commandes admin (à enregistrer dans admin_handlers.py, avec vérif ADMIN_ID)
-# ---------------------------------------------------------------------------
-
-async def admin_cmd_trading_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*), COALESCE(SUM(pnl_usdt), 0) FROM trades WHERE status = 'closed'"
-            )
-            total, pnl_sum = cur.fetchone()
-            cur.execute("SELECT COUNT(*) FROM trades WHERE status = 'open'")
-            open_count = cur.fetchone()[0]
-    finally:
-        conn.close()
-    await update.message.reply_text(
-        f"📊 Stats globales : {total} trades clôturés | PnL cumulé {pnl_sum:.2f} USDT | "
-        f"{open_count} positions ouvertes actuellement."
-    )
-
-
-async def admin_cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    trades = get_open_trades()
-    if not trades:
-        await update.message.reply_text("Aucune position ouverte, tous utilisateurs confondus.")
-        return
-    lines = [f"#{t['id']} user={t['user_id']} {t['symbol']} {t['direction']}" for t in trades]
-    await update.message.reply_text("\n".join(lines))
-
-
-async def admin_cmd_forceclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Usage : /forceclose <user_id>")
-        return
-    target_user = int(context.args[0])
-    closed = emergency_stop_all(target_user)
-    await update.message.reply_text(f"{closed} position(s) fermée(s) pour l'utilisateur {target_user}.")

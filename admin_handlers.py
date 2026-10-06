@@ -192,27 +192,29 @@ async def switchapi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Admin only.")
         return
     fetcher = DataFetcher.get_instance()
-    current = fetcher.active_source or "none"
+    current = getattr(fetcher, "active_source", None) or "binance"
+    failures = getattr(fetcher, "source_failures", {})
     if not context.args:
         await update.message.reply_text(
             f"🔄 Source actuelle : {current}\n"
-            f"Usage : /switchapi twelve|fcs|real\n"
-            f"Échecs : {fetcher.source_failures}"
+            f"Usage : /switchapi binance|twelve|real\n"
+            f"Échecs : {failures}"
         )
         return
     target = context.args[0].lower()
-    if target not in ("twelve", "fcs", "real"):
-        await update.message.reply_text("❌ twelve, fcs ou real")
+    if target not in ("binance", "twelve", "fcs", "real"):
+        await update.message.reply_text("❌ binance, twelve ou real")
         return
-    if fetcher.ws:
-        fetcher.ws.close()
+    if getattr(fetcher, "ws", None):
+        try:
+            fetcher.ws.close()
+        except Exception:
+            pass
     if target == "twelve":
         fetcher._start_twelve_ws()
-    elif target == "fcs":
-        fetcher._start_fcs_ws()
-    elif target == "real":
-        fetcher._start_real_ws()
-    await update.message.reply_text(f"✅ Switch vers {target} effectué.")
+    else:
+        fetcher.active_source = "binance" if target in ("binance", "real") else target
+    await update.message.reply_text(f"✅ Switch vers {fetcher.active_source} effectué.")
 
 # =========================================================
 # FIND MEMO

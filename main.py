@@ -11,6 +11,7 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
+    PreCheckoutQueryHandler,
     filters,
 )
 
@@ -463,6 +464,8 @@ pattern="^(menu_(?!autotrade|live|market_mode|analysis_config|positions|trading_
     # =====================================================
     # PAYMENTS
     # =====================================================
+
+    app.add_handler(PreCheckoutQueryHandler(pre_checkout))
 
     app.add_handler(
         MessageHandler(

@@ -1050,7 +1050,10 @@ async def analyse(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callb
             "score": result.get('teddy_score'),
             "created_at": time.time(),
         }
-        caption += "\n\n⚠️ Analyse manuelle uniquement: aucun trade ne sera ouvert sans confirmation."
+        caption += (
+            f"\n\n⚠️ Analyse manuelle uniquement: aucun trade ne sera ouvert sans confirmation."
+            f"\n🔑 Confirmation : `/confirmmanual {manual_token}`"
+        )
         reply_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("Exécuter le trade", callback_data=f"manual_trade_execute_{manual_token}")],
             [InlineKeyboardButton("Annuler", callback_data=f"manual_trade_cancel_{manual_token}")],
@@ -1990,7 +1993,7 @@ async def plan_binance_callback(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     ident, text = generate_binance_payment(user_id, lang)
     user_mgr.add_pending_binance(user_id, ident)
-    await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    await respond(update, text, parse_mode=ParseMode.MARKDOWN)
 
 @check_limit
 async def pay_binance(update: Update, context: ContextTypes.DEFAULT_TYPE):

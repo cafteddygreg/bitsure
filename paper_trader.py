@@ -43,8 +43,8 @@ class PaperTrader:
 
     def __init__(self):
         try:
-            from database import get_connection
-            self.conn = get_connection()
+            from database import get_db
+            self.conn = get_db()
         except Exception as e:
             logger.warning(f"[PaperTrader.__init__] BDD non disponible (mode mémoire): {e}")
             self.conn = None
