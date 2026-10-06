@@ -160,17 +160,18 @@ def check_limit(func):
         lang = get_user_lang(update)
         logger.debug(f"[check_limit] func={func.__name__}, user={user_id}")
         username_str = getattr(update.effective_user, "username", None)
+        user_mgr.get_user(user_id, username=username_str)
         if username_str:
             user_mgr.update_username(user_id, f"@{username_str.lstrip('@')}")
         is_adm = user_mgr.is_admin(user_id, username_str)
-        if not user_mgr.can_access_bot(user_id) and not is_adm:
+        if not user_mgr.can_access_bot(user_id, username=username_str) and not is_adm:
             if update.callback_query:
                 await update.callback_query.answer("🚧 Access by invitation only. Contact @btsrteddy", show_alert=True)
                 return
             else:
                 await update.message.reply_text("🚧 Access by invitation only.\n\nContact @btsrteddy to get an invitation.")
                 return
-        if func.__name__ != "start" and not user_mgr.has_accepted_terms(user_id) and not is_adm:
+        if func.__name__ != "start" and not user_mgr.has_accepted_terms(user_id, username=username_str) and not is_adm:
             terms_kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Accepter les conditions d'utilisation", callback_data="terms_accept")],
                 [InlineKeyboardButton("📜 Lire les conditions", callback_data="terms_show")],
@@ -752,31 +753,35 @@ async def symbol_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     elif data == "noop":
         return
-@check_limit
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    lang = user_mgr.get_setting(user_id, "lang", "en")
+    username_raw = getattr(user, "username", None)
     was_new = not user_mgr.user_exists(user_id)
-    user_mgr.get_user(user_id)
+    user_mgr.get_user(user_id, username=username_raw)
     username = f"@{user.username}" if user.username else user.first_name
     user_mgr.update_username(user_id, username)
+    lang = user_mgr.get_setting(user_id, "lang", "fr")
+    target_msg = update.message or (update.callback_query.message if update.callback_query else None)
     if was_new:
         await notify_admin_new_user(update, context)
-    if not user_mgr.has_accepted_terms(user_id):
+    is_adm = user_mgr.is_admin(user_id, username_raw)
+    if not user_mgr.can_access_bot(user_id, username=username_raw) and not is_adm:
+        if target_msg:
+            await target_msg.reply_text("🚧 Access by invitation only.\n\nContact @btsrteddy to get an invitation.")
+        return
+    if not user_mgr.has_accepted_terms(user_id, username=username_raw) and not is_adm:
         keyboard = [
             [InlineKeyboardButton(get_text(lang, "terms_button"), callback_data="terms_show")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         welcome = get_text(lang, "start", status=get_text(lang, "status_free_trial"))
-        await update.message.reply_text(
-            welcome + "\n\n" + get_text(lang, "terms_must_accept"),
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-    if not user_mgr.can_access_bot(user_id):
-        await update.message.reply_text("🚧 Access by invitation only.\n\nContact @btsrteddy to get an invitation.")
+        if target_msg:
+            await target_msg.reply_text(
+                welcome + "\n\n" + get_text(lang, "terms_must_accept"),
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.MARKDOWN
+            )
         return
     role = user_mgr.get_role(user_id)
     if role == "free" and user_mgr.is_trial_valid(user_id):
@@ -791,7 +796,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     disclaimer = get_text(lang, "start_disclaimer")
     payment_info = get_text(lang, "international_payment_info") if role == "free" else ""
     full_text = welcome + disclaimer + payment_info
-    await update.message.reply_text(full_text, parse_mode=ParseMode.MARKDOWN)
+    if target_msg:
+        await target_msg.reply_text(full_text, parse_mode=ParseMode.MARKDOWN)
 
 async def terms_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

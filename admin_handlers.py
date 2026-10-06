@@ -117,34 +117,39 @@ async def teddy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw_target = context.args[0].strip()
     role_arg = context.args[1].lower() if len(context.args) >= 2 else None
 
-    uid = user_mgr.resolve_user_target(raw_target)
+    uid = user_mgr.resolve_user_target(raw_target, create_if_username=True)
     if uid is None:
         await update.message.reply_text(
             f"❌ Impossible de trouver `{raw_target}`.\n"
-            f"💡 Passe son ID numérique (ex: `/teddy 123456789`) qu'il obtient avec `/myid`.",
+            f"💡 Passe son ID numérique (ex: `/teddy 123456789`) qu'il obtient avec `/myid`, ou son `@username`.",
             parse_mode="Markdown",
         )
         return
 
-    if role_arg == "pro" or user_mgr.has_pending_binance_payment(uid):
+    existing_role = user_mgr.get_role(uid) if uid > 0 else "tester"
+    if role_arg in ("pro", "paid", "premium") or existing_role == "pro" or (uid > 0 and user_mgr.has_pending_binance_payment(uid)):
         user_mgr.confirm_binance_payment(uid, force=True)
-        await update.message.reply_text(f"✅ Utilisateur `{uid}` activé en **PRO** (`approved=1`) !", parse_mode="Markdown")
-        try:
-            await context.bot.send_message(
-                chat_id=uid,
-                text="✅ Ton abonnement PRO Bitsure Teddy est activé ! Tape /menu pour commencer.",
-            )
-        except Exception as e:
-            logger.error(f"[teddy] Failed to notify user {uid}: {e}")
+        target_label = f"`{raw_target}` (ID: `{uid}`)" if uid > 0 else f"`{raw_target}` (pré-enregistré)"
+        await update.message.reply_text(f"✅ Utilisateur {target_label} activé en **PRO** (`approved=1`, `terms_accepted=1`) !", parse_mode="Markdown")
+        if uid > 0:
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text="✅ Ton abonnement PRO Bitsure Teddy est activé ! Tape /start ou /menu pour commencer.",
+                )
+            except Exception as e:
+                logger.error(f"[teddy] Failed to notify user {uid}: {e}")
     elif user_mgr.approve_user(uid, role="tester"):
-        await update.message.reply_text(f"✅ Utilisateur `{uid}` ajouté et approuvé comme **testeur** (`approved=1`) !", parse_mode="Markdown")
-        try:
-            await context.bot.send_message(
-                chat_id=uid,
-                text="✅ Ton accès à Bitsure Teddy a été approuvé ! Tape /start puis /menu pour commencer.",
-            )
-        except Exception as e:
-            logger.error(f"[teddy] Failed to notify user {uid}: {e}")
+        target_label = f"`{raw_target}` (ID: `{uid}`)" if uid > 0 else f"`{raw_target}` (pré-enregistré)"
+        await update.message.reply_text(f"✅ Utilisateur {target_label} ajouté et approuvé (`approved=1`, `terms_accepted=1`) !", parse_mode="Markdown")
+        if uid > 0:
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text="✅ Ton accès à Bitsure Teddy a été approuvé ! Tape /start ou /menu pour commencer.",
+                )
+            except Exception as e:
+                logger.error(f"[teddy] Failed to notify user {uid}: {e}")
     else:
         await update.message.reply_text(f"❌ Utilisateur `{uid}` introuvable.", parse_mode="Markdown")
 
@@ -234,21 +239,27 @@ async def find_memo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @check_limit
 async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin_user(update):
+        await update.message.reply_text("⛔ Commande réservée à l'administrateur (@btsrteddy).")
         return
-    lang = user_mgr.get_setting(update.effective_user.id, "lang", "en")
+    lang = user_mgr.get_setting(update.effective_user.id, "lang", "fr")
     if not context.args:
-        await update.message.reply_text(get_text(lang, "confirm_payment_usage"))
+        await update.message.reply_text("Usage: `/confirm_payment <user_id | @username | memo>`", parse_mode="Markdown")
         return
-    uid = user_mgr.resolve_user_target(context.args[0])
+    raw_target = context.args[0].strip()
+    uid = user_mgr.resolve_user_target(raw_target, create_if_username=True)
     if uid is None:
-        await update.message.reply_text("❌ ID utilisateur invalide.")
+        await update.message.reply_text("❌ Utilisateur ou mémo introuvable. Passe son `user_id` numérique ou son `@username`.", parse_mode="Markdown")
         return
     if user_mgr.confirm_binance_payment(uid, force=True):
         await update.message.reply_text(get_text(lang, "confirm_payment_ok", user_id=uid))
-        try:
-            await context.bot.send_message(chat_id=uid, text="✅ Your PRO subscription has been activated! Use /menu to start trading.")
-        except Exception as e:
-            logger.error(f"[confirm_payment] Failed to notify user {uid}: {e}")
+        if uid > 0:
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text="✅ Ton abonnement PRO Bitsure Teddy est activé ! Tape /start ou /menu pour commencer.",
+                )
+            except Exception as e:
+                logger.error(f"[confirm_payment] Failed to notify user {uid}: {e}")
     else:
         await update.message.reply_text(get_text(lang, "confirm_payment_missing", user_id=uid))
 

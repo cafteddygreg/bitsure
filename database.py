@@ -80,7 +80,8 @@ def pooled_connection():
 
 
 class PostgresConnection:
-    """Compatibility wrapper that never shares a psycopg2 connection across threads."""
+    """Compatibility wrapper that never shares a psycopg2 connection across threads
+    and avoids stale REPEATABLE READ / READ COMMITTED idle-in-transaction snapshots."""
 
     def __init__(self, conn=None):
         self._schema_conn = conn
@@ -91,28 +92,52 @@ class PostgresConnection:
         conn = getattr(_thread_state, "conn", None)
         if conn is None or getattr(conn, "closed", True):
             conn = _get_pool().getconn()
-            conn.autocommit = False
+            conn.autocommit = True
             _thread_state.conn = conn
+        else:
+            try:
+                if not conn.autocommit:
+                    conn.commit()
+                    conn.autocommit = True
+            except Exception:
+                try:
+                    _get_pool().putconn(conn, close=True)
+                except Exception:
+                    pass
+                conn = _get_pool().getconn()
+                conn.autocommit = True
+                _thread_state.conn = conn
         return conn
 
     def execute(self, sql, params=None):
-        cursor = self._conn().cursor()
+        conn = self._conn()
+        cursor = conn.cursor()
         try:
             cursor.execute(sql, params or ())
+            if not getattr(conn, "autocommit", False):
+                conn.commit()
             return cursor
         except Exception:
             cursor.close()
-            self.rollback()
+            try:
+                if not getattr(conn, "autocommit", False):
+                    conn.rollback()
+            except Exception:
+                pass
             raise
 
     def cursor(self):
         return self._conn().cursor()
 
     def commit(self):
-        self._conn().commit()
+        conn = self._conn()
+        if not getattr(conn, "autocommit", False):
+            conn.commit()
 
     def rollback(self):
-        self._conn().rollback()
+        conn = self._conn()
+        if not getattr(conn, "autocommit", False):
+            conn.rollback()
 
     def close(self):
         conn = getattr(_thread_state, "conn", None)
@@ -393,6 +418,26 @@ def _ensure_schema(conn):
     for statement in statements:
         conn.execute(statement)
     conn.commit()
+    try:
+        # Synchronisation automatique : tout utilisateur PRO / payant ou déjà approuvé
+        # a obligatoirement approved = 1 et terms_accepted = 1 pour ne jamais être bloqué sur /start.
+        conn.execute(
+            """
+            UPDATE users
+            SET approved = 1,
+                terms_accepted = 1,
+                role = CASE
+                    WHEN LOWER(TRIM(COALESCE(role, ''))) IN ('pro', 'paid', 'premium', 'vip') THEN 'pro'
+                    WHEN LOWER(TRIM(COALESCE(role, ''))) = 'admin' THEN 'admin'
+                    ELSE COALESCE(NULLIF(TRIM(role), ''), 'tester')
+                END
+            WHERE LOWER(TRIM(COALESCE(role, ''))) IN ('pro', 'paid', 'premium', 'vip', 'admin')
+               OR COALESCE(approved, 0) != 0
+            """
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
     try:
         conn.execute("DELETE FROM signals WHERE direction = 'WAIT'")
         conn.execute("ALTER TABLE signals ADD CONSTRAINT chk_no_wait CHECK (direction <> 'WAIT')")

@@ -35,14 +35,51 @@ class UserManager:
     # SAFE GET USER
     # =========================================================
 
-    def get_user(self, user_id: int) -> Optional[Dict]:
-        """Récupère un utilisateur depuis PostgreSQL, ou le crée si autorisé."""
+    def get_user(self, user_id: int, username: Optional[str] = None) -> Optional[Dict]:
+        """Récupère un utilisateur depuis PostgreSQL, ou le crée/rattache son @username si pré-enregistré par l'admin."""
         row = self.conn.execute(
             "SELECT * FROM users WHERE user_id = %s", (user_id,)
         ).fetchone()
 
         if row:
-            return dict(row)
+            user_dict = dict(row)
+            role_norm = str(user_dict.get("role") or "tester").strip().lower()
+            is_paid_role = role_norm in ("pro", "paid", "premium", "vip", "admin")
+            is_app = bool(user_dict.get("approved")) or is_paid_role
+            if is_app and (not user_dict.get("approved") or not user_dict.get("terms_accepted")):
+                canon_role = "pro" if role_norm in ("pro", "paid", "premium", "vip") else ("admin" if role_norm == "admin" else user_dict.get("role", "tester"))
+                try:
+                    self.conn.execute(
+                        "UPDATE users SET approved = 1, terms_accepted = 1, role = %s WHERE user_id = %s",
+                        (canon_role, user_id),
+                    )
+                    self.conn.commit()
+                    user_dict["approved"] = 1
+                    user_dict["terms_accepted"] = 1
+                    user_dict["role"] = canon_role
+                except Exception:
+                    pass
+            return user_dict
+
+        # Si l'admin avait pré-autorisé ce @username avant que l'utilisateur ne parle au bot
+        if username:
+            clean_handle = f"@{username.lstrip('@').lower()}"
+            try:
+                pre_row = self.conn.execute(
+                    "SELECT * FROM users WHERE LOWER(TRIM(username)) IN (%s, %s) AND user_id < 0 LIMIT 1",
+                    (clean_handle, clean_handle.lstrip("@")),
+                ).fetchone()
+                if pre_row:
+                    pre_dict = dict(pre_row)
+                    old_placeholder_id = pre_dict["user_id"]
+                    self.conn.execute(
+                        "UPDATE users SET user_id = %s, username = %s, approved = 1, terms_accepted = 1 WHERE user_id = %s",
+                        (user_id, f"@{username.lstrip('@')}", old_placeholder_id),
+                    )
+                    self.conn.commit()
+                    return self.get_user(user_id)
+            except Exception:
+                pass
 
         if not ALLOW_AUTO_REGISTER:
             return None
@@ -51,12 +88,14 @@ class UserManager:
         self.conn.execute(
             """
             INSERT INTO users (user_id, role, lang, timeframe, risk, terms_accepted, trial_start, created_at, approved, username)
-            VALUES (%s, 'tester', 'en', '1h', 'medium', 0, %s, %s, 0, %s)
+            VALUES (%s, 'tester', 'fr', '1h', 'medium', 0, %s, %s, 0, %s)
+            ON CONFLICT (user_id) DO NOTHING
             """,
-            (user_id, now, now, None)
+            (user_id, now, now, f"@{username.lstrip('@')}" if username else None)
         )
         self.conn.commit()
-        return self.get_user(user_id)
+        row2 = self.conn.execute("SELECT * FROM users WHERE user_id = %s", (user_id,)).fetchone()
+        return dict(row2) if row2 else None
 
     # =========================================================
     # ACCESS
@@ -80,20 +119,27 @@ class UserManager:
             ).fetchone()
             if row:
                 db_user = (row["username"] or "").lstrip("@").lower()
-                if db_user == target_handle or row["role"] == "admin":
+                role_norm = str(row["role"] or "").strip().lower()
+                if db_user == target_handle or role_norm == "admin":
                     return True
         except Exception:
             pass
         return False
 
-    def resolve_user_target(self, target: str) -> Optional[int]:
-        """Résout un identifiant utilisateur (numérique ou @username) en user_id int."""
+    def resolve_user_target(self, target: str, create_if_username: bool = False) -> Optional[int]:
+        """Résout un identifiant utilisateur (numérique, @username ou mémo de paiement) en user_id int."""
         if not target:
             return None
         cleaned = target.strip()
         if cleaned.lstrip("-").isdigit():
             return int(cleaned)
+        # Vérifier si c'est un mémo de paiement Binance
+        memo_uid = self.find_user_by_memo(cleaned.upper())
+        if memo_uid is not None:
+            return int(memo_uid)
         handle = cleaned.lstrip("@").lower()
+        if not handle:
+            return None
         try:
             rows = self.conn.execute(
                 "SELECT user_id, username FROM users WHERE username IS NOT NULL"
@@ -104,20 +150,44 @@ class UserManager:
                     return int(r["user_id"])
         except Exception:
             pass
+        if create_if_username:
+            # Crée une entrée pré-approuvée avec un ID négatif déterministe qui sera rattachée au vrai user_id dès son 1er message
+            import hashlib
+            placeholder_id = -int(hashlib.md5(handle.encode()).hexdigest()[:12], 16)
+            now = time.time()
+            try:
+                self.conn.execute(
+                    """
+                    INSERT INTO users (user_id, role, lang, timeframe, risk, terms_accepted, trial_start, created_at, approved, username)
+                    VALUES (%s, 'tester', 'fr', '1h', 'medium', 1, %s, %s, 1, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET approved = 1, terms_accepted = 1, username = EXCLUDED.username
+                    """,
+                    (placeholder_id, now, now, f"@{handle}"),
+                )
+                self.conn.commit()
+                return placeholder_id
+            except Exception:
+                pass
         return None
 
-    def is_approved(self, user_id: int) -> bool:
-        if self.is_admin(user_id):
+    def is_approved(self, user_id: int, username: Optional[str] = None) -> bool:
+        if self.is_admin(user_id, username):
             return True
-        if self.is_premium(user_id):
+        user = self.get_user(user_id, username=username)
+        if not user:
+            return False
+        role_norm = str(user.get("role") or "").strip().lower()
+        if role_norm in ("pro", "paid", "premium", "vip", "admin"):
             return True
-        user = self.get_user(user_id)
-        return bool(user and user.get("approved", 0))
+        app_val = user.get("approved", 0)
+        if isinstance(app_val, str):
+            return app_val.strip().lower() in ("1", "true", "yes", "approved", "pro")
+        return bool(app_val)
 
-    def can_access_bot(self, user_id: int) -> bool:
+    def can_access_bot(self, user_id: int, username: Optional[str] = None) -> bool:
         if ACCESS_MODE == "open":
             return True
-        return self.is_approved(user_id)
+        return self.is_approved(user_id, username=username)
 
     # =========================================================
     # ROLE
@@ -127,7 +197,43 @@ class UserManager:
         user = self.get_user(user_id)
         if not user:
             return "blocked"
-        return user.get("role", "tester")
+        raw_role = str(user.get("role") or "tester").strip().lower()
+        if raw_role in ("pro", "paid", "premium", "vip"):
+            return "pro"
+        if raw_role == "admin":
+            return "admin"
+        return raw_role or "tester"
+
+    def set_role(self, user_id: int, role: str) -> bool:
+        """Définit le rôle d'un utilisateur et déverrouille automatiquement son accès (approved=1, terms_accepted=1)."""
+        norm_role = str(role or "tester").strip().lower()
+        if norm_role in ("pro", "paid", "premium", "vip"):
+            norm_role = "pro"
+        now = time.time()
+        self.get_user(user_id)
+        self.conn.execute(
+            """
+            UPDATE users
+            SET role = %s,
+                approved = 1,
+                terms_accepted = 1,
+                trial_start = COALESCE(NULLIF(trial_start, 0), %s)
+            WHERE user_id = %s
+            """,
+            (norm_role, now, user_id),
+        )
+        self.conn.commit()
+        return True
+
+    def get_premium_users(self) -> List[int]:
+        """Retourne la liste des user_id ayant un accès PRO ou Admin."""
+        try:
+            rows = self.conn.execute(
+                "SELECT user_id FROM users WHERE LOWER(TRIM(COALESCE(role, ''))) IN ('pro', 'paid', 'premium', 'vip', 'admin') AND user_id > 0"
+            ).fetchall()
+            return [int(r["user_id"]) for r in rows]
+        except Exception:
+            return []
 
     def is_premium(self, user_id: int) -> bool:
         if self.is_admin(user_id):
@@ -142,10 +248,14 @@ class UserManager:
         user = self.get_user(user_id)
         if not user:
             return False
+        if self.is_premium(user_id):
+            return True
         start = user.get("trial_start", 0)
         try:
-            start = float(start)
+            start = float(start or 0)
         except (TypeError, ValueError):
+            start = 0.0
+        if start <= 0:
             start = time.time()
             self.conn.execute(
                 "UPDATE users SET trial_start = %s WHERE user_id = %s",
@@ -155,15 +265,21 @@ class UserManager:
         return time.time() < start + (TRIAL_DAYS * 86400)
 
     def can_use_premium_feature(self, user_id: int) -> bool:
-        return self.is_premium(user_id) or self.is_trial_valid(user_id)
+        return self.is_premium(user_id) or self.is_approved(user_id) or self.is_trial_valid(user_id)
 
     # =========================================================
     # TERMS
     # =========================================================
 
-    def has_accepted_terms(self, user_id: int) -> bool:
-        user = self.get_user(user_id)
-        return bool(user and user.get("terms_accepted", 0))
+    def has_accepted_terms(self, user_id: int, username: Optional[str] = None) -> bool:
+        user = self.get_user(user_id, username=username)
+        if not user:
+            return False
+        if self.is_approved(user_id, username=username):
+            if not user.get("terms_accepted", 0):
+                self.accept_terms(user_id)
+            return True
+        return bool(user.get("terms_accepted", 0))
 
     def update_username(self, user_id: int, username: str):
         if username:
@@ -204,23 +320,19 @@ class UserManager:
         self.conn.commit()
 
     def check_limit(self, user_id: int) -> bool:
-        if self.is_admin(user_id) or self.is_premium(user_id):
-            return True
-        if self.get_role(user_id) == "tester" and self.is_approved(user_id) and self.is_trial_valid(user_id):
+        if self.is_admin(user_id) or self.is_premium(user_id) or self.is_approved(user_id):
             return True
         used = self._get_usage(user_id)
         return used < FREE_DAILY_REQUESTS
 
     def increment_usage(self, user_id: int):
-        if self.is_admin(user_id) or self.is_premium(user_id):
+        if self.is_admin(user_id) or self.is_premium(user_id) or self.is_approved(user_id):
             return
         used = self._get_usage(user_id)
         self._set_usage(user_id, used + 1)
 
     def get_remaining_requests(self, user_id: int) -> int:
-        if self.is_premium(user_id) or self.is_admin(user_id):
-            return -1
-        if self.get_role(user_id) == "tester" and self.is_approved(user_id) and self.is_trial_valid(user_id):
+        if self.is_premium(user_id) or self.is_admin(user_id) or self.is_approved(user_id):
             return -1
         used = self._get_usage(user_id)
         return max(0, FREE_DAILY_REQUESTS - used)
@@ -369,7 +481,7 @@ class UserManager:
     # =========================================================
 
     def approve_user(self, user_id: int, role: str = "tester") -> bool:
-        """Approuve un utilisateur, valide les CGU (terms_accepted=1) et réinitialise sa période d'essai."""
+        """Approuve un utilisateur, valide les CGU (terms_accepted=1) et réinitialise sa période d'essai sans rétrograder un compte PRO."""
         now = time.time()
         user = self.get_user(user_id)
         if not user:
@@ -384,9 +496,15 @@ class UserManager:
             )
             self.conn.commit()
             return True
+        current_role = str(user.get("role") or "").strip().lower()
+        effective_role = role
+        if current_role in ("pro", "paid", "premium", "vip") and role == "tester":
+            effective_role = "pro"
+        elif current_role == "admin":
+            effective_role = "admin"
         self.conn.execute(
             "UPDATE users SET role = %s, approved = 1, terms_accepted = 1, trial_start = %s WHERE user_id = %s",
-            (role, now, user_id)
+            (effective_role, now, user_id)
         )
         self.conn.commit()
         return True
