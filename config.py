@@ -81,7 +81,7 @@ DEFAULT_ANALYSIS_INTERVAL_MINUTES = 5    # 5 ou 10 minutes
 DEFAULT_LEVERAGE = 1                     # Levier x1 par défaut
 DEFAULT_RISK_PER_TRADE = 1.0             # 1.0% du capital risqué par trade
 DEFAULT_MAX_POSITIONS = 2                # Max 2 positions simultanées pour concentrer sur les meilleurs setups
-DEFAULT_MIN_SCORE = 78                   # Score Teddy minimum relevé à 78/100 (haute conviction uniquement)
+DEFAULT_MIN_SCORE = 68                   # Score Teddy minimum calibré par walk-forward (68/100 + MTF + ADX rising)
 DEFAULT_MAX_DAILY_LOSS = 3.0             # Perte journalière max réduite à 3% pour couper les mauvaises journées tôt
 DEFAULT_TRAILING_STOP = True             # Trailing stop activé par défaut pour sécuriser les gains
 DEFAULT_DCA_ENABLED = False
@@ -128,15 +128,15 @@ HISTORY_CACHE_TTL = 300
 DEFAULT_TIMEFRAME = "1h"
 HISTORY_PERIOD = "6mo"
 ATR_PERIOD = 14
-ATR_MULTIPLIER_SL = 1.25                 # Stop-Loss plus serré (1.25x ATR) pour réduire la taille des pertes
-RR_RATIO_TARGET = 2.6                    # Objectif Risk/Reward relevé à 2.6R pour que chaque gain couvre >2.5 pertes
+ATR_MULTIPLIER_SL = 1.60                 # Stop-Loss calibré (1.60x ATR) pour éviter les mèches intra-bougie tout en maîtrisant le risque
+RR_RATIO_TARGET = 2.10                   # Objectif Risk/Reward calibré à 2.10R par validation walk-forward hors échantillon
 
 SYMBOL_CONFIGS = {
-    "BTCUSD":  {"adx_min": 26, "rsi_buy_low": 52, "rsi_buy_high": 65, "rsi_sell_low": 35, "rsi_sell_high": 48, "atr_max_pct": 4.2, "min_cond": 5},
-    "ETHUSD":  {"adx_min": 25, "rsi_buy_low": 52, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 48, "atr_max_pct": 4.8, "min_cond": 5},
-    "BTCUSDT": {"adx_min": 26, "rsi_buy_low": 52, "rsi_buy_high": 65, "rsi_sell_low": 35, "rsi_sell_high": 48, "atr_max_pct": 4.2, "min_cond": 5},
-    "ETHUSDT": {"adx_min": 25, "rsi_buy_low": 52, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 48, "atr_max_pct": 4.8, "min_cond": 5},
-    "XAUUSD":  {"adx_min": 25, "rsi_buy_low": 52, "rsi_buy_high": 68, "rsi_sell_low": 32, "rsi_sell_high": 48, "atr_max_pct": 2.5, "min_cond": 5},
+    "BTCUSD":  {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.5, "min_cond": 4},
+    "ETHUSD":  {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.8, "min_cond": 4},
+    "BTCUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.5, "min_cond": 4},
+    "ETHUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.8, "min_cond": 4},
+    "XAUUSD":  {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 2.5, "min_cond": 4},
 }
 
 DATA_DIR = "data"

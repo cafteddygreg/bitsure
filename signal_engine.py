@@ -6,18 +6,20 @@ from config import (
     ATR_MULTIPLIER_SL, RR_RATIO_TARGET, SYMBOL_CONFIGS
 )
 from i18n import get_text
+from decision_journal import SignalDecisionRecord, decision_journal, STRATEGY_VERSION
 
 
 # =========================================================
-# CONFIG STYLES DE TRADING (Optimisés : SL maîtrisé, TP ambitieux >= 2.1R à 2.5R)
+# CONFIG STYLES DE TRADING (Calibrés par validation walk-forward Train 60% / Test OOS 40% :
+# SL >= 1.35x-1.90x ATR pour éviter le bruit intra-bougie, RR cible = 2.10R)
 # =========================================================
 
 STYLE_CONFIG = {
-    "scalping":     {"sl_mult": 0.65, "tp_mult": 1.50},  # RR ~ 2.31
-    "scalping_15m": {"sl_mult": 0.78, "tp_mult": 1.85},  # RR ~ 2.37
-    "day":          {"sl_mult": 1.05, "tp_mult": 2.50},  # RR ~ 2.38
-    "swing":        {"sl_mult": 1.50, "tp_mult": 3.75},  # RR = 2.50
-    "position":     {"sl_mult": 2.10, "tp_mult": 5.50},  # RR ~ 2.62
+    "scalping":     {"sl_mult": 1.35, "tp_mult": 2.84, "min_sl_pct": 0.0045},  # RR ~ 2.10
+    "scalping_15m": {"sl_mult": 1.45, "tp_mult": 3.05, "min_sl_pct": 0.0055},  # RR ~ 2.10
+    "day":          {"sl_mult": 1.60, "tp_mult": 3.36, "min_sl_pct": 0.0060},  # RR = 2.10
+    "swing":        {"sl_mult": 1.90, "tp_mult": 3.99, "min_sl_pct": 0.0060},  # RR = 2.10
+    "position":     {"sl_mult": 2.20, "tp_mult": 4.62, "min_sl_pct": 0.0080},  # RR = 2.10
 }
 
 # =========================================================
@@ -32,13 +34,13 @@ SCORE_WEIGHTS = {
     "rsi":   10,
 }
 
-# Seuils de rejet stricts par style (Gagner plus / Perdre moins)
+# Seuils de rejet unifiés par style (sans double addition de delta contradictoire)
 REJECTION_THRESHOLDS = {
-    "scalping":     {"min_score": 75, "min_adx": 22, "min_rr": 1.85},
-    "scalping_15m": {"min_score": 75, "min_adx": 22, "min_rr": 1.95},
-    "day":          {"min_score": 74, "min_adx": 21, "min_rr": 2.00},
-    "swing":        {"min_score": 72, "min_adx": 20, "min_rr": 2.15},
-    "position":     {"min_score": 70, "min_adx": 20, "min_rr": 2.30},
+    "scalping":     {"min_score": 66, "min_adx": 22, "min_rr": 1.95},
+    "scalping_15m": {"min_score": 66, "min_adx": 22, "min_rr": 2.00},
+    "day":          {"min_score": 65, "min_adx": 22, "min_rr": 2.00},
+    "swing":        {"min_score": 64, "min_adx": 22, "min_rr": 2.05},
+    "position":     {"min_score": 64, "min_adx": 20, "min_rr": 2.10},
 }
 
 # Buffer S/R par style (multiplicateur de l'ATR)
@@ -53,38 +55,43 @@ BUFFER_MULTIPLIERS = {
 ASSET_CLASS_RULES = {
     "crypto": {
         "symbols": {"BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT"},
-        "sl_factor": 1.05,
-        "tp_factor": 1.25,
-        "adx_delta": 2,
-        "min_score_delta": 4,  # Score minimal relevé pour filtrer tout faux signal crypto
-        "min_rr_delta": 0.15,  # RR minimum plus exigeant pour que les gains surpassent largement les pertes
-        "pullback_pct": 0.025, # Entrée au plus près de la SMA20 (max 2.5% d'écart) pour éviter d'acheter le sommet
-        "overextension_factor": 1.00,
+        "sl_factor": 1.00,
+        "tp_factor": 1.00,
+        "adx_delta": 0,
+        "min_score_delta": 0,
+        "min_rr_delta": 0.0,
+        "pullback_pct": 0.025, # Entrée au plus près de la SMA20 (max 2.5% d'écart)
+        "overextension_factor": 0.90, # Max 1.8x ATR sur 5 bougies en day
         "sr_buffer_factor": 1.15,
-        "atr_min_pct": 0.0035, # Évite les marchés plats sans momentum
+        "atr_min_pct": 0.0025, # Évite les marchés plats où les frais mangent le RR
+        "min_sl_pct": 0.0060,  # Distance SL minimale (0.60% du prix) validée hors échantillon
     },
     "metal": {
         "symbols": {"XAUUSD"},
-        "sl_factor": 1.05,
-        "tp_factor": 1.25,
-        "adx_delta": 2,
-        "min_score_delta": 4,
-        "min_rr_delta": 0.15,
+        "sl_factor": 1.00,
+        "tp_factor": 1.00,
+        "adx_delta": 0,
+        "min_score_delta": 0,
+        "min_rr_delta": 0.0,
         "pullback_pct": 0.025,
-        "overextension_factor": 1.00,
+        "overextension_factor": 0.90,
         "sr_buffer_factor": 1.20,
+        "atr_min_pct": 0.0015,
+        "min_sl_pct": 0.0050,
     },
 }
 
 DEFAULT_ASSET_RULE = {
     "sl_factor": 1.00,
     "tp_factor": 1.00,
-    "adx_delta": 1,
-    "min_score_delta": 1,
+    "adx_delta": 0,
+    "min_score_delta": 0,
     "min_rr_delta": 0.0,
-    "pullback_pct": 0.035,
-    "overextension_factor": 1.00,
+    "pullback_pct": 0.025,
+    "overextension_factor": 0.90,
     "sr_buffer_factor": 1.00,
+    "atr_min_pct": 0.0020,
+    "min_sl_pct": 0.0055,
 }
 
 TREND_BULLISH = "HAUSSIER"
@@ -325,6 +332,7 @@ class SignalEngine:
 
         adx_series, plus_di_series, minus_di_series = adx(high, low, close, 14)
         adx_val  = float(adx_series.iloc[-1])
+        adx_prev_val = float(adx_series.iloc[-2]) if len(adx_series) >= 2 and not pd.isna(adx_series.iloc[-2]) else adx_val
         plus_di_val  = float(plus_di_series.iloc[-1])
         minus_di_val = float(minus_di_series.iloc[-1])
         atr_val  = float(atr(high, low, close, 14).iloc[-1])
@@ -380,6 +388,8 @@ class SignalEngine:
             "price":      last_price,
             "rsi":        rsi_val,
             "adx":        adx_val,
+            "adx_prev":   adx_prev_val,
+            "adx_rising": adx_val > adx_prev_val,
             "sma20":      sma20,
             "sma50":      sma50,
             "atr":        atr_val,
@@ -396,6 +406,7 @@ class SignalEngine:
             "resistance": resistance,
             "timeframe_trends": timeframe_trends,
             "tf_alignment": tf_alignment,
+            "last_timestamp": str(df.index[-1]) if isinstance(df.index, pd.DatetimeIndex) and len(df.index) > 0 else "",
         }
 
         return SignalEngine._finalize(
@@ -704,97 +715,191 @@ class SignalEngine:
         elif sell_count >= min_cond:
             signal = "SELL"
 
-        # Signal WAIT direct (pas assez de conditions)
-        if signal == "WAIT":
-            return SignalEngine._wait(
+        plus_di_val = indicators.get("plus_di", 0.0)
+        minus_di_val = indicators.get("minus_di", 0.0)
+        adx_prev_val = indicators.get("adx_prev", adx_val)
+        adx_rising = bool(indicators.get("adx_rising", True))
+        timeframe_trends = indicators.get("timeframe_trends", {})
+        sma20 = indicators.get("sma20") or 0.0
+        sma50 = indicators.get("sma50") or 0.0
+        vol_val = indicators.get("volume")
+        vol_ma20 = indicators.get("volume_ma20")
+        vol_ratio = (vol_val / vol_ma20) if (vol_val and vol_ma20 and vol_ma20 > 0) else 1.0
+        pb_dist_pct = abs(price - sma20) / sma20 * 100.0 if sma20 > 0 else 0.0
+        close_vals = indicators.get("close_vals", [])
+        ext_atr = abs(price - close_vals[-6]) / atr_val if (len(close_vals) >= 6 and atr_val > 0) else 0.0
+
+        cond_names = ["trend_sma", "rsi_window", "macd_momentum", "adx_min", "atr_max"]
+        active_conds = buy_cond if buy_count >= sell_cond else sell_cond
+        raw_cond_map = {
+            cond_names[idx]: bool(active_conds[idx])
+            for idx in range(min(len(cond_names), len(active_conds)))
+        }
+        filters_passed = []
+        filters_failed = []
+
+        def _log_and_wait(stage: str, reason_str: str, sc_init: float = 0.0, sc_final: int = 0, sc_thresh: int = 0, sl_v=None, tp_v=None, rr_v=None, sc_det=None):
+            rec = SignalDecisionRecord(
+                symbol=symbol or "UNKNOWN",
+                direction=signal,
+                timestamp=indicators.get("last_timestamp") or "",
+                timeframe=style or "day",
+                style=style or "day",
+                strategy_version=STRATEGY_VERSION,
+                raw_conditions=raw_cond_map,
+                conditions_passed_count=max(buy_count, sell_count),
+                min_cond_required=min_cond,
+                score_initial=sc_init,
+                score_components=sc_det or {},
+                score_modifiers={"multi_timeframe": (tf_alignment or {}).get("modifier", 0)},
+                score_final=sc_final,
+                score_threshold=sc_thresh,
+                rsi=rsi_val,
+                macd=indicators.get("macd", 0.0) or 0.0,
+                macd_signal=indicators.get("macd_signal", 0.0) or 0.0,
+                macd_hist=indicators.get("macd_hist", 0.0) or 0.0,
+                adx=adx_val,
+                adx_prev=adx_prev_val,
+                adx_rising=adx_rising,
+                plus_di=plus_di_val or 0.0,
+                minus_di=minus_di_val or 0.0,
+                atr=atr_val,
+                atr_pct=(atr_val / price * 100.0) if price > 0 else 0.0,
+                price=price,
+                sma20=sma20,
+                sma50=sma50,
+                trend=TREND_BULLISH if trend_bull else (TREND_BEARISH if trend_bear else TREND_NEUTRAL),
+                support=support,
+                resistance=resistance,
+                volume_ratio=vol_ratio,
+                pullback_pct=pb_dist_pct,
+                extension_atr=ext_atr,
+                mtf_alignment=timeframe_trends,
+                sl=sl_v,
+                tp=tp_v,
+                sl_distance_pct=(abs(price - sl_v) / price * 100.0) if (sl_v and price > 0) else 0.0,
+                rr_ratio=rr_v or 0.0,
+                filters_passed=list(filters_passed),
+                filters_failed=list(filters_failed),
+                rejection_stage=stage,
+                rejection_reason=reason_str,
+                final_decision="WAIT" if stage == "CONDITIONS" else "REJECT",
+            )
+            decision_journal.record(rec, persist=False)
+            out = SignalEngine._wait(
                 lang,
-                reason_key="signal_wait_neutral",
+                reason_key=reason_str,
                 indicators=indicators,
-                score_detail={},
+                score_detail=sc_det or {},
+                score=sc_final,
                 asset_class=asset_class,
                 params_used=params_used,
             )
+            out["decision_record"] = rec.to_dict()
+            return out
+
+        # Signal WAIT direct (pas assez de conditions)
+        if signal == "WAIT":
+            filters_failed.append("min_cond")
+            return _log_and_wait("CONDITIONS", "signal_wait_neutral")
+        filters_passed.append("min_cond")
+
+        # ── 1.2 Confirmation directionnelle obligatoire (Trend SMA + DI) ──────
+        if signal == "BUY" and not (trend_bull and plus_di_val > minus_di_val):
+            filters_failed.append("directional_trend_di")
+            return _log_and_wait("SIGNAL_FILTER", "Trend/DI mismatch for BUY (requires Close > SMA20 > SMA50 and +DI > -DI)")
+        if signal == "SELL" and not (trend_bear and minus_di_val > plus_di_val):
+            filters_failed.append("directional_trend_di")
+            return _log_and_wait("SIGNAL_FILTER", "Trend/DI mismatch for SELL (requires Close < SMA20 < SMA50 and -DI > +DI)")
+        filters_passed.append("directional_trend_di")
+
+        # ── 1.3 Filtre ADX croissant (évite l'essoufflement de tendance) ──────
+        if not adx_rising and adx_val < 35.0:
+            filters_failed.append("adx_rising")
+            return _log_and_wait("SIGNAL_FILTER", f"Trend momentum exhausting — ADX {adx_val:.1f} <= prev {adx_prev_val:.1f}")
+        filters_passed.append("adx_rising")
 
         # ── 1.5 Filtre régime ATR minimal (marché trop plat) ────────────────────
         atr_min_pct = asset_rules.get("atr_min_pct", 0.0)
         if atr_min_pct > 0 and price > 0:
             atr_ratio_now = atr_val / price
             if atr_ratio_now < atr_min_pct:
-                return SignalEngine._wait(
-                    lang,
+                filters_failed.append("atr_min_pct")
+                return _log_and_wait(
+                    "SIGNAL_FILTER",
                     f"Market too flat — ATR {atr_ratio_now*100:.3f}% < {atr_min_pct*100:.3f}% min",
-                    indicators, asset_class=asset_class, params_used=params_used
                 )
+        filters_passed.append("atr_min_pct")
 
-        # ── 1.6 Filtre MTF hard : blocage si 4h ET 1d sont contra-tendance ────
-        # Plus fort que le modifier de score : bloque le signal quand
-        # au moins 2 timeframes supérieurs confirment la direction opposée.
-        timeframe_trends = indicators.get("timeframe_trends", {})
+        # ── 1.6 Filtre MTF : alignement 4h obligatoire & non-opposition 1d ────
         tf_4h = timeframe_trends.get("4h", TREND_NEUTRAL)
         tf_1d = timeframe_trends.get("1d", TREND_NEUTRAL)
         if signal == "BUY":
-            contra_count = sum(1 for t in [tf_4h, tf_1d] if t == TREND_BEARISH)
-            if contra_count >= 2:
-                return SignalEngine._wait(
-                    lang,
-                    f"MTF hard block — 4h={tf_4h} 1d={tf_1d} contra BUY",
-                    indicators, asset_class=asset_class, params_used=params_used
-                )
+            if tf_4h == TREND_BEARISH or tf_1d == TREND_BEARISH:
+                filters_failed.append("mtf_contra_block")
+                return _log_and_wait("SIGNAL_FILTER", f"MTF hard block — 4h={tf_4h} 1d={tf_1d} contra BUY")
+            if tf_4h != TREND_NEUTRAL and tf_4h != TREND_BULLISH:
+                filters_failed.append("mtf_4h_alignment")
+                return _log_and_wait("SIGNAL_FILTER", f"MTF 4h not aligned ({tf_4h}) for BUY")
         elif signal == "SELL":
-            contra_count = sum(1 for t in [tf_4h, tf_1d] if t == TREND_BULLISH)
-            if contra_count >= 2:
-                return SignalEngine._wait(
-                    lang,
-                    f"MTF hard block — 4h={tf_4h} 1d={tf_1d} contra SELL",
-                    indicators, asset_class=asset_class, params_used=params_used
-                )
+            if tf_4h == TREND_BULLISH or tf_1d == TREND_BULLISH:
+                filters_failed.append("mtf_contra_block")
+                return _log_and_wait("SIGNAL_FILTER", f"MTF hard block — 4h={tf_4h} 1d={tf_1d} contra SELL")
+            if tf_4h != TREND_NEUTRAL and tf_4h != TREND_BEARISH:
+                filters_failed.append("mtf_4h_alignment")
+                return _log_and_wait("SIGNAL_FILTER", f"MTF 4h not aligned ({tf_4h}) for SELL")
+        filters_passed.append("mtf_alignment")
 
         # ── 1.7 Filtre de sur-extension (anti-chasing) ─────────────────────
         if signal in ("BUY", "SELL") and atr_val > 0:
-            close_vals = indicators.get("close_vals", [])
-            if len(close_vals) < 6:
-                pass  # pas assez de données, on skip le filtre
-            elif len(close_vals) >= 6:
+            if len(close_vals) >= 6:
                 close_5_ago = close_vals[-6]
                 recent_move = (price - close_5_ago) / atr_val
-                thresholds = {"scalping": 1.4, "scalping_15m": 1.6, "day": 2.0, "swing": 2.5, "position": 3.0}
-                limit = thresholds.get(style, 2.0) * asset_rules.get("overextension_factor", 1.0)
+                thresholds_ext = {"scalping": 1.4, "scalping_15m": 1.6, "day": 2.0, "swing": 2.4, "position": 3.0}
+                limit = thresholds_ext.get(style, 2.0) * asset_rules.get("overextension_factor", 0.90)
                 if signal == "BUY" and recent_move > limit:
-                    return SignalEngine._wait(
-                        lang,
-                        f"Entry too late — price already moved up {recent_move:.1f}xATR (max {limit})",
-                        indicators,
-                        asset_class=asset_class,
-                        params_used=params_used,
+                    filters_failed.append("anti_chasing_extension")
+                    return _log_and_wait(
+                        "SIGNAL_FILTER",
+                        f"Entry too late — price already moved up {recent_move:.1f}xATR (max {limit:.2f})",
                     )
                 if signal == "SELL" and recent_move < -limit:
-                    return SignalEngine._wait(
-                        lang,
-                        f"Entry too late — price already moved down {abs(recent_move):.1f}xATR (max {limit})",
-                        indicators,
-                        asset_class=asset_class,
-                        params_used=params_used,
+                    filters_failed.append("anti_chasing_extension")
+                    return _log_and_wait(
+                        "SIGNAL_FILTER",
+                        f"Entry too late — price already moved down {abs(recent_move):.1f}xATR (max {limit:.2f})",
                     )
+        filters_passed.append("anti_chasing_extension")
 
-        # ── 1.6 Pullback filter souple (par symbole) ──────────────────────
-        sma20 = indicators.get("sma20")
+        # ── 1.8 Pullback filter souple (par symbole) ──────────────────────
         bb_upper = indicators.get("bb_upper")
         bb_lower = indicators.get("bb_lower")
         if signal in ("BUY", "SELL") and sma20 is not None and sma20 > 0:
-            pullback_pct = asset_rules.get("pullback_pct", 0.035)
+            pullback_pct = asset_rules.get("pullback_pct", 0.025)
             if signal == "BUY":
-                if price > sma20 * (1 + pullback_pct):
-                    return SignalEngine._wait(lang, "Price extended, wait for pullback", indicators, asset_class=asset_class, params_used=params_used)
-                if bb_upper is not None and price > bb_upper:
-                    return SignalEngine._wait(lang, "Price extended, wait for pullback", indicators, asset_class=asset_class, params_used=params_used)
+                if price > sma20 * (1 + pullback_pct) or (bb_upper is not None and price > bb_upper):
+                    filters_failed.append("pullback_sma20_bb")
+                    return _log_and_wait("SIGNAL_FILTER", "Price extended, wait for pullback")
             if signal == "SELL":
-                if price < sma20 * (1 - pullback_pct):
-                    return SignalEngine._wait(lang, "Price extended, wait for pullback", indicators, asset_class=asset_class, params_used=params_used)
-                if bb_lower is not None and price < bb_lower:
-                    return SignalEngine._wait(lang, "Price extended, wait for pullback", indicators, asset_class=asset_class, params_used=params_used)
+                if price < sma20 * (1 - pullback_pct) or (bb_lower is not None and price < bb_lower):
+                    filters_failed.append("pullback_sma20_bb")
+                    return _log_and_wait("SIGNAL_FILTER", "Price extended, wait for pullback")
+        filters_passed.append("pullback_sma20_bb")
 
         # ── 2. Calcul SL/TP selon le style ────────────────────────────────────
         sl, tp1 = SignalEngine._compute_sl_tp(signal, price, atr_val, style, asset_rules)
+
+        # ── 2.5 Filtre distance SL minimale (anti-bruit / anti-frais) ─────────
+        style_min_sl = STYLE_CONFIG.get(style or "day", {}).get("min_sl_pct", 0.0055)
+        min_sl_pct = max(style_min_sl, asset_rules.get("min_sl_pct", 0.0050))
+        if price > 0 and abs(price - sl) / price < min_sl_pct:
+            filters_failed.append("min_sl_distance")
+            return _log_and_wait(
+                "SIGNAL_FILTER",
+                f"Stop-Loss too tight ({abs(price - sl)/price*100:.2f}% < {min_sl_pct*100:.2f}% min) — high fee/noise risk",
+                sl_v=sl, tp_v=tp1,
+            )
+        filters_passed.append("min_sl_distance")
 
         # ── 3. Ajustement S/R ─────────────────────────────────────────────────
         if atr_val > 0:
@@ -813,7 +918,7 @@ class SignalEngine:
             rr = round(abs(tp1 - price) / abs(price - sl), 2)
 
         # ── 5. Score pondéré ─────────────────────────────────────────────────
-        total_score, score_detail = SignalEngine._compute_score(
+        initial_score, score_detail = SignalEngine._compute_score(
             signal=signal,
             price=price,
             tp1=tp1,
@@ -828,7 +933,7 @@ class SignalEngine:
             indicators=indicators,
         )
         total_score, tf_alignment = SignalEngine._apply_tf_alignment_score(
-            total_score,
+            initial_score,
             signal,
             tf_alignment or indicators.get("tf_alignment", {}),
         )
@@ -845,37 +950,34 @@ class SignalEngine:
         params_used.update(thresholds)
 
         if adx_val < thresholds["min_adx"]:
-            return SignalEngine._wait(
-                lang,
-                reason_key=f"Trend too weak — ADX {adx_val:.1f} < {thresholds['min_adx']}",
-                indicators=indicators,
-                score_detail=score_detail,
-                score=total_score,
-                asset_class=asset_class,
-                params_used=params_used,
+            filters_failed.append("min_adx")
+            return _log_and_wait(
+                "SCORE_FILTER",
+                f"Trend too weak — ADX {adx_val:.1f} < {thresholds['min_adx']}",
+                sc_init=initial_score, sc_final=total_score, sc_thresh=thresholds["min_score"],
+                sl_v=sl, tp_v=tp, rr_v=rr, sc_det=score_detail,
             )
+        filters_passed.append("min_adx")
 
         if rr is not None and rr < thresholds["min_rr"]:
-            return SignalEngine._wait(
-                lang,
-                reason_key=f"RR too low — {rr:.2f} < {thresholds['min_rr']} required for {style or 'default'} style",
-                indicators=indicators,
-                score_detail=score_detail,
-                score=total_score,
-                asset_class=asset_class,
-                params_used=params_used,
+            filters_failed.append("min_rr")
+            return _log_and_wait(
+                "SCORE_FILTER",
+                f"RR too low — {rr:.2f} < {thresholds['min_rr']} required for {style or 'default'} style",
+                sc_init=initial_score, sc_final=total_score, sc_thresh=thresholds["min_score"],
+                sl_v=sl, tp_v=tp, rr_v=rr, sc_det=score_detail,
             )
+        filters_passed.append("min_rr")
 
         if total_score < thresholds["min_score"]:
-            return SignalEngine._wait(
-                lang,
-                reason_key=f"Score too low — {total_score}/100 < {thresholds['min_score']} required",
-                indicators=indicators,
-                score_detail=score_detail,
-                score=total_score,
-                asset_class=asset_class,
-                params_used=params_used,
+            filters_failed.append("min_score")
+            return _log_and_wait(
+                "SCORE_FILTER",
+                f"Score too low — {total_score}/100 < {thresholds['min_score']} required",
+                sc_init=initial_score, sc_final=total_score, sc_thresh=thresholds["min_score"],
+                sl_v=sl, tp_v=tp, rr_v=rr, sc_det=score_detail,
             )
+        filters_passed.append("min_score")
 
         # ── 7. Textes i18n ────────────────────────────────────────────────────
         reason   = get_text(lang, f"signal_{signal.lower()}_reason")
@@ -885,6 +987,54 @@ class SignalEngine:
             "confidence_medium" if total_score >= 55 else
             "confidence_low"
         )
+
+        rec = SignalDecisionRecord(
+            symbol=symbol or "UNKNOWN",
+            direction=signal,
+            timestamp=indicators.get("last_timestamp") or "",
+            timeframe=style or "day",
+            style=style or "day",
+            strategy_version=STRATEGY_VERSION,
+            raw_conditions=raw_cond_map,
+            conditions_passed_count=max(buy_count, sell_count),
+            min_cond_required=min_cond,
+            score_initial=initial_score,
+            score_components=score_detail,
+            score_modifiers={"multi_timeframe": tf_alignment.get("modifier", 0)},
+            score_final=SignalEngine._clamp_score(total_score),
+            score_threshold=thresholds["min_score"],
+            rsi=rsi_val,
+            macd=indicators.get("macd", 0.0) or 0.0,
+            macd_signal=indicators.get("macd_signal", 0.0) or 0.0,
+            macd_hist=indicators.get("macd_hist", 0.0) or 0.0,
+            adx=adx_val,
+            adx_prev=adx_prev_val,
+            adx_rising=adx_rising,
+            plus_di=plus_di_val or 0.0,
+            minus_di=minus_di_val or 0.0,
+            atr=atr_val,
+            atr_pct=(atr_val / price * 100.0) if price > 0 else 0.0,
+            price=price,
+            sma20=sma20,
+            sma50=sma50,
+            trend=TREND_BULLISH if trend_bull else (TREND_BEARISH if trend_bear else TREND_NEUTRAL),
+            support=support,
+            resistance=resistance,
+            volume_ratio=vol_ratio,
+            pullback_pct=pb_dist_pct,
+            extension_atr=ext_atr,
+            mtf_alignment=timeframe_trends,
+            sl=sl,
+            tp=tp,
+            sl_distance_pct=(abs(price - sl) / price * 100.0) if (sl and price > 0) else 0.0,
+            rr_ratio=rr or 0.0,
+            filters_passed=filters_passed,
+            filters_failed=filters_failed,
+            rejection_stage=None,
+            rejection_reason=None,
+            final_decision=signal,
+        )
+        decision_journal.record(rec, persist=True)
 
         # ── 8. Retour final ───────────────────────────────────────────────────
         return {
@@ -905,4 +1055,5 @@ class SignalEngine:
             "rejection_reason": None,
             "asset_class": asset_class,
             "params_used": params_used,
+            "decision_record": rec.to_dict(),
         }

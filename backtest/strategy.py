@@ -11,32 +11,31 @@ if __package__:
 else:
     from indicators import adx, atr, bollinger_bands, macd, rsi, sma, support_resistance
 
-ATR_MULTIPLIER_SL = 1.5
-RR_RATIO_TARGET = 2.0
+ATR_MULTIPLIER_SL = 1.60
+RR_RATIO_TARGET = 2.10
 
 SYMBOL_CONFIGS = {
-    # Configs internes normalisées (fallback)
-    "BTCUSD": {"adx_min": 23, "rsi_buy_low": 48, "rsi_buy_high": 68, "rsi_sell_low": 32, "rsi_sell_high": 52, "atr_max_pct": 5.5, "min_cond": 4},
-    "ETHUSD": {"adx_min": 22, "rsi_buy_low": 47, "rsi_buy_high": 70, "rsi_sell_low": 30, "rsi_sell_high": 56, "atr_max_pct": 6.0, "min_cond": 4},
-    # Configs directes USDT (non normalisées) — calibration affinée
-    "BTCUSDT": {"adx_min": 25, "rsi_buy_low": 50, "rsi_buy_high": 65, "rsi_sell_low": 35, "rsi_sell_high": 50, "atr_max_pct": 4.5, "min_cond": 4},
-    "ETHUSDT": {"adx_min": 24, "rsi_buy_low": 50, "rsi_buy_high": 67, "rsi_sell_low": 33, "rsi_sell_high": 50, "atr_max_pct": 5.0, "min_cond": 4},
+    "BTCUSD": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.5, "min_cond": 4},
+    "ETHUSD": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.8, "min_cond": 4},
+    "BTCUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.5, "min_cond": 4},
+    "ETHUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.8, "min_cond": 4},
+    "XAUUSD": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 2.5, "min_cond": 4},
 }
 
 STYLE_CONFIG = {
-    "scalping": {"sl_mult": 0.70, "tp_mult": 1.25},
-    "scalping_15m": {"sl_mult": 0.85, "tp_mult": 1.55},
-    "day": {"sl_mult": 1.15, "tp_mult": 2.2},
-    "swing": {"sl_mult": 1.75, "tp_mult": 3.5},
-    "position": {"sl_mult": 2.5, "tp_mult": 5.0},
+    "scalping": {"sl_mult": 1.35, "tp_mult": 2.84, "min_sl_pct": 0.0045},
+    "scalping_15m": {"sl_mult": 1.45, "tp_mult": 3.05, "min_sl_pct": 0.0055},
+    "day": {"sl_mult": 1.60, "tp_mult": 3.36, "min_sl_pct": 0.0060},
+    "swing": {"sl_mult": 1.90, "tp_mult": 3.99, "min_sl_pct": 0.0060},
+    "position": {"sl_mult": 2.20, "tp_mult": 4.62, "min_sl_pct": 0.0080},
 }
 
 REJECTION_THRESHOLDS = {
-    "scalping": {"min_score": 62, "min_adx": 18, "min_rr": 1.1},
-    "scalping_15m": {"min_score": 63, "min_adx": 18, "min_rr": 1.2},
-    "day": {"min_score": 60, "min_adx": 15, "min_rr": 1.3},
-    "swing": {"min_score": 58, "min_adx": 15, "min_rr": 1.5},
-    "position": {"min_score": 55, "min_adx": 15, "min_rr": 1.8},
+    "scalping": {"min_score": 66, "min_adx": 22, "min_rr": 1.95},
+    "scalping_15m": {"min_score": 66, "min_adx": 22, "min_rr": 2.00},
+    "day": {"min_score": 65, "min_adx": 22, "min_rr": 2.00},
+    "swing": {"min_score": 64, "min_adx": 22, "min_rr": 2.05},
+    "position": {"min_score": 64, "min_adx": 20, "min_rr": 2.10},
 }
 
 BUFFER_MULTIPLIERS = {"scalping": 0.10, "scalping_15m": 0.12, "day": 0.15, "swing": 0.20, "position": 0.25}
@@ -44,24 +43,27 @@ BUFFER_MULTIPLIERS = {"scalping": 0.10, "scalping_15m": 0.12, "day": 0.15, "swin
 DEFAULT_ASSET_RULE = {
     "sl_factor": 1.00,
     "tp_factor": 1.00,
-    "adx_delta": 1,
-    "min_score_delta": 1,
+    "adx_delta": 0,
+    "min_score_delta": 0,
     "min_rr_delta": 0.0,
-    "pullback_pct": 0.035,
-    "overextension_factor": 1.00,
+    "pullback_pct": 0.025,
+    "overextension_factor": 0.90,
     "sr_buffer_factor": 1.00,
+    "atr_min_pct": 0.0020,
+    "min_sl_pct": 0.0055,
 }
 
 CRYPTO_RULE = {
-    "sl_factor": 1.25,
-    "tp_factor": 1.15,
+    "sl_factor": 1.00,
+    "tp_factor": 1.00,
     "adx_delta": 0,
-    "min_score_delta": 3,  # Score minimal plus élevé pour crypto (plus de bruit)
-    "min_rr_delta": 0.10,  # RR minimum légèrement plus élevé pour crypto
-    "pullback_pct": 0.04,  # Réduit de 7% → 4% pour éviter entrées trop tardives
-    "overextension_factor": 1.20,
+    "min_score_delta": 0,
+    "min_rr_delta": 0.0,
+    "pullback_pct": 0.025,
+    "overextension_factor": 0.90,
     "sr_buffer_factor": 1.15,
-    "atr_min_pct": 0.003,  # ATR minimum 0.3% du prix (marché actif)
+    "atr_min_pct": 0.0025,
+    "min_sl_pct": 0.0060,
 }
 
 TREND_BULLISH = "HAUSSIER"
@@ -206,6 +208,7 @@ class BacktestSignalEngine:
         macd_val, macd_sig_val, hist_val = float(macd_line.iloc[-1]), float(macd_sig.iloc[-1]), float(hist.iloc[-1])
         adx_series, plus_di_series, minus_di_series = adx(high, low, close, 14)
         adx_val = float(adx_series.iloc[-1])
+        adx_prev_val = float(adx_series.iloc[-2]) if len(adx_series) >= 2 and not pd.isna(adx_series.iloc[-2]) else adx_val
         plus_di_val, minus_di_val = float(plus_di_series.iloc[-1]), float(minus_di_series.iloc[-1])
         atr_val = float(atr(high, low, close, 14).iloc[-1])
         upper_bb, _, lower_bb = bollinger_bands(close, 20, 2)
@@ -225,6 +228,7 @@ class BacktestSignalEngine:
 
         indicators = {
             "close_vals": list(close.iloc[-6:]), "price": last_price, "rsi": rsi_val, "adx": adx_val,
+            "adx_prev": adx_prev_val, "adx_rising": adx_val > adx_prev_val,
             "sma20": sma20, "sma50": sma50, "atr": atr_val, "plus_di": plus_di_val, "minus_di": minus_di_val,
             "macd": macd_val, "macd_signal": macd_sig_val, "macd_hist": hist_val, "volume": volume_val,
             "volume_ma20": volume_ma20_val, "bb_upper": float(upper_bb.iloc[-1]), "bb_lower": float(lower_bb.iloc[-1]),
@@ -322,6 +326,19 @@ class BacktestSignalEngine:
         if signal == "WAIT":
             return BacktestSignalEngine._wait("signal_wait_neutral", indicators, params_used=params_used)
 
+        plus_di_val = indicators.get("plus_di", 0.0)
+        minus_di_val = indicators.get("minus_di", 0.0)
+        adx_prev_val = indicators.get("adx_prev", adx_val)
+        adx_rising = bool(indicators.get("adx_rising", True))
+
+        if signal == "BUY" and not (trend_bull and plus_di_val > minus_di_val):
+            return BacktestSignalEngine._wait("Trend/DI mismatch for BUY", indicators, params_used=params_used)
+        if signal == "SELL" and not (trend_bear and minus_di_val > plus_di_val):
+            return BacktestSignalEngine._wait("Trend/DI mismatch for SELL", indicators, params_used=params_used)
+
+        if not adx_rising and adx_val < 35.0:
+            return BacktestSignalEngine._wait(f"Trend momentum exhausting — ADX {adx_val:.1f} <= prev {adx_prev_val:.1f}", indicators, params_used=params_used)
+
         # ── Filtre régime ATR minimal (marché trop plat) ──────────────────────
         atr_min_pct = asset_rules.get("atr_min_pct", 0.0)
         if atr_min_pct > 0 and price > 0:
@@ -332,42 +349,41 @@ class BacktestSignalEngine:
                     indicators, params_used=params_used
                 )
 
-        # ── Filtre MTF hard : blocage si 4h ET 1d sont contra-tendance ────────
-        # Ce filtre est plus fort que le modifier de score : il bloque le signal
-        # quand au moins 2 timeframes supérieurs confirment la direction opposée.
+        # ── Filtre MTF : alignement 4h obligatoire & non-opposition 1d ────────
         timeframe_trends = indicators.get("timeframe_trends", {})
         tf_4h = timeframe_trends.get("4h", TREND_NEUTRAL)
         tf_1d = timeframe_trends.get("1d", TREND_NEUTRAL)
         if signal == "BUY":
-            contra_count = sum(1 for t in [tf_4h, tf_1d] if t == TREND_BEARISH)
-            if contra_count >= 2:
-                return BacktestSignalEngine._wait(
-                    f"MTF hard block — 4h={tf_4h} 1d={tf_1d} contra BUY",
-                    indicators, params_used=params_used
-                )
+            if tf_4h == TREND_BEARISH or tf_1d == TREND_BEARISH:
+                return BacktestSignalEngine._wait(f"MTF hard block — 4h={tf_4h} 1d={tf_1d} contra BUY", indicators, params_used=params_used)
+            if tf_4h != TREND_NEUTRAL and tf_4h != TREND_BULLISH:
+                return BacktestSignalEngine._wait(f"MTF 4h not aligned ({tf_4h}) for BUY", indicators, params_used=params_used)
         elif signal == "SELL":
-            contra_count = sum(1 for t in [tf_4h, tf_1d] if t == TREND_BULLISH)
-            if contra_count >= 2:
-                return BacktestSignalEngine._wait(
-                    f"MTF hard block — 4h={tf_4h} 1d={tf_1d} contra SELL",
-                    indicators, params_used=params_used
-                )
+            if tf_4h == TREND_BULLISH or tf_1d == TREND_BULLISH:
+                return BacktestSignalEngine._wait(f"MTF hard block — 4h={tf_4h} 1d={tf_1d} contra SELL", indicators, params_used=params_used)
+            if tf_4h != TREND_NEUTRAL and tf_4h != TREND_BEARISH:
+                return BacktestSignalEngine._wait(f"MTF 4h not aligned ({tf_4h}) for SELL", indicators, params_used=params_used)
+
         if atr_val > 0 and len(indicators.get("close_vals", [])) >= 6:
             recent_move = (price - indicators["close_vals"][-6]) / atr_val
-            limit = {"scalping": 1.4, "scalping_15m": 1.6, "day": 2.0, "swing": 2.5, "position": 3.0}.get(style, 2.0) * asset_rules.get("overextension_factor", 1.0)
+            limit = {"scalping": 1.4, "scalping_15m": 1.6, "day": 2.0, "swing": 2.4, "position": 3.0}.get(style, 2.0) * asset_rules.get("overextension_factor", 0.90)
             if signal == "BUY" and recent_move > limit:
-                return BacktestSignalEngine._wait(f"Entry too late — price already moved up {recent_move:.1f}xATR (max {limit})", indicators, params_used=params_used)
+                return BacktestSignalEngine._wait(f"Entry too late — price already moved up {recent_move:.1f}xATR (max {limit:.2f})", indicators, params_used=params_used)
             if signal == "SELL" and recent_move < -limit:
-                return BacktestSignalEngine._wait(f"Entry too late — price already moved down {abs(recent_move):.1f}xATR (max {limit})", indicators, params_used=params_used)
+                return BacktestSignalEngine._wait(f"Entry too late — price already moved down {abs(recent_move):.1f}xATR (max {limit:.2f})", indicators, params_used=params_used)
         sma20_val, bb_upper, bb_lower = indicators.get("sma20"), indicators.get("bb_upper"), indicators.get("bb_lower")
         if sma20_val is not None and sma20_val > 0:
-            pullback_pct = asset_rules.get("pullback_pct", 0.035)
+            pullback_pct = asset_rules.get("pullback_pct", 0.025)
             if signal == "BUY" and (price > sma20_val * (1 + pullback_pct) or (bb_upper is not None and price > bb_upper)):
                 return BacktestSignalEngine._wait("Price extended, wait for pullback", indicators, params_used=params_used)
             if signal == "SELL" and (price < sma20_val * (1 - pullback_pct) or (bb_lower is not None and price < bb_lower)):
                 return BacktestSignalEngine._wait("Price extended, wait for pullback", indicators, params_used=params_used)
         thresholds = REJECTION_THRESHOLDS.get(style or "day", REJECTION_THRESHOLDS["day"])
         sl, tp1 = BacktestSignalEngine._compute_sl_tp(signal, price, atr_val, style, asset_rules)
+        style_min_sl = STYLE_CONFIG.get(style or "day", {}).get("min_sl_pct", 0.0055)
+        min_sl_pct = max(style_min_sl, asset_rules.get("min_sl_pct", 0.0050))
+        if price > 0 and abs(price - sl) / price < min_sl_pct:
+            return BacktestSignalEngine._wait(f"Stop-Loss too tight ({abs(price - sl)/price*100:.2f}% < {min_sl_pct*100:.2f}% min)", indicators, params_used=params_used)
         if atr_val > 0:
             sl, tp1 = BacktestSignalEngine._adjust_sl_tp_with_sr(signal, price, sl, tp1, atr_val, support, resistance, style, thresholds["min_rr"], asset_rules)
         rr = round(abs(tp1 - price) / abs(price - sl), 2) if abs(price - sl) > 0 else None
