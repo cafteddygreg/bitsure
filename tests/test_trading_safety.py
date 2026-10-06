@@ -11,6 +11,7 @@ os.environ.setdefault("ADMIN_ID", "1")
 # Unit tests avoid requiring local PostgreSQL/psycopg2 dependencies.
 database_stub = types.ModuleType("database")
 database_stub.get_connection = lambda: (_ for _ in ()).throw(RuntimeError("DB not available in unit test"))
+database_stub.get_db = lambda: None
 sys.modules.setdefault("database", database_stub)
 logger_stub = types.ModuleType("trading_logger")
 class _Logger:
