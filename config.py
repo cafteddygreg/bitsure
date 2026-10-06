@@ -62,7 +62,16 @@ DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET = os.environ.get(
     "SgEARZTSzEMOZ1VHorVQrY9JX0RHisGi4GUDApkJl1LEgd6JOvqLLkC4JOK7iFVd",
 )
 
-# Paramètres par défaut d'un profil de trading
+# Symboles officiellement documentés dans le bot (aucun autre symbole ne doit apparaître ni être analysé en analyse périodique)
+DOCUMENTED_SYMBOLS = (
+    "BTCUSDT",
+    "ETHUSDT",
+    "BTCUSD",
+    "ETHUSD",
+    "XAUUSD",
+)
+
+# Paramètres par défaut d'un profil de trading (optimisés haute sélectivité : gagner plus, perdre moins)
 AUTO_TRADE_DEFAULT = False
 PERIODIC_ANALYSIS_DEFAULT = False
 DEFAULT_MARKET_TYPE = "futures"          # "futures" ou "spot"
@@ -71,10 +80,10 @@ DEFAULT_ANALYSIS_TIMEFRAME = "1h"        # "5m", "15m", "1h", "4h", "1d"
 DEFAULT_ANALYSIS_INTERVAL_MINUTES = 5    # 5 ou 10 minutes
 DEFAULT_LEVERAGE = 1                     # Levier x1 par défaut
 DEFAULT_RISK_PER_TRADE = 1.0             # 1.0% du capital risqué par trade
-DEFAULT_MAX_POSITIONS = 3                # Max 3 positions simultanées
-DEFAULT_MIN_SCORE = 70                   # Score Teddy minimum (sur 100)
-DEFAULT_MAX_DAILY_LOSS = 5.0             # Perte journalière max (5%)
-DEFAULT_TRAILING_STOP = False
+DEFAULT_MAX_POSITIONS = 2                # Max 2 positions simultanées pour concentrer sur les meilleurs setups
+DEFAULT_MIN_SCORE = 78                   # Score Teddy minimum relevé à 78/100 (haute conviction uniquement)
+DEFAULT_MAX_DAILY_LOSS = 3.0             # Perte journalière max réduite à 3% pour couper les mauvaises journées tôt
+DEFAULT_TRAILING_STOP = True             # Trailing stop activé par défaut pour sécuriser les gains
 DEFAULT_DCA_ENABLED = False
 
 # Plafonds de risque et délais de sécurité
@@ -119,15 +128,15 @@ HISTORY_CACHE_TTL = 300
 DEFAULT_TIMEFRAME = "1h"
 HISTORY_PERIOD = "6mo"
 ATR_PERIOD = 14
-ATR_MULTIPLIER_SL = 1.5
-RR_RATIO_TARGET = 2.0
+ATR_MULTIPLIER_SL = 1.25                 # Stop-Loss plus serré (1.25x ATR) pour réduire la taille des pertes
+RR_RATIO_TARGET = 2.6                    # Objectif Risk/Reward relevé à 2.6R pour que chaque gain couvre >2.5 pertes
 
 SYMBOL_CONFIGS = {
-    "BTCUSD": {"adx_min": 23, "rsi_buy_low": 48, "rsi_buy_high": 68, "rsi_sell_low": 32, "rsi_sell_high": 52, "atr_max_pct": 5.5, "min_cond": 4},
-    "ETHUSD": {"adx_min": 22, "rsi_buy_low": 47, "rsi_buy_high": 70, "rsi_sell_low": 30, "rsi_sell_high": 56, "atr_max_pct": 6.0, "min_cond": 4},
-    "BTCUSDT": {"adx_min": 25, "rsi_buy_low": 50, "rsi_buy_high": 65, "rsi_sell_low": 35, "rsi_sell_high": 50, "atr_max_pct": 4.5, "min_cond": 4},
-    "ETHUSDT": {"adx_min": 24, "rsi_buy_low": 50, "rsi_buy_high": 67, "rsi_sell_low": 33, "rsi_sell_high": 50, "atr_max_pct": 5.0, "min_cond": 4},
-    "XAUUSD": {"adx_min": 24, "rsi_buy_low": 48, "rsi_buy_high": 74, "rsi_sell_low": 26, "rsi_sell_high": 52, "atr_max_pct": 3.0, "min_cond": 4},
+    "BTCUSD":  {"adx_min": 26, "rsi_buy_low": 52, "rsi_buy_high": 65, "rsi_sell_low": 35, "rsi_sell_high": 48, "atr_max_pct": 4.2, "min_cond": 5},
+    "ETHUSD":  {"adx_min": 25, "rsi_buy_low": 52, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 48, "atr_max_pct": 4.8, "min_cond": 5},
+    "BTCUSDT": {"adx_min": 26, "rsi_buy_low": 52, "rsi_buy_high": 65, "rsi_sell_low": 35, "rsi_sell_high": 48, "atr_max_pct": 4.2, "min_cond": 5},
+    "ETHUSDT": {"adx_min": 25, "rsi_buy_low": 52, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 48, "atr_max_pct": 4.8, "min_cond": 5},
+    "XAUUSD":  {"adx_min": 25, "rsi_buy_low": 52, "rsi_buy_high": 68, "rsi_sell_low": 32, "rsi_sell_high": 48, "atr_max_pct": 2.5, "min_cond": 5},
 }
 
 DATA_DIR = "data"

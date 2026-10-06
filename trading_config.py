@@ -55,6 +55,7 @@ from config import (
     DEFAULT_BINANCE_TESTNET_API_SECRET,
     DEFAULT_BINANCE_SPOT_TESTNET_API_KEY,
     DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET,
+    DOCUMENTED_SYMBOLS,
 )
 
 DEFAULTS = {
@@ -78,12 +79,13 @@ DEFAULTS = {
 def _coerce_symbol_list(value) -> List[str]:
     if not value:
         return []
+    raw_items: List[str] = []
     if isinstance(value, list):
-        return [str(item).upper() for item in value if str(item).strip()]
-    if isinstance(value, str):
+        raw_items = [str(item).strip().upper() for item in value if str(item).strip()]
+    elif isinstance(value, str):
         raw = value.replace(";", ",").split(",")
-        return [item.strip().upper() for item in raw if item.strip()]
-    return []
+        raw_items = [item.strip().upper() for item in raw if item.strip()]
+    return [s for s in raw_items if s in DOCUMENTED_SYMBOLS]
 
 
 @dataclass
@@ -120,7 +122,7 @@ class TradingConfig:
 
 
 def ensure_config_row(user_id: int) -> None:
-    """Crée une ligne de config par défaut si elle n'existe pas encore."""
+    """Crée une ligne de config par défaut si elle n'existe pas encore et met à niveau les seuils par défaut."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -142,6 +144,17 @@ def ensure_config_row(user_id: int) -> None:
                     DEFAULTS["analysis_timeframe"],
                     DEFAULTS["analysis_interval_minutes"], DEFAULTS["testnet"],
                 ),
+            )
+            # Mise à niveau automatique des anciens seuils (< 78 -> 78) pour gagner plus et perdre moins
+            cur.execute(
+                """
+                UPDATE trading_config
+                SET min_score = %s,
+                    max_daily_loss = LEAST(COALESCE(max_daily_loss, 3.0), 3.0),
+                    trailing_stop = TRUE
+                WHERE user_id = %s AND min_score < %s
+                """,
+                (DEFAULTS["min_score"], user_id, DEFAULTS["min_score"]),
             )
         conn.commit()
     finally:

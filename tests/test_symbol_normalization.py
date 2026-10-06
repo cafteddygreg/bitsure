@@ -54,35 +54,36 @@ from utils import normalize_symbol, is_valid_symbol
 
 VALID_CASES = [
     # Slash separator
-    ("BTC/USD",   "BTCUSDT"),
-    ("ETH/USD",   "ETHUSDT"),
-    ("SOL/USD",   "SOLUSDT"),
-    ("BNB/USD",   "BNBUSDT"),
+    ("BTC/USD",   "BTCUSD"),
+    ("ETH/USD",   "ETHUSD"),
+    ("BTC/USDT",  "BTCUSDT"),
+    ("ETH/USDT",  "ETHUSDT"),
     # Space separator
-    ("BTC USD",   "BTCUSDT"),
-    ("ETH USD",   "ETHUSDT"),
+    ("BTC USD",   "BTCUSD"),
+    ("ETH USD",   "ETHUSD"),
     # Dash separator
-    ("BTC-USD",   "BTCUSDT"),
-    ("ETH-USD",   "ETHUSDT"),
+    ("BTC-USD",   "BTCUSD"),
+    ("ETH-USD",   "ETHUSD"),
     # Lowercase
-    ("btcusd",    "BTCUSDT"),
-    ("eth/usd",   "ETHUSDT"),
+    ("btcusd",    "BTCUSD"),
+    ("eth/usd",   "ETHUSD"),
     ("btc/usdt",  "BTCUSDT"),
     # Already canonical — no-op
     ("BTCUSDT",   "BTCUSDT"),
     ("ETHUSDT",   "ETHUSDT"),
-    ("BNBUSDT",   "BNBUSDT"),
+    ("BTCUSD",    "BTCUSD"),
+    ("ETHUSD",    "ETHUSD"),
     # Dash between base and USDT
     ("ETH-USDT",  "ETHUSDT"),
     ("BTC-USDT",  "BTCUSDT"),
     # Perp / Futures suffixes
     ("btcusdt_perp", "BTCUSDT"),
-    # Precious metals / Binance pairs
+    # Precious metals / documented pairs
     ("XAU/USD",   "XAUUSD"),
     ("xauusd",    "XAUUSD"),
     # Leading / trailing whitespace
     ("  BTCUSDT  ", "BTCUSDT"),
-    ("  btc/usd  ", "BTCUSDT"),
+    ("  btc/usd  ", "BTCUSD"),
 ]
 
 
@@ -92,7 +93,7 @@ def test_normalize_symbol_valid(raw, expected):
 
 
 # ---------------------------------------------------------------------------
-# Invalid inputs must raise ValueError
+# Invalid or undocumented inputs must raise ValueError
 # ---------------------------------------------------------------------------
 
 INVALID_CASES = [
@@ -101,6 +102,10 @@ INVALID_CASES = [
     "!!!",
     "@#$%",
     "VERYLONGSYMBOLNAME123456",   # >20 chars after strip
+    "SOLUSDT",                    # undocumented symbol
+    "PAXGUSDT",                   # undocumented symbol
+    "MOCAUSDT",                   # undocumented symbol
+    "NOTUSDT",                    # undocumented symbol
 ]
 
 
@@ -122,6 +127,8 @@ IS_VALID_CASES = [
     ("XAU/USD",  True),
     ("",         False),
     ("!!!",      False),
+    ("SOLUSDT",  False),
+    ("PAXGUSDT", False),
     ("VERYLONGSYMBOLNAME123456", False),
 ]
 
@@ -132,11 +139,11 @@ def test_is_valid_symbol(raw, expected):
 
 
 # ---------------------------------------------------------------------------
-# normalize_symbol is idempotent on already-canonical symbols
+# normalize_symbol is idempotent on already-canonical documented symbols
 # ---------------------------------------------------------------------------
 
 IDEMPOTENT_CASES = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT",
+    "BTCUSDT", "ETHUSDT",
     "BTCUSD", "ETHUSD", "XAUUSD",
 ]
 

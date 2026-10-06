@@ -230,11 +230,20 @@ class UserManager:
     # =========================================================
 
     def get_watchlist(self, user_id: int) -> List[str]:
+        from config import DOCUMENTED_SYMBOLS
+        try:
+            self.conn.execute(
+                "DELETE FROM watchlist WHERE user_id = %s AND UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD')",
+                (user_id,),
+            )
+            self.conn.commit()
+        except Exception:
+            pass
         rows = self.conn.execute(
             "SELECT symbol FROM watchlist WHERE user_id = %s",
             (user_id,)
         ).fetchall()
-        return [row["symbol"] for row in rows]
+        return [row["symbol"] for row in rows if str(row["symbol"]).upper() in DOCUMENTED_SYMBOLS]
 
     def get_watchlist_limit(self, user_id: int) -> int:
         role = self.get_role(user_id)
@@ -245,6 +254,10 @@ class UserManager:
         return MAX_WATCHLIST_SYMBOLS_FREE
 
     def add_to_watchlist(self, user_id: int, symbol: str):
+        from config import DOCUMENTED_SYMBOLS
+        sym = symbol.upper().strip()
+        if sym not in DOCUMENTED_SYMBOLS:
+            return False, 0
         current = self.get_watchlist(user_id)
         limit = self.get_watchlist_limit(user_id)
         if len(current) >= limit:
@@ -252,7 +265,7 @@ class UserManager:
         try:
             self.conn.execute(
                 "INSERT INTO watchlist (user_id, symbol) VALUES (%s, %s) ON CONFLICT (user_id, symbol) DO NOTHING",
-                (user_id, symbol.upper())
+                (user_id, sym)
             )
             self.conn.commit()
         except Exception:

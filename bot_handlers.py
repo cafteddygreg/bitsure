@@ -460,7 +460,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await symbol_selection(update, context, "removewatch")
 
         elif cmd == "scan":
-            wl = user_mgr.get_watchlist(user_id)
+            from config import DOCUMENTED_SYMBOLS
+            wl = [s for s in user_mgr.get_watchlist(user_id) if str(s).upper() in DOCUMENTED_SYMBOLS]
             kb = [[InlineKeyboardButton(get_text(lang, "back"), callback_data="menu_watchlist"), InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")]]
             if not wl:
                 await safe_edit(get_text(lang, "watchlist_scan_empty"), kb)
@@ -2009,7 +2010,7 @@ async def send_weekly_reports(bot):
         f"✅ Gagnés : *{wins}* ({win_rate:.0f}%)\n"
         f"📉 Meilleur : `{best:+.1f}%`\n"
         f"💸 Pire : `{worst:+.1f}%`\n"
-        "💡 Conseil : attends un score > 70"
+        "💡 Conseil : privilégie les signaux haute conviction (Score ≥ 78, RR ≥ 2.3)"
     )
     for uid in pro_users:
         try:

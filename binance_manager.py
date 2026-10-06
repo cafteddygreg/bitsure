@@ -221,26 +221,30 @@ def _public_client() -> Client:
 
 _SPOT_PUBLIC_BASES = (
     "https://data-api.binance.vision",
-    "https://api.binance.com",
     "https://api1.binance.com",
     "https://api2.binance.com",
     "https://api3.binance.com",
     "https://testnet.binance.vision",
+    "https://api.binance.com",
 )
 
 _FUTURES_PUBLIC_BASES = (
-    "https://fapi.binance.com",
     "https://testnet.binancefuture.com",
+    "https://fapi.binance.com",
 )
 
 
 def get_tradable_symbols(market_type: MarketType = "futures", quote_asset: str = "USDT") -> list[str]:
     """Return active Binance symbols for the requested market and quote asset."""
-    bases = _FUTURES_PUBLIC_BASES if market_type == "futures" else _SPOT_PUBLIC_BASES
-    path = "/fapi/v1/exchangeInfo" if market_type == "futures" else "/api/v3/exchangeInfo"
+    bases = (
+        (*_FUTURES_PUBLIC_BASES, "https://data-api.binance.vision")
+        if market_type == "futures"
+        else _SPOT_PUBLIC_BASES
+    )
 
     for base in bases:
         try:
+            path = "/api/v3/exchangeInfo" if "binance.vision" in base or market_type == "spot" else "/fapi/v1/exchangeInfo"
             r = requests.get(f"{base}{path}", timeout=6)
             if r.status_code == 200:
                 info = r.json()
@@ -281,8 +285,9 @@ def get_klines_dataframe(
 
     if market_type == "futures":
         endpoints = [
+            "https://data-api.binance.vision/api/v3/klines",
             *(f"{b}/fapi/v1/klines" for b in _FUTURES_PUBLIC_BASES),
-            *(f"{b}/api/v3/klines" for b in _SPOT_PUBLIC_BASES),
+            *(f"{b}/api/v3/klines" for b in _SPOT_PUBLIC_BASES if "binance.vision" not in b),
         ]
     else:
         endpoints = [

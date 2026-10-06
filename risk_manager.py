@@ -304,10 +304,12 @@ def check_can_open_position(
     config: TradingConfig,
     symbol: str,
     direction: Optional[str] = None,
+    *,
+    require_auto_trade: bool = True,
 ) -> RiskCheckResult:
     """Vérifie toutes les règles de gestion du risque avant d'ouvrir une nouvelle position."""
     try:
-        assert_trading_allowed(config)
+        assert_trading_allowed(config, require_auto_trade=require_auto_trade)
     except SafetyError as e:
         return RiskCheckResult(False, str(e))
 

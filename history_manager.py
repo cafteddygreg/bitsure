@@ -91,6 +91,10 @@ class HistoryManager:
         direction = (direction or "").upper()
         now = time.time()
         symbol = symbol.upper()
+        from config import DOCUMENTED_SYMBOLS
+        if symbol not in DOCUMENTED_SYMBOLS:
+            logger.info("Signal hors symboles documentés ignoré: %s", symbol)
+            return None
         duplicate_window = 900
         duplicate = self.conn.execute(
             """
@@ -172,10 +176,27 @@ class HistoryManager:
     # =========================================================
 
     def get_recent_signals(self, limit: int = 10, user_id: int = None) -> List[Dict]:
+        try:
+            self.conn.execute(
+                "DELETE FROM signals WHERE UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD')"
+            )
+            self.conn.commit()
+        except Exception:
+            pass
         if user_id:
-            rows = self.conn.execute("SELECT * FROM signals WHERE user_id = %s AND direction <> %s ORDER BY created_at DESC LIMIT %s", (user_id, "WAIT", limit)).fetchall()
+            rows = self.conn.execute(
+                "SELECT * FROM signals WHERE user_id = %s AND direction <> %s "
+                "AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD') "
+                "ORDER BY created_at DESC LIMIT %s",
+                (user_id, "WAIT", limit),
+            ).fetchall()
         else:
-            rows = self.conn.execute("SELECT * FROM signals WHERE direction <> %s ORDER BY created_at DESC LIMIT %s", ("WAIT", limit)).fetchall()
+            rows = self.conn.execute(
+                "SELECT * FROM signals WHERE direction <> %s "
+                "AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD') "
+                "ORDER BY created_at DESC LIMIT %s",
+                ("WAIT", limit),
+            ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
 

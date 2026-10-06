@@ -72,17 +72,21 @@ def normalize_symbol(symbol: str) -> str:
     # Étape 4 — Suppression des suffixes PERP / SWAP / FUTURES collés
     s = _PERP_SUFFIX_RE.sub("", s)
 
-    # Étape 5 — Conversion du suffixe *USD en *USDT pour les actifs crypto connus
-    if s.endswith("USD") and not s.endswith("USDT"):
-        base = s[:-3]  # tout ce qui précède "USD"
-        if base in _USD_TO_USDT_BASES:
-            s = base + "USDT"
+    # Étape 5 — Conversion du suffixe *USD en *USDT uniquement pour les alias non-documentés
+    # Les symboles officiellement documentés (BTCUSD, ETHUSD, XAUUSD, BTCUSDT, ETHUSDT) restent intacts
+    if s in ("BTC", "XBT"):
+        s = "BTCUSDT"
+    elif s == "ETH":
+        s = "ETHUSDT"
+    elif s == "XAU":
+        s = "XAUUSD"
 
-    # Étape 6 — Vérification finale : uniquement des caractères alphanumériques (2 à 20 car.)
-    if not re.match(r"^[A-Z0-9]{2,20}$", s):
+    # Étape 6 — Vérification stricte : seuls les symboles documentés dans le bot sont autorisés
+    from config import DOCUMENTED_SYMBOLS
+    if s not in DOCUMENTED_SYMBOLS:
         raise ValueError(
-            f"Symbole invalide : « {symbol} ». "
-            "Exemples valides : BTCUSDT, ETHUSDT, BTCUSD, XAUUSD."
+            f"Symbole non supporté : « {symbol} ». "
+            f"Seuls les symboles documentés dans le bot sont autorisés : {', '.join(DOCUMENTED_SYMBOLS)}."
         )
 
     return s

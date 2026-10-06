@@ -22,6 +22,10 @@ logger_stub.get_trading_logger = lambda name: _Logger()
 logger_stub.log_trade_opened = lambda *a, **k: None
 logger_stub.log_trade_closed = lambda *a, **k: None
 logger_stub.log_error = lambda *a, **k: None
+logger_stub.LOG_PATH = "trading.log"
+class _RedactFilter:
+    def filter(self, record): return True
+logger_stub.RedactSensitiveFilter = _RedactFilter
 sys.modules.setdefault("trading_logger", logger_stub)
 
 telegram_stub = types.ModuleType("telegram")
@@ -83,6 +87,7 @@ class _RiskResult:
 risk_manager_stub.check_can_open_position = lambda *a, **k: _RiskResult(True)
 risk_manager_stub.calculate_position_size = lambda *a, **k: 0.1
 risk_manager_stub.record_trade_loss = lambda *a, **k: 0.0
+risk_manager_stub.EPSILON = 1e-8
 sys.modules.setdefault("risk_manager", risk_manager_stub)
 
 history_manager_stub = types.ModuleType("history_manager")
@@ -262,6 +267,54 @@ class TradingSafetyTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "open")
         self.assertEqual(called_context[0], ORDER_CONTEXT_MANUAL_AUTHENTICATED)
+
+    def test_periodic_analysis_signal_not_rejected_when_autotrade_disabled(self):
+        import execution_engine
+        from execution_engine import validate_signal_for_execution
+
+        signal = {
+            "id": "sig-btcusdt-84",
+            "user_id": 42,
+            "symbol": "BTCUSDT",
+            "direction": "BUY",
+            "entry_price": 65000.0,
+            "sl": 64200.0,
+            "tp": 67200.0,
+            "score": 84,
+            "status": "pending",
+            "signal_type": "market_scan",
+            "created_at": time.time(),
+        }
+        config = TradingConfig(
+            user_id=42,
+            auto_trade=False,
+            periodic_analysis_enabled=True,
+            min_score=78,
+        )
+        with patch.object(execution_engine, "check_can_open_position", return_value=_RiskResult(True)) as chk_mock:
+            allowed, reason = validate_signal_for_execution(42, signal, config)
+            self.assertTrue(allowed, f"Signal should be allowed in periodic analysis mode: {reason}")
+            chk_mock.assert_called_once_with(42, config, "BTCUSDT", "BUY", require_auto_trade=False)
+
+        # Un symbole non documenté (ex: PAXGUSDT, MOCAUSDT) doit toujours être rejeté
+        undoc_signal = dict(signal, symbol="PAXGUSDT")
+        allowed_undoc, reason_undoc = validate_signal_for_execution(42, undoc_signal, config)
+        self.assertFalse(allowed_undoc)
+        self.assertIn("non documenté", reason_undoc)
+
+    def test_resolve_requested_scan_symbols_never_adds_unrequested_altcoins(self):
+        from execution_engine import _resolve_requested_scan_symbols
+
+        # 1. Avec Whitelist : uniquement les symboles documentés de la Whitelist
+        cfg_wl = TradingConfig(user_id=42, symbol_whitelist=["BTCUSDT", "MOCAUSDT", "PAXGUSDT"])
+        syms, src = _resolve_requested_scan_symbols(42, cfg_wl)
+        self.assertEqual(syms, ["BTCUSDT"])
+        self.assertEqual(src, "Whitelist (Symboles documentés)")
+
+        # 2. Sans Whitelist ni Watchlist : uniquement les 5 symboles documentés du bot
+        cfg_default = TradingConfig(user_id=42, symbol_whitelist=[])
+        syms_def, _ = _resolve_requested_scan_symbols(42, cfg_default)
+        self.assertEqual(syms_def, ["BTCUSDT", "ETHUSDT", "BTCUSD", "ETHUSD", "XAUUSD"])
 
 
 if __name__ == "__main__":

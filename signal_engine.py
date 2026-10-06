@@ -9,15 +9,15 @@ from i18n import get_text
 
 
 # =========================================================
-# CONFIG STYLES DE TRADING
+# CONFIG STYLES DE TRADING (Optimisés : SL maîtrisé, TP ambitieux >= 2.1R à 2.5R)
 # =========================================================
 
 STYLE_CONFIG = {
-    "scalping": {"sl_mult": 0.70, "tp_mult": 1.25},
-    "scalping_15m": {"sl_mult": 0.85, "tp_mult": 1.55},
-    "day":      {"sl_mult": 1.15, "tp_mult": 2.2},
-    "swing":    {"sl_mult": 1.75, "tp_mult": 3.5},
-    "position": {"sl_mult": 2.5,  "tp_mult": 5.0},
+    "scalping":     {"sl_mult": 0.65, "tp_mult": 1.50},  # RR ~ 2.31
+    "scalping_15m": {"sl_mult": 0.78, "tp_mult": 1.85},  # RR ~ 2.37
+    "day":          {"sl_mult": 1.05, "tp_mult": 2.50},  # RR ~ 2.38
+    "swing":        {"sl_mult": 1.50, "tp_mult": 3.75},  # RR = 2.50
+    "position":     {"sl_mult": 2.10, "tp_mult": 5.50},  # RR ~ 2.62
 }
 
 # =========================================================
@@ -32,13 +32,13 @@ SCORE_WEIGHTS = {
     "rsi":   10,
 }
 
-# Seuils de rejet par style
+# Seuils de rejet stricts par style (Gagner plus / Perdre moins)
 REJECTION_THRESHOLDS = {
-    "scalping": {"min_score": 62, "min_adx": 18, "min_rr": 1.1},
-    "scalping_15m": {"min_score": 63, "min_adx": 18, "min_rr": 1.2},
-    "day":      {"min_score": 60, "min_adx": 15, "min_rr": 1.3},
-    "swing":    {"min_score": 58, "min_adx": 15, "min_rr": 1.5},
-    "position": {"min_score": 55, "min_adx": 15, "min_rr": 1.8},
+    "scalping":     {"min_score": 75, "min_adx": 22, "min_rr": 1.85},
+    "scalping_15m": {"min_score": 75, "min_adx": 22, "min_rr": 1.95},
+    "day":          {"min_score": 74, "min_adx": 21, "min_rr": 2.00},
+    "swing":        {"min_score": 72, "min_adx": 20, "min_rr": 2.15},
+    "position":     {"min_score": 70, "min_adx": 20, "min_rr": 2.30},
 }
 
 # Buffer S/R par style (multiplicateur de l'ATR)
@@ -52,27 +52,26 @@ BUFFER_MULTIPLIERS = {
 
 ASSET_CLASS_RULES = {
     "crypto": {
-        "symbols": {"BTCUSD", "ETHUSD", "SOLUSD", "BNBUSD", "XRPUSD", "ADAUSD", "DOGEUSD",
-                    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"},
-        "sl_factor": 1.25,
-        "tp_factor": 1.15,
-        "adx_delta": 0,
-        "min_score_delta": 3,  # Score minimal plus élevé pour crypto (plus de bruit)
-        "min_rr_delta": 0.10,  # RR minimum légèrement plus élevé pour crypto
-        "pullback_pct": 0.04,  # Réduit de 7% → 4% pour éviter entrées trop tardives
-        "overextension_factor": 1.20,
+        "symbols": {"BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT"},
+        "sl_factor": 1.05,
+        "tp_factor": 1.25,
+        "adx_delta": 2,
+        "min_score_delta": 4,  # Score minimal relevé pour filtrer tout faux signal crypto
+        "min_rr_delta": 0.15,  # RR minimum plus exigeant pour que les gains surpassent largement les pertes
+        "pullback_pct": 0.025, # Entrée au plus près de la SMA20 (max 2.5% d'écart) pour éviter d'acheter le sommet
+        "overextension_factor": 1.00,
         "sr_buffer_factor": 1.15,
-        "atr_min_pct": 0.003,  # ATR minimum 0.3% du prix (marché actif)
+        "atr_min_pct": 0.0035, # Évite les marchés plats sans momentum
     },
     "metal": {
-        "symbols": {"XAUUSD", "GOLD"},
-        "sl_factor": 1.15,
-        "tp_factor": 1.10,
-        "adx_delta": 1,
-        "min_score_delta": 2,
-        "min_rr_delta": 0.05,
-        "pullback_pct": 0.045,
-        "overextension_factor": 1.10,
+        "symbols": {"XAUUSD"},
+        "sl_factor": 1.05,
+        "tp_factor": 1.25,
+        "adx_delta": 2,
+        "min_score_delta": 4,
+        "min_rr_delta": 0.15,
+        "pullback_pct": 0.025,
+        "overextension_factor": 1.00,
         "sr_buffer_factor": 1.20,
     },
 }
@@ -297,6 +296,9 @@ class SignalEngine:
             Dict contenant signal, SL, TP, teddy_score, indicators, score_detail, etc.
         """
         symbol = symbol.upper()
+        from config import DOCUMENTED_SYMBOLS
+        if symbol and symbol not in DOCUMENTED_SYMBOLS:
+            return SignalEngine._wait(lang, f"Symbole non documenté ({symbol})")
         df = SignalEngine._normalize_df(df)
 
         if not SignalEngine._valid_df(df):

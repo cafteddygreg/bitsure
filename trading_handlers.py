@@ -301,29 +301,50 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_periodic_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Active/désactive l'analyse automatique du marché Binance sans activer AutoTrade."""
+    """Active/désactive l'analyse automatique du marché Binance sans activer AutoTrade, ou lance un scan immédiat."""
     user_id = update.effective_user.id
-    if not _is_user_allowed(user_id):
-        await update.message.reply_text(NO_KEYS_MESSAGE)
-        return
 
     config = get_config(user_id)
     if not context.args or context.args[0].lower() in ("status", "etat", "état"):
         status = "ON ✅" if config.periodic_analysis_enabled else "OFF ❌"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"{'🔴 Désactiver' if config.periodic_analysis_enabled else '🟢 Activer'} l'Analyse Périodique", callback_data="toggle_periodic_analysis")],
+            [InlineKeyboardButton("🚀 Lancer une analyse maintenant", callback_data="run_periodic_analysis_now")],
+            [InlineKeyboardButton("⚙️ Configurer Intervalle / TF / Style", callback_data="menu_analysis_config")],
+        ])
         await update.message.reply_text(
-            "📊 Analyse périodique Binance\n"
-            f"État : {status}\n"
-            f"Intervalle : {config.analysis_interval_minutes} min\n"
-            f"Timeframe : {config.analysis_timeframe}\n"
-            f"Style : {config.trading_style}\n\n"
-            "Activer : /periodic_analysis on ou /periodic_analysis on <5|10>\n"
-            "Désactiver : /periodic_analysis off"
+            "📊 *Analyse Périodique du Marché*\n"
+            f"• État : *{status}*\n"
+            f"• Intervalle : *{config.analysis_interval_minutes} min*\n"
+            f"• Timeframe : *{escape_markdown(config.analysis_timeframe)}*\n"
+            f"• Style : *{escape_markdown(config.trading_style)}*\n\n"
+            "Commandes rapides :\n"
+            "• /periodic\\_analysis `on` (ou `on 5` / `on 10`)\n"
+            "• /periodic\\_analysis `off`\n"
+            "• /periodic\\_analysis `now` (scan immédiat)",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN,
         )
         return
 
     action = context.args[0].lower()
+    if action in ("now", "run", "scan", "test"):
+        msg = await update.message.reply_text("⏳ *Analyse périodique en cours...* Scan des opportunités du marché en direct.", parse_mode=ParseMode.MARKDOWN)
+        from execution_engine import run_market_analysis_for_user
+        report = await run_market_analysis_for_user(context, user_id, config.analysis_interval_minutes)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Relancer l'analyse", callback_data="run_periodic_analysis_now")],
+            [InlineKeyboardButton("⚙️ Configuration Analyse Périodique", callback_data="menu_analysis_config")],
+            [InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")],
+        ])
+        try:
+            await msg.edit_text(report, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await msg.edit_text(report.replace("*", "").replace("`", "").replace("_", ""), reply_markup=kb)
+        return
+
     if action not in ("on", "off"):
-        await update.message.reply_text("Usage : /periodic_analysis on | /periodic_analysis on <5|10> | /periodic_analysis off")
+        await update.message.reply_text("Usage : /periodic_analysis on | /periodic_analysis on <5|10> | /periodic_analysis off | /periodic_analysis now")
         return
 
     if action == "off":
@@ -354,17 +375,15 @@ async def cmd_periodic_analysis(update: Update, context: ContextTypes.DEFAULT_TY
             auto_trade=False,
         )
         await update.message.reply_text(
-            "✅ Analyse périodique activée en mode lecture seule, safe mode actif.\n"
-            f"Le marché Binance sera analysé automatiquement toutes les {interval} minutes.\n"
-            "⚠️ Safe mode actif : AutoTrade est forcé sur OFF et aucun signal pending ne sera enregistré en base."
+            "✅ Analyse périodique activée en mode lecture seule (Safe Mode actif).\n"
+            f"Le marché sera analysé automatiquement toutes les {interval} minutes."
         )
         return
 
     update_config(user_id, periodic_analysis_enabled=True, analysis_interval_minutes=interval)
     await update.message.reply_text(
-        "✅ Analyse périodique activée.\n"
-        f"Le marché Binance sera analysé automatiquement toutes les {interval} minutes.\n"
-        "AutoTrade reste séparé : aucun ordre automatique ne sera ouvert sauf si AutoTrade est activé."
+        f"✅ Analyse périodique activée (toutes les {interval} minutes).\n"
+        "💡 Tu peux aussi lancer un scan immédiat avec /periodic_analysis now ou depuis le bouton du menu."
     )
 
 
@@ -922,16 +941,17 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
 
     if data == "menu_autotrade":
         text, keyboard = _build_autotrade_menu(user_id)
-        await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        await _safe_edit(query, text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
     elif data == "toggle_autotrade":
         config = get_config(user_id)
         if config.auto_trade:
             update_config(user_id, auto_trade=False)
         else:
-            await query.edit_message_text(
+            await _safe_edit(
+                query,
                 "🔐 Activation AutoTrade refusée depuis un bouton non authentifié.\n"
-                "Utilise une commande protégée avec code de sécurité avant d'activer le trading réel."
+                "Utilise une commande protégée avec code de sécurité avant d'activer le trading réel.",
             )
             return
         query.data = "menu_autotrade"
@@ -951,7 +971,8 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
                 InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back"),
             ],
         ])
-        await query.edit_message_text(
+        await _safe_edit(
+            query,
             f"🎯 *Mode de Marché Actuel :* `{escape_markdown(config.market_type.upper())}`\n\n"
             f"Choisis le mode à utiliser pour les analyses et la prise d'ordres. Commande protégée : /setmarket <spot|futures> <code>.",
             reply_markup=keyboard,
@@ -968,55 +989,103 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
     elif data == "menu_analysis_config":
         config = get_config(user_id)
         p_status = "ACTIVÉE ✅" if config.periodic_analysis_enabled else "DÉSACTIVÉE ❌"
-        
-        interval = escape_markdown(str(config.analysis_interval_minutes))
-        tf = escape_markdown(config.analysis_timeframe)
-        style = escape_markdown(config.trading_style)
-        
+        toggle_btn_label = "🔴 Désactiver l'Analyse Périodique" if config.periodic_analysis_enabled else "🟢 Activer l'Analyse Périodique"
+
+        cur_int = int(config.analysis_interval_minutes or 5)
+        cur_tf = str(config.analysis_timeframe or "5m")
+        cur_style = str(config.trading_style or "scalping")
+
+        from execution_engine import _resolve_requested_scan_symbols
+        req_symbols, req_source = _resolve_requested_scan_symbols(user_id, config)
+        req_symbols_str = escape_markdown(", ".join(req_symbols))
+        req_source_str = escape_markdown(req_source)
+
+        interval = escape_markdown(str(cur_int))
+        tf = escape_markdown(cur_tf)
+        style = escape_markdown(cur_style)
+
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"Analyse Périodique ({p_status})", callback_data="toggle_periodic_analysis"),
+                InlineKeyboardButton(toggle_btn_label, callback_data="toggle_periodic_analysis"),
             ],
             [
-                InlineKeyboardButton("5 min", callback_data="set_analysis_interval_5"),
-                InlineKeyboardButton("10 min", callback_data="set_analysis_interval_10"),
+                InlineKeyboardButton("🚀 Lancer une analyse maintenant", callback_data="run_periodic_analysis_now"),
             ],
             [
-                InlineKeyboardButton("5m", callback_data="set_analysis_tf_5m"),
-                InlineKeyboardButton("15m", callback_data="set_analysis_tf_15m"),
-                InlineKeyboardButton("1h", callback_data="set_analysis_tf_1h"),
+                InlineKeyboardButton(f"{'🟢 ' if cur_int == 5 else ''}⏱ 5 min", callback_data="set_analysis_interval_5"),
+                InlineKeyboardButton(f"{'🟢 ' if cur_int == 10 else ''}⏱ 10 min", callback_data="set_analysis_interval_10"),
             ],
             [
-                InlineKeyboardButton("Scalping 5m", callback_data="set_analysis_style_scalping"),
-                InlineKeyboardButton("Scalping 15m", callback_data="set_analysis_style_scalping_15m"),
+                InlineKeyboardButton(f"{'🟢 ' if cur_tf == '5m' else ''}5m", callback_data="set_analysis_tf_5m"),
+                InlineKeyboardButton(f"{'🟢 ' if cur_tf == '15m' else ''}15m", callback_data="set_analysis_tf_15m"),
+                InlineKeyboardButton(f"{'🟢 ' if cur_tf == '1h' else ''}1h", callback_data="set_analysis_tf_1h"),
+                InlineKeyboardButton(f"{'🟢 ' if cur_tf == '4h' else ''}4h", callback_data="set_analysis_tf_4h"),
+                InlineKeyboardButton(f"{'🟢 ' if cur_tf == '1d' else ''}1d", callback_data="set_analysis_tf_1d"),
             ],
             [
-                InlineKeyboardButton("Day", callback_data="set_analysis_style_day"),
-                InlineKeyboardButton("Swing", callback_data="set_analysis_style_swing"),
-                InlineKeyboardButton("Position", callback_data="set_analysis_style_position"),
+                InlineKeyboardButton(f"{'🟢 ' if cur_style == 'scalping' else ''}Scalping 5m", callback_data="set_analysis_style_scalping"),
+                InlineKeyboardButton(f"{'🟢 ' if cur_style == 'scalping_15m' else ''}Scalping 15m", callback_data="set_analysis_style_scalping_15m"),
+            ],
+            [
+                InlineKeyboardButton(f"{'🟢 ' if cur_style == 'day' else ''}Day", callback_data="set_analysis_style_day"),
+                InlineKeyboardButton(f"{'🟢 ' if cur_style == 'swing' else ''}Swing", callback_data="set_analysis_style_swing"),
+                InlineKeyboardButton(f"{'🟢 ' if cur_style == 'position' else ''}Position", callback_data="set_analysis_style_position"),
+            ],
+            [
+                InlineKeyboardButton("⭐ Gérer ma Watchlist", callback_data="menu_watchlist"),
+                InlineKeyboardButton("✅ Gérer ma Whitelist", callback_data="menu_whitelist"),
             ],
             [
                 InlineKeyboardButton("⬅️ Retour AutoTrade", callback_data="menu_autotrade"),
                 InlineKeyboardButton("⬅️ Retour Analyse", callback_data="menu_analyse"),
+            ],
+            [
                 InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back"),
             ],
         ])
-        await query.edit_message_text(
-            f"📊 *Configuration Analyse Périodique*\n\n"
-            f"État : *{p_status}*\n"
-            f"Intervalle : *{interval} min*\n"
-            f"Timeframe : *{tf}*\n"
-            f"Style : *{style}*\n\n"
-            f"Commandes protégées : /periodic_analysis on|off, /setanalysisinterval, /setanalysistf, /settradingstyle.",
+        await _safe_edit(
+            query,
+            f"📊 *Configuration Analyse Périodique*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• État automatique : *{p_status}*\n"
+            f"• Fréquence du scan : *toutes les {interval} min*\n"
+            f"• Timeframe bougies : *{tf}*\n"
+            f"• Style de stratégie : *{style}*\n"
+            f"• Score minimum exigé : *{config.min_score}/100*\n"
+            f"• Symboles ciblés ({req_source_str}) : `{req_symbols_str}`\n\n"
+            f"💡 _Seuls les symboles documentés dans le bot (`BTCUSDT`, `ETHUSDT`, `BTCUSD`, `ETHUSD`, `XAUUSD`) sont analysés._",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )
 
     elif data == "toggle_periodic_analysis":
         config = get_config(user_id)
-        update_config(user_id, periodic_analysis_enabled=not config.periodic_analysis_enabled)
+        new_state = not config.periodic_analysis_enabled
+        update_config(user_id, periodic_analysis_enabled=new_state)
         query.data = "menu_analysis_config"
         await trading_callback_router(update, context)
+
+    elif data == "run_periodic_analysis_now":
+        config = get_config(user_id)
+        await _safe_edit(
+            query,
+            f"⏳ *Analyse périodique en cours...*\n\n"
+            f"Scan des paires principales et de ta Watchlist en `{escape_markdown(config.analysis_timeframe)}` (style `{escape_markdown(config.trading_style)}`)...",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Retour Configuration", callback_data="menu_analysis_config")]]),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        from execution_engine import run_market_analysis_for_user
+        report = await run_market_analysis_for_user(context, user_id, int(config.analysis_interval_minutes or 5), send_telegram=False)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Relancer l'analyse maintenant", callback_data="run_periodic_analysis_now")],
+            [InlineKeyboardButton("⚙️ Configuration Analyse Périodique", callback_data="menu_analysis_config")],
+            [InlineKeyboardButton("⬅️ Retour Analyse", callback_data="menu_analyse"), InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_back")],
+        ])
+        try:
+            await _safe_edit(query, report, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            plain = report.replace("*", "").replace("`", "").replace("_", "")
+            await _safe_edit(query, plain, reply_markup=kb)
 
     elif data.startswith("set_analysis_interval_"):
         try:
@@ -1032,6 +1101,8 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
         timeframe = data.replace("set_analysis_tf_", "")
         if timeframe in ("5m", "15m", "1h", "4h", "1d"):
             update_config(user_id, analysis_timeframe=timeframe)
+            from user_manager import UserManager
+            UserManager.get_instance().set_setting(user_id, "timeframe", timeframe)
         query.data = "menu_analysis_config"
         await trading_callback_router(update, context)
 
@@ -1044,6 +1115,10 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
             elif style == "scalping_15m":
                 fields["analysis_timeframe"] = "15m"
             update_config(user_id, **fields)
+            from user_manager import UserManager
+            UserManager.get_instance().set_setting(user_id, "trading_style", style)
+            if "analysis_timeframe" in fields:
+                UserManager.get_instance().set_setting(user_id, "timeframe", fields["analysis_timeframe"])
         query.data = "menu_analysis_config"
         await trading_callback_router(update, context)
 
@@ -1192,15 +1267,16 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
         config = get_config(user_id)
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("50", callback_data="set_minscore_50"),
-                InlineKeyboardButton("60", callback_data="set_minscore_60"),
-                InlineKeyboardButton("70", callback_data="set_minscore_70"),
-                InlineKeyboardButton("80", callback_data="set_minscore_80"),
+                InlineKeyboardButton("75", callback_data="set_minscore_75"),
+                InlineKeyboardButton("78 (Recommandé)", callback_data="set_minscore_78"),
+                InlineKeyboardButton("82", callback_data="set_minscore_82"),
+                InlineKeyboardButton("85", callback_data="set_minscore_85"),
             ],
             [InlineKeyboardButton("⬅️ Retour Config", callback_data="menu_trading_config")],
         ])
-        await query.edit_message_text(
-            f"🧠 *Score minimum actuel pour exécuter un signal : {config.min_score}*\n\nChoisis une nouvelle valeur ou utilise /setminscore <0-100>.",
+        await _safe_edit(
+            query,
+            f"🧠 *Score minimum actuel pour exécuter un signal : {config.min_score}/100*\n\nChoisis un seuil haute sélectivité (78 recommandé pour gagner plus et perdre moins) ou utilise /setminscore <70-100>.",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )

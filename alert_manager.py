@@ -65,12 +65,13 @@ class AlertManager:
 
         while self.running:
             try:
-                # 1. Récupérer toutes les alertes non déclenchées
+                # 1. Récupérer toutes les alertes non déclenchées sur les symboles documentés
+                from config import DOCUMENTED_SYMBOLS
                 with self.lock:
                     rows = self.conn.execute(
-                        "SELECT * FROM alerts WHERE triggered = 0"
+                        "SELECT * FROM alerts WHERE triggered = 0 AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD')"
                     ).fetchall()
-                    alerts = [dict(r) for r in rows]
+                    alerts = [dict(r) for r in rows if str(r["symbol"]).upper() in DOCUMENTED_SYMBOLS]
 
                 # 2. Grouper par symbole
                 grouped = {}

@@ -38,7 +38,8 @@ logger = get_trading_logger("execution_engine")
 
 
 def fetch_pending_signals():
-    """Récupère les signaux non encore traités (statuts 'pending', 'active', ou 'skipped' suite à safe_mode)."""
+    """Récupère uniquement les signaux non encore traités portant sur les symboles documentés du bot."""
+    purge_undocumented_signals()
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -52,6 +53,7 @@ def fetch_pending_signals():
                         OR (status = 'skipped' AND COALESCE(rejection_reason, '') LIKE 'safe_mode:%%')
                       )
                   AND direction IN ('BUY', 'SELL')
+                  AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD')
                 ORDER BY id ASC
                 """
             )
@@ -78,7 +80,8 @@ def mark_signal_status(signal_id: str, status: str):
 def validate_signal_for_execution(user_id: int, signal: dict, config: TradingConfig) -> tuple[bool, str | None]:
     """Applique les garde-fous juste avant toute ouverture de position."""
     try:
-        require_auto = signal.get("status") in ("pending", "active") or signal.get("signal_type") == "market_scan"
+        is_manual = str(signal.get("id", "")).startswith("manual-") or signal.get("status") == "awaiting_confirmation"
+        require_auto = False if is_manual else bool(config.auto_trade)
         assert_trading_allowed(config, require_auto_trade=require_auto)
         if signal.get("id") and not str(signal["id"]).startswith("manual-"):
             validate_signal_freshness(signal)
@@ -87,6 +90,9 @@ def validate_signal_for_execution(user_id: int, signal: dict, config: TradingCon
 
     if int(signal["user_id"]) != int(user_id):
         return False, "Ce signal ne t'appartient pas."
+
+    if str(signal.get("symbol", "")).upper() not in ALLOWED_DOCUMENTED_SYMBOLS_SET:
+        return False, f"Symbole non documenté ({signal.get('symbol')}). Seuls {', '.join(DOCUMENTED_SYMBOLS)} sont autorisés."
 
     if config.market_type == "spot" and signal["direction"] == "SELL":
         return False, "SELL non supporté en mode Spot standard."
@@ -105,7 +111,13 @@ def validate_signal_for_execution(user_id: int, signal: dict, config: TradingCon
         if signal["direction"] == "SELL" and not (tp < entry < sl):
             return False, "SL/TP incohérents avec un signal SELL."
 
-    risk_check = check_can_open_position(user_id, config, signal["symbol"], signal.get("direction"))
+    risk_check = check_can_open_position(
+        user_id,
+        config,
+        signal["symbol"],
+        signal.get("direction"),
+        require_auto_trade=require_auto,
+    )
     if not risk_check.allowed:
         return False, risk_check.reason or "Règle de risque non respectée."
 
@@ -336,6 +348,69 @@ def _get_auto_trade_user_ids(interval_minutes: int) -> list[int]:
         conn.close()
 
 
+from config import DOCUMENTED_SYMBOLS
+
+# Uniquement les symboles documentés dans le bot (BTCUSDT, ETHUSDT, BTCUSD, ETHUSD, XAUUSD).
+# Aucun autre symbole ne peut être analysé ni apparaître dans les signaux ou rapports.
+ALLOWED_DOCUMENTED_SYMBOLS_SET = frozenset(DOCUMENTED_SYMBOLS)
+DEFAULT_PERIODIC_SCAN_SYMBOLS = list(DOCUMENTED_SYMBOLS)
+
+
+def purge_undocumented_signals() -> int:
+    """Supprime ou rejette immédiatement de la table `signals` tout signal portant sur un symbole non documenté."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM signals
+                WHERE UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD')
+                """
+            )
+            deleted = cur.rowcount or 0
+        conn.commit()
+        return deleted
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def _resolve_requested_scan_symbols(user_id: int, config: TradingConfig) -> tuple[list[str], str]:
+    """
+    Retourne UNIQUEMENT les symboles documentés dans le bot (`BTCUSDT`, `ETHUSDT`, `BTCUSD`, `ETHUSD`, `XAUUSD`).
+    Tout symbole non documenté éventuellement présent dans une ancienne Whitelist ou Watchlist est strictement filtré.
+    """
+    # 1. Si une Whitelist explicite AutoTrade contient des symboles documentés :
+    if config.symbol_whitelist:
+        out: list[str] = []
+        for s in config.symbol_whitelist:
+            raw = str(s).strip().upper().replace("/", "").replace(" ", "").replace("-", "")
+            if raw in ALLOWED_DOCUMENTED_SYMBOLS_SET and raw not in out:
+                out.append(raw)
+        if out:
+            return out, "Whitelist (Symboles documentés)"
+
+    # 2. Si la Watchlist de l'utilisateur contient des symboles documentés :
+    try:
+        from user_manager import UserManager
+        wl = UserManager.get_instance().get_watchlist(user_id) or []
+    except Exception:
+        wl = []
+
+    if wl:
+        out = []
+        for s in wl:
+            raw = str(s).strip().upper().replace("/", "").replace(" ", "").replace("-", "")
+            if raw in ALLOWED_DOCUMENTED_SYMBOLS_SET and raw not in out:
+                out.append(raw)
+        if out:
+            return out, "Watchlist (Symboles documentés)"
+
+    # 3. Par défaut : exactement les 5 symboles documentés dans le bot
+    return list(DEFAULT_PERIODIC_SCAN_SYMBOLS), "Symboles documentés du bot"
+
+
 def _format_market_scan_report(
     config: TradingConfig,
     scanned: int,
@@ -344,45 +419,225 @@ def _format_market_scan_report(
     errors: int,
     rejected_spot_sell: int = 0,
     read_only_safe_mode: bool = False,
+    top_wait_or_low: list[tuple[str, dict]] | None = None,
+    symbols_source: str = "",
+    requested_symbols: list[str] | None = None,
 ) -> str:
-    title = "📊 *Rapport analyse marché Binance*"
+    title = "📊 *Rapport d'Analyse Périodique*"
     if read_only_safe_mode or config.safety_lock:
-        title += " _(mode lecture seule, safe mode actif)_"
+        title += " _(lecture seule — Safe Mode)_"
+    sym_list_str = ", ".join(requested_symbols) if requested_symbols else "—"
     lines = [
         title,
-        f"Marché : `{config.market_type}` | TF : `{config.analysis_timeframe}` | Style : `{config.trading_style}`",
-        f"Symboles analysés : {scanned}",
-        f"Signaux actionnables : {len(saved)}",
-        f"Refus risque/config : {rejected_by_risk}",
-        f"Erreurs données/API : {errors}",
+        "━━━━━━━━━━━━━━━━━━━━━",
+        f"• Marché : `{config.market_type.upper()}` | TF : `{config.analysis_timeframe}` | Style : `{config.trading_style}`",
+        f"• Périmètre ({symbols_source or 'Sélection'}) : `{sym_list_str}`",
+        f"• Paires analysées : *{scanned}* | Signaux retenus (≥ {config.min_score}) : *{len(saved)}*",
     ]
+    if rejected_by_risk or errors:
+        lines.append(f"• Filtrés (score/risque) : {rejected_by_risk} | Indisponibles : {errors}")
     if read_only_safe_mode or config.safety_lock:
-        lines.append("⚠️ Safe mode actif : mode lecture seule, aucun signal pending enregistré en base.")
+        lines.append("⚠️ _Safe mode actif : aucun ordre automatique ni signal pending créé._")
     if rejected_spot_sell:
-        lines.append(f"SELL ignorés (spot) : {rejected_spot_sell}")
+        lines.append(f"ℹ️ _SELL ignorés (mode Spot) : {rejected_spot_sell}_")
+
     if saved:
         lines.append("")
-        header = "*Top signaux détectés (lecture seule)*" if (read_only_safe_mode or config.safety_lock) else "*Top signaux sauvegardés*"
+        header = "🎯 *Signaux actionnables détectés :*"
         lines.append(header)
-        for symbol, result, signal_id in saved[:10]:
+        for symbol, result, signal_id in saved[:8]:
+            sig_emoji = "🟢" if result.get("signal") == "BUY" else "🔴"
+            price_val = result.get("indicators", {}).get("price", 0)
+            sl_val = result.get("sl")
+            tp_val = result.get("tp")
+            sl_str = f"{float(sl_val):.4f}" if sl_val else "—"
+            tp_str = f"{float(tp_val):.4f}" if tp_val else "—"
             lines.append(
-                f"`{symbol}` {result['signal']} score {result['teddy_score']} "
-                f"RR {result.get('rr_ratio') or 'N/A'} ID `{signal_id}`"
+                f"{sig_emoji} *{symbol}* `{result['signal']}` @ `{float(price_val):.4f}` "
+                f"(Score: *{result['teddy_score']}* | SL: `{sl_str}` | TP: `{tp_str}`)"
             )
     else:
         lines.append("")
-        lines.append("Aucune position ouvrable sur ce cycle.")
+        lines.append(f"ℹ️ *Aucun signal BUY/SELL n'atteint le score minimum ({config.min_score}/100) sur ce cycle.*")
+        if top_wait_or_low:
+            lines.append("\n🔎 *Aperçu des paires scannées (Top scores) :*")
+            for symbol, res in top_wait_or_low[:6]:
+                sig = res.get("signal", "WAIT")
+                sig_emoji = "🟢" if sig == "BUY" else "🔴" if sig == "SELL" else "⚪"
+                price_val = res.get("indicators", {}).get("price", 0)
+                rsi_val = res.get("indicators", {}).get("rsi", "—")
+                score_val = res.get("teddy_score", 0)
+                lines.append(
+                    f"• {sig_emoji} `{symbol}` : *{sig}* (Score *{score_val}* | Prix `{float(price_val):.4f}` | RSI `{rsi_val}`)"
+                )
     return "\n".join(lines)
+
+
+async def run_market_analysis_for_user(
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    interval_minutes: int = 5,
+    send_telegram: bool = False,
+) -> str:
+    """
+    Exécute un cycle complet d'analyse périodique pour un utilisateur donné
+    et retourne le rapport formaté.
+    Scanne en priorité sa Whitelist / Watchlist + les 10 paires majeures liquides
+    pour répondre en quelques secondes sans jamais bloquer le bot.
+    """
+    import asyncio
+    from trading_config import get_binance_credentials
+
+    history_mgr = HistoryManager.get_instance()
+    config = get_config(user_id)
+    read_only_safe_mode = bool(config.safety_lock)
+
+    purge_undocumented_signals()
+
+    # Construire strictement la liste des symboles documentés du bot
+    symbols, symbols_source = _resolve_requested_scan_symbols(user_id, config)
+    symbols = [s for s in symbols if s in ALLOWED_DOCUMENTED_SYMBOLS_SET]
+
+    if config.symbol_blacklist:
+        bl_set = {str(b).upper().replace("/", "") for b in config.symbol_blacklist}
+        symbols = [s for s in symbols if s not in bl_set]
+
+    creds = get_binance_credentials(user_id, market_type=config.market_type)
+    has_valid_keys = bool(creds and creds.get("api_key") and creds.get("is_valid"))
+
+    scanned = 0
+    rejected_by_risk = 0
+    errors = 0
+    rejected_spot_sell = 0
+    saved: list[tuple[str, dict, str]] = []
+    all_analyzed: list[tuple[str, dict]] = []
+
+    from data_fetcher import DataFetcher
+    fetcher_inst = DataFetcher.get_instance()
+
+    for symbol in symbols:
+        if symbol not in ALLOWED_DOCUMENTED_SYMBOLS_SET:
+            continue
+        try:
+            if symbol in ("BTCUSDT", "ETHUSDT"):
+                df = await asyncio.to_thread(
+                    get_klines_dataframe,
+                    symbol,
+                    config.analysis_timeframe,
+                    config.market_type,
+                    300,
+                )
+            else:
+                df = await fetcher_inst.get_historical_data(symbol, timeframe=config.analysis_timeframe)
+            if df is None or df.empty:
+                errors += 1
+                continue
+
+            scanned += 1
+            result = SignalEngine.analyze(
+                df,
+                "fr",
+                symbol=symbol,
+                style=config.trading_style,
+            )
+            all_analyzed.append((symbol, result))
+
+            price = float(result["indicators"]["price"])
+            rsi = result["indicators"].get("rsi", "N/A")
+            macd = result["indicators"].get("macd", "N/A")
+            score = result.get("teddy_score", 0)
+            sig = result.get("signal", "WAIT")
+
+            logger.info(f"[{symbol}] Prix: {price:.4f} | RSI: {rsi} | MACD: {macd} | Score: {score} | Signal: {sig}")
+
+            if sig not in ("BUY", "SELL"):
+                continue
+
+            if score < config.min_score:
+                rejected_by_risk += 1
+                continue
+
+            if config.market_type == "spot" and sig == "SELL":
+                rejected_spot_sell += 1
+                continue
+
+            if read_only_safe_mode:
+                saved.append((symbol, result, "READONLY"))
+                continue
+
+            # Si l'utilisateur a des clés Binance valides, on vérifie les règles de risque du compte
+            # (sans exiger auto_trade=True si seule l'Analyse Périodique est activée)
+            if has_valid_keys:
+                risk_check = check_can_open_position(
+                    user_id,
+                    config,
+                    symbol,
+                    sig,
+                    require_auto_trade=bool(config.auto_trade),
+                )
+                if not risk_check.allowed:
+                    rejected_by_risk += 1
+                    continue
+
+            signal_id = history_mgr.add_signal(
+                symbol=symbol,
+                direction=sig,
+                price=price,
+                timeframe=config.analysis_timeframe,
+                signal_type="market_scan",
+                score=score,
+                sl=result.get("sl"),
+                tp=result.get("tp"),
+                user_id=user_id,
+                validation_status=result.get("validation_status", "VALIDATED"),
+                validation_reason=result.get("reason"),
+                rejection_reason=result.get("rejection_reason"),
+                rr_ratio=result.get("rr_ratio"),
+                asset_class=result.get("asset_class"),
+                params_used={
+                    **(result.get("params_used") or {}),
+                    "market_type": config.market_type,
+                    "analysis_interval_minutes": interval_minutes,
+                },
+            )
+            if signal_id:
+                saved.append((symbol, result, signal_id))
+        except Exception as e:
+            errors += 1
+            log_error(logger, user_id, f"scheduled_market_analysis.{symbol}", str(e))
+
+    all_analyzed.sort(key=lambda item: float(item[1].get("teddy_score", 0)), reverse=True)
+
+    report = _format_market_scan_report(
+        config,
+        scanned,
+        saved,
+        rejected_by_risk,
+        errors,
+        rejected_spot_sell,
+        read_only_safe_mode=read_only_safe_mode,
+        top_wait_or_low=all_analyzed,
+        symbols_source=symbols_source,
+        requested_symbols=symbols,
+    )
+    logger.info(f"--- Rapport final User {user_id} ---\n{report}")
+    if send_telegram and context and hasattr(context, "bot"):
+        try:
+            await context.bot.send_message(chat_id=user_id, text=report, parse_mode="Markdown")
+        except Exception:
+            try:
+                plain = report.replace("*", "").replace("`", "").replace("_", "")
+                await context.bot.send_message(chat_id=user_id, text=plain)
+            except Exception as e:
+                log_error(logger, user_id, "scheduled_market_analysis.report", str(e))
+    return report
 
 
 async def scheduled_market_analysis(context: ContextTypes.DEFAULT_TYPE, interval_minutes: int):
     """
-    Analyse tous les symboles tradables Binance pour les utilisateurs AutoTrade
-    et Analyse Périodique configurés sur l'intervalle demandé.
-    Affiche les résultats détaillés dans le terminal et envoie le rapport Telegram.
-    Si safety_lock = TRUE, fonctionne en mode lecture seule sans enregistrer de signal pending en base.
+    Job planifié APScheduler : analyse les paires pour tous les utilisateurs ayant activé
+    AutoTrade ou l'Analyse Périodique sur l'intervalle demandé.
     """
-    history_mgr = HistoryManager.get_instance()
     user_ids = _get_auto_trade_user_ids(interval_minutes)
     if not user_ids:
         return
@@ -390,116 +645,12 @@ async def scheduled_market_analysis(context: ContextTypes.DEFAULT_TYPE, interval
     logger.info(f"=== [ ANALYSE PERIODIQUE ({interval_minutes}m) ] === Démarrage pour {len(user_ids)} utilisateur(s)")
 
     for user_id in user_ids:
-        config = get_config(user_id)
-        read_only_safe_mode = bool(config.safety_lock)
         try:
-            symbols = get_tradable_symbols(config.market_type)
+            await run_market_analysis_for_user(
+                context,
+                user_id,
+                interval_minutes=interval_minutes,
+                send_telegram=True,
+            )
         except Exception as e:
-            log_error(logger, user_id, "scheduled_market_analysis.symbols", str(e))
-            continue
-
-        if config.symbol_whitelist:
-            symbols = [s for s in symbols if s in config.symbol_whitelist]
-        if config.symbol_blacklist:
-            symbols = [s for s in symbols if s not in config.symbol_blacklist]
-
-        scanned = 0
-        rejected_by_risk = 0
-        errors = 0
-        rejected_spot_sell = 0
-        saved: list[tuple[str, dict, str]] = []
-
-        for symbol in symbols:
-            try:
-                df = get_klines_dataframe(
-                    symbol,
-                    config.analysis_timeframe,
-                    market_type=config.market_type,
-                    limit=1000,  # aligné sur DataFetcher pour des indicateurs identiques
-                )
-                if df is None or df.empty:
-                    errors += 1
-                    continue
-
-                scanned += 1
-                result = SignalEngine.analyze(
-                    df,
-                    "fr",
-                    symbol=symbol,
-                    style=config.trading_style,
-                )
-
-                price = float(result["indicators"]["price"])
-                rsi = result["indicators"].get("rsi", "N/A")
-                macd = result["indicators"].get("macd", "N/A")
-                score = result.get("teddy_score", 0)
-                sig = result.get("signal", "WAIT")
-
-                # Affichage dans le terminal
-                logger.info(f"[{symbol}] Prix: {price:.4f} | RSI: {rsi} | MACD: {macd} | Score: {score} | Signal: {sig}")
-
-                if sig not in ("BUY", "SELL"):
-                    continue
-
-                if score < config.min_score:
-                    rejected_by_risk += 1
-                    continue
-
-                if config.market_type == "spot" and sig == "SELL":
-                    # Binance Spot standard ne supporte pas le short : inutile de
-                    # sauvegarder un signal qui ne pourra jamais être exécuté.
-                    rejected_spot_sell += 1
-                    continue
-
-                if read_only_safe_mode:
-                    # En mode lecture seule (safe mode actif), ne pas créer de signal en base
-                    saved.append((symbol, result, "READONLY"))
-                    continue
-
-                risk_check = check_can_open_position(user_id, config, symbol, sig)
-                if not risk_check.allowed:
-                    rejected_by_risk += 1
-                    continue
-
-                signal_id = history_mgr.add_signal(
-                    symbol=symbol,
-                    direction=sig,
-                    price=price,
-                    timeframe=config.analysis_timeframe,
-                    signal_type="market_scan",
-                    score=score,
-                    sl=result.get("sl"),
-                    tp=result.get("tp"),
-                    user_id=user_id,
-                    validation_status=result.get("validation_status", "VALIDATED"),
-                    validation_reason=result.get("reason"),
-                    rejection_reason=result.get("rejection_reason"),
-                    rr_ratio=result.get("rr_ratio"),
-                    asset_class=result.get("asset_class"),
-                    params_used={
-                        **(result.get("params_used") or {}),
-                        "market_type": config.market_type,
-                        "analysis_interval_minutes": interval_minutes,
-                    },
-                )
-                if signal_id:
-                    saved.append((symbol, result, signal_id))
-            except Exception as e:
-                errors += 1
-                log_error(logger, user_id, f"scheduled_market_analysis.{symbol}", str(e))
-
-        report = _format_market_scan_report(
-            config,
-            scanned,
-            saved,
-            rejected_by_risk,
-            errors,
-            rejected_spot_sell,
-            read_only_safe_mode=read_only_safe_mode,
-        )
-        logger.info(f"--- Rapport final User {user_id} ---\n{report}")
-        try:
-            if context and hasattr(context, "bot"):
-                await context.bot.send_message(chat_id=user_id, text=report, parse_mode="Markdown")
-        except Exception as e:
-            log_error(logger, user_id, "scheduled_market_analysis.report", str(e))
+            log_error(logger, user_id, "scheduled_market_analysis", str(e))
