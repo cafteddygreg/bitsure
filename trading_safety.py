@@ -91,23 +91,39 @@ def engage_safe_mode(user_id: int, reason: str, context=None) -> TradingConfig:
 
 
 def engage_safety_warn(user_id: int, reason: str, context=None) -> TradingConfig:
-    """Active un avertissement temporaire (safety_warn) auto-effacé au prochain succès."""
+    """Active un avertissement temporaire (safety_warn) auto-effacé au prochain succès.
+    Évite d'envoyer en boucle la même notification Telegram toutes les 10s si le même avertissement est déjà actif.
+    """
     now = time.time()
     logger.warning("SAFETY_WARN_ENGAGED user=%s reason=%s", user_id, reason)
+    already_notified = False
+    try:
+        from trading_config import get_config
+        current_cfg = get_config(user_id)
+        if (
+            getattr(current_cfg, "safety_warn", False)
+            and getattr(current_cfg, "safety_warn_reason", None) == reason
+            and (now - float(getattr(current_cfg, "safety_warn_at", 0.0) or 0.0)) < 900
+        ):
+            already_notified = True
+    except Exception:
+        pass
+
     cfg = update_config(
         user_id,
         safety_warn=True,
         safety_warn_reason=reason,
-        safety_warn_at=now,
+        safety_warn_at=now if not already_notified else (getattr(current_cfg, "safety_warn_at", now) or now),
     )
-    msg = (
-        "⚠️ AVERTISSEMENT SÉCURITÉ TEMPORAIRE (safety_warn)\n\n"
-        f"• Raison : {reason}\n"
-        "• Impact : Surveillance accrue suite à un incident transitoire (réseau / rate-limit / ordre protecteur). "
-        "Sera levé automatiquement au prochain cycle réussi.\n"
-        "• Étapes : Consulte /safestatus ou utilise /clearsafe <code_securite> pour acquitter immédiatement."
-    )
-    _dispatch_or_queue_notification(user_id, msg, context=context)
+    if not already_notified:
+        msg = (
+            "⚠️ AVERTISSEMENT SÉCURITÉ TEMPORAIRE (safety_warn)\n\n"
+            f"• Raison : {reason}\n"
+            "• Impact : Surveillance accrue suite à un incident transitoire (réseau / rate-limit / ordre protecteur). "
+            "Sera levé automatiquement au prochain cycle réussi.\n"
+            "• Étapes : Consulte /safestatus ou utilise /clearsafe <code_securite> pour acquitter immédiatement."
+        )
+        _dispatch_or_queue_notification(user_id, msg, context=context)
     return cfg
 
 

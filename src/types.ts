@@ -160,6 +160,7 @@ export interface HistoricalSignal {
 export interface TradingConfigState {
   user_id: number;
   enabled: boolean;
+  auto_trade?: boolean;
   periodic_analysis_enabled: boolean;
   analysis_interval_minutes: number;
   analysis_timeframe: string;
@@ -171,12 +172,21 @@ export interface TradingConfigState {
   max_daily_loss: number;
   min_score: number;
   trailing_stop: boolean;
+  trailing_stop_pct: number;
   dca_enabled: boolean;
+  dca_steps: number;
+  dca_step_pct: number;
+  cooldown_seconds: number;
   symbols: string[];
+  symbol_whitelist: string[];
+  symbol_blacklist: string[];
   daily_loss_tracked: number;
+  credentials_loaded?: boolean;
   credentials_valid: boolean;
+  api_status_message?: string;
   has_custom_credentials: boolean;
   api_key_masked: string | null;
+  testnet: boolean;
   is_testnet: boolean;
   safety_lock: boolean;
   safety_lock_reason: string | null;
@@ -185,6 +195,7 @@ export interface TradingConfigState {
   safety_lock_ttl_seconds: number;
   safety_warn: boolean;
   safety_warn_reason: string | null;
+  safety_warn_at?: number | null;
 }
 
 export interface SupportTicket {

@@ -1261,6 +1261,75 @@ class Phase1CriticalFixesTests(unittest.TestCase):
         self.assertEqual(lock_calls[0][0], 42)
         self.assertIn("Divergence critique", lock_calls[0][1])
 
+    def test_sl_trailing_gte_conflict_with_orig_type_and_cancel_all_fallback(self):
+        """Reproduce the exact recurring -4130 GTE closePosition error when Binance returns origType or a hidden GTE order."""
+        bm = self.binance_manager_mod
+        BinanceAPIException = sys.modules["binance.exceptions"].BinanceAPIException
+
+        open_orders_state = [
+            {
+                "orderId": "7701",
+                "clientOrderId": "cli_7701",
+                "symbol": "BTCUSDT",
+                "side": "SELL",
+                "type": "",
+                "origType": "STOP_MARKET",
+                "stopPrice": "63500.0",
+                "closePosition": "true",
+                "status": "NEW",
+            }
+        ]
+
+        mock_client = MagicMock()
+        mock_client.futures_get_open_orders.side_effect = lambda symbol=None: list(open_orders_state)
+
+        def fake_cancel_all(symbol):
+            open_orders_state.clear()
+            return {"code": 200}
+
+        # Simulate individual cancel failing so fallback futures_cancel_all_open_orders is triggered
+        mock_client.futures_cancel_order.side_effect = Exception("Order cancel mismatch")
+        mock_client.futures_cancel_all_open_orders.side_effect = fake_cancel_all
+
+        def fake_create_order(**kwargs):
+            if open_orders_state:
+                raise BinanceAPIException(
+                    "An open stop or take profit order with GTE and closePosition in the direction is existing.",
+                    code=-4130,
+                )
+            created = {
+                "orderId": 7799,
+                "symbol": kwargs["symbol"],
+                "side": kwargs["side"],
+                "type": kwargs["type"],
+                "stopPrice": str(kwargs.get("stopPrice")),
+                "closePosition": True,
+                "status": "NEW",
+            }
+            open_orders_state.append(created)
+            return created
+
+        mock_client.futures_create_order.side_effect = fake_create_order
+
+        with patch.object(bm, "_assert_order_context_allowed", return_value=None), \
+             patch.object(bm, "_client_for_user", return_value=mock_client), \
+             patch.object(bm, "get_symbol_filters", return_value={
+                 "LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},
+                 "PRICE_FILTER": {"tickSize": "0.10"},
+                 "MIN_NOTIONAL": {"notional": "5.0"},
+             }):
+            new_oid = bm.replace_futures_stop_loss_order(
+                user_id=1,
+                symbol="BTCUSDT",
+                direction="BUY",
+                new_sl_price=64200.0,
+                old_sl_order_id="7701",
+                execution_context=bm.ORDER_CONTEXT_AUTOTRADE,
+            )
+            self.assertEqual(new_oid, "7799")
+            self.assertEqual(len(open_orders_state), 1)
+            self.assertEqual(str(open_orders_state[0]["orderId"]), "7799")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -787,17 +787,41 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             if path == "/api/trading/config":
                 cfg = trading_config.get_config(user_id)
-                creds = trading_config.get_binance_credentials(user_id)
+                creds = trading_config.get_binance_credentials(user_id, market_type=cfg.market_type)
                 open_live = position_manager.get_open_trades(user_id)
                 db = get_db()
-                closed_rows = db.execute(
-                    "SELECT * FROM active_trades WHERE user_id = %s AND status != 'open' ORDER BY closed_at DESC LIMIT 30",
-                    (user_id,),
-                ).fetchall()
+                closed_rows = []
+                try:
+                    closed_rows = db.execute(
+                        "SELECT * FROM trades WHERE user_id = %s AND status = 'closed' ORDER BY closed_at DESC LIMIT 30",
+                        (user_id,),
+                    ).fetchall()
+                except Exception:
+                    try:
+                        closed_rows = db.execute(
+                            "SELECT * FROM active_trades WHERE user_id = %s AND status != 'open' ORDER BY closed_at DESC LIMIT 30",
+                            (user_id,),
+                        ).fetchall()
+                    except Exception:
+                        closed_rows = []
                 closed_live = [dict(r.items()) for r in closed_rows]
                 safety_age = None
                 if cfg.safety_lock_at:
                     safety_age = max(0.0, time.time() - float(cfg.safety_lock_at))
+
+                # Check real-time operational status of Binance credentials (cached for 20s to avoid rate limits)
+                creds_loaded = bool(creds and creds.get("api_key") and creds.get("api_secret"))
+                creds_valid = bool(creds and creds.get("is_valid"))
+                api_status_msg = "Clés API chargées et opérationnelles" if (creds_loaded and creds_valid) else "Aucune clé API configurée ou clés invalides"
+                if creds_loaded and creds_valid and query.get("probe") == "1":
+                    try:
+                        test_connection(user_id)
+                        creds_valid = True
+                        api_status_msg = f"Connexion Binance ({cfg.market_type.upper()} {'TESTNET' if cfg.testnet else 'LIVE'}) opérationnelle"
+                    except Exception as conn_err:
+                        creds_valid = False
+                        api_status_msg = str(conn_err)
+
                 self._send_json(200, {
                     "ok": True,
                     "config": {
@@ -815,11 +839,19 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         "max_daily_loss": cfg.max_daily_loss,
                         "min_score": cfg.min_score,
                         "trailing_stop": cfg.trailing_stop,
+                        "trailing_stop_pct": cfg.trailing_stop_pct,
                         "dca_enabled": cfg.dca_enabled,
+                        "dca_steps": cfg.dca_steps,
+                        "dca_step_pct": cfg.dca_step_pct,
+                        "cooldown_seconds": cfg.cooldown_seconds,
                         "symbols": cfg.symbol_whitelist,
+                        "symbol_whitelist": cfg.symbol_whitelist,
+                        "symbol_blacklist": cfg.symbol_blacklist,
                         "daily_loss_tracked": cfg.daily_loss_accum,
-                        "credentials_valid": bool(creds and creds.get("is_valid")),
-                        "has_custom_credentials": bool(creds and creds.get("api_key")),
+                        "credentials_loaded": creds_loaded,
+                        "credentials_valid": bool(creds_loaded and creds_valid),
+                        "api_status_message": api_status_msg,
+                        "has_custom_credentials": creds_loaded,
                         "api_key_masked": (creds["api_key"][:6] + "..." + creds["api_key"][-4:]) if (creds and creds.get("api_key") and len(creds["api_key"]) > 10) else None,
                         "testnet": bool(cfg.testnet),
                         "is_testnet": bool(cfg.testnet),
@@ -827,9 +859,10 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         "safety_lock_reason": cfg.safety_lock_reason,
                         "safety_lock_at": cfg.safety_lock_at,
                         "safety_lock_age_seconds": safety_age,
-                        "safety_lock_ttl_seconds": trading_safety.DEFAULT_SAFETY_LOCK_TTL_SECONDS,
+                        "safety_lock_ttl_seconds": cfg.safety_lock_ttl_seconds or trading_safety.DEFAULT_SAFETY_LOCK_TTL_SECONDS,
                         "safety_warn": cfg.safety_warn,
                         "safety_warn_reason": cfg.safety_warn_reason,
+                        "safety_warn_at": cfg.safety_warn_at,
                     },
                     "live_trades": {
                         "open": open_live,
@@ -838,6 +871,33 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     "style_rules": STYLE_CONFIG,
                     "rejection_thresholds": REJECTION_THRESHOLDS,
                     "asset_class_rules": {k: {rk: rv for rk, rv in v.items() if rk != "symbols"} for k, v in ASSET_CLASS_RULES.items()},
+                })
+                return
+
+            if path == "/api/trading/account":
+                cfg = trading_config.get_config(user_id)
+                from binance_manager import get_full_account_info
+                from live_trader import get_open_orders
+                try:
+                    account_info = get_full_account_info(user_id, market_type=cfg.market_type)
+                except Exception as acc_err:
+                    self._send_json(200, {
+                        "ok": True,
+                        "connected": False,
+                        "error": str(acc_err),
+                        "account": None,
+                        "open_orders": [],
+                    })
+                    return
+                try:
+                    open_orders = get_open_orders(user_id)
+                except Exception:
+                    open_orders = []
+                self._send_json(200, {
+                    "ok": True,
+                    "connected": True,
+                    "account": account_info,
+                    "open_orders": open_orders,
                 })
                 return
 
@@ -1154,15 +1214,28 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     "auto_trade", "periodic_analysis_enabled", "analysis_interval_minutes",
                     "analysis_timeframe", "trading_style", "market_type", "leverage",
                     "risk_per_trade", "max_positions", "max_daily_loss", "min_score",
-                    "trailing_stop", "dca_enabled", "symbol_whitelist", "testnet",
+                    "trailing_stop", "trailing_stop_pct", "dca_enabled", "dca_steps",
+                    "dca_step_pct", "cooldown_seconds", "symbol_whitelist",
+                    "symbol_blacklist", "testnet", "safety_lock_ttl_seconds",
                 }
                 if "enabled" in body and "auto_trade" not in body:
                     updates["auto_trade"] = bool(body["enabled"])
                 if "symbols" in body and "symbol_whitelist" not in body:
                     updates["symbol_whitelist"] = body["symbols"]
+                if "is_testnet" in body and "testnet" not in body:
+                    updates["testnet"] = bool(body["is_testnet"])
                 for k, v in body.items():
                     if k in allowed_fields:
                         updates[k] = v
+
+                # Check PIN if turning auto_trade ON and user has a PIN configured
+                if updates.get("auto_trade") is True and security_manager.has_security_code(user_id):
+                    pin = str(body.get("pin", "")).strip()
+                    valid_pin, pin_msg = security_manager.verify_code(user_id, pin)
+                    if not valid_pin:
+                        self._send_json(403, {"ok": False, "error": pin_msg or "Code PIN de sécurité (6 chiffres) requis pour activer Auto-Trade."})
+                        return
+
                 cfg = trading_config.update_config(user_id, **updates)
                 self._send_json(200, {"ok": True, "message": "Configuration de trading mise à jour.", "enabled": cfg.auto_trade})
                 return
@@ -1173,7 +1246,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 if action == "engage_lock":
                     trading_safety.engage_safe_mode(user_id, reason, disable_autotrade=True)
                     msg = "Mode Sécurité (Safety Lock) activé. Auto-trade suspendu."
-                elif action == "unlock":
+                elif action in ("unlock", "clearsafe"):
                     pin = str(body.get("pin", "")).strip()
                     if security_manager.has_security_code(user_id):
                         valid_pin, pin_msg = security_manager.verify_code(user_id, pin)
@@ -1187,14 +1260,18 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         safety_lock_at=None,
                         safety_warn=False,
                         safety_warn_reason=None,
+                        safety_warn_at=None,
                     )
-                    msg = "Verrouillage Safety Lock levé avec succès."
+                    msg = "Verrouillage Safety Lock et avertissements levés avec succès."
                 elif action == "clear_warn":
                     trading_safety.clear_safety_warn(user_id)
                     msg = "Avertissement Safety Warn acquitté."
                 elif action == "reset_daily_loss":
                     trading_config.update_config(user_id, daily_loss_accum=0.0)
                     msg = "Compteur de perte journalière réinitialisé à 0.00 USDT."
+                elif action == "emergency_stop":
+                    closed_cnt = position_manager.emergency_stop_all(user_id)
+                    msg = f"Arrêt d'urgence exécuté : {closed_cnt} position(s) fermée(s) et Auto-Trade désactivé."
                 else:
                     msg = "Action effectuée."
                 self._send_json(200, {"ok": True, "message": msg})
@@ -1211,12 +1288,121 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 if "testnet" in body and bool(cfg.testnet) != testnet:
                     trading_config.update_config(user_id, testnet=testnet)
                 trading_config.save_binance_credentials(user_id, api_key, api_secret, testnet=testnet)
-                ok_conn, conn_msg = test_connection(user_id)
+                try:
+                    test_connection(user_id)
+                    ok_conn = True
+                    conn_msg = f"Clés API Binance ({cfg.market_type.upper()} {'TESTNET' if testnet else 'LIVE'}) validées et opérationnelles."
+                except Exception as conn_err:
+                    ok_conn = False
+                    conn_msg = f"Clés enregistrées mais le test de connexion a échoué : {conn_err}"
                 self._send_json(200, {
                     "ok": True,
                     "credentials_valid": ok_conn,
-                    "message": conn_msg if ok_conn else f"Clés enregistrées ({conn_msg}).",
+                    "message": conn_msg,
                 })
+                return
+
+            if path == "/api/trading/test-connection":
+                cfg = trading_config.get_config(user_id)
+                creds = trading_config.get_binance_credentials(user_id, market_type=cfg.market_type)
+                if not creds or not creds.get("api_key") or not creds.get("api_secret"):
+                    self._send_json(200, {
+                        "ok": True,
+                        "credentials_loaded": False,
+                        "credentials_valid": False,
+                        "message": "Aucune clé API Binance chargée pour ce mode.",
+                    })
+                    return
+                try:
+                    test_connection(user_id)
+                    self._send_json(200, {
+                        "ok": True,
+                        "credentials_loaded": True,
+                        "credentials_valid": True,
+                        "message": f"Connexion API Binance ({cfg.market_type.upper()} {'TESTNET' if cfg.testnet else 'LIVE'}) opérationnelle.",
+                    })
+                except Exception as conn_err:
+                    self._send_json(200, {
+                        "ok": True,
+                        "credentials_loaded": True,
+                        "credentials_valid": False,
+                        "message": str(conn_err),
+                    })
+                return
+
+            if path == "/api/trading/close-position":
+                trade_id = int(body.get("trade_id", 0))
+                if not trade_id:
+                    self._send_json(400, {"ok": False, "error": "ID de position manquant."})
+                    return
+                res = position_manager.close_trade_manual(trade_id, user_id)
+                self._send_json(200, {
+                    "ok": True,
+                    "result": res,
+                    "message": f"Position #{trade_id} ({res['symbol']}) fermée. PnL : {res['pnl_usdt']:+.2f} USDT ({res['pnl_pct']:+.2f}%).",
+                })
+                return
+
+            if path == "/api/trading/cancel-order":
+                symbol = normalize_symbol(body.get("symbol", "BTCUSDT"))
+                order_id = str(body.get("order_id", "")).strip()
+                if not order_id:
+                    self._send_json(400, {"ok": False, "error": "ID d'ordre manquant."})
+                    return
+                from live_trader import cancel_live_order
+                from binance_manager import ORDER_CONTEXT_MANUAL_AUTHENTICATED
+                cancel_live_order(user_id, symbol, order_id, execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED)
+                self._send_json(200, {"ok": True, "message": f"Ordre #{order_id} sur {symbol} annulé."})
+                return
+
+            if path == "/api/trading/live-order":
+                from live_trader import build_draft, validate_draft, execute_draft
+                from binance_manager import ORDER_CONTEXT_MANUAL_AUTHENTICATED
+                action = body.get("action", "validate")
+                symbol = normalize_symbol(body.get("symbol", "BTCUSDT"))
+                side = (body.get("side") or "BUY").upper()
+                amount = float(body.get("amount") or 0.0)
+                leverage = int(body["leverage"]) if body.get("leverage") else None
+                sl_price = float(body["sl_price"]) if body.get("sl_price") else None
+                tp_price = float(body["tp_price"]) if body.get("tp_price") else None
+                amount_mode = (body.get("amount_mode") or "fixed").lower()
+                order_type = (body.get("order_type") or "MARKET").upper()
+                entry_price = float(body["entry_price"]) if body.get("entry_price") else None
+                margin_type = (body.get("margin_type") or "ISOLATED").upper()
+                reduce_only = bool(body.get("reduce_only", False))
+
+                draft = build_draft(
+                    user_id,
+                    symbol,
+                    side,
+                    amount,
+                    leverage=leverage,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    amount_mode=amount_mode,
+                    order_type=order_type,
+                    entry_price=entry_price,
+                    margin_type=margin_type,
+                    reduce_only=reduce_only,
+                )
+                checks = validate_draft(user_id, draft)
+                if action == "execute":
+                    exec_res = execute_draft(user_id, draft, execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED)
+                    self._send_json(200, {
+                        "ok": True,
+                        "executed": True,
+                        "checks": checks,
+                        "result": exec_res,
+                        "message": f"Ordre réel {side} exécuté sur {symbol} (qty={checks['quantity']}).",
+                    })
+                else:
+                    self._send_json(200, {
+                        "ok": True,
+                        "executed": False,
+                        "draft": draft.__dict__,
+                        "checks": checks,
+                        "message": "Ordre validé. Prêt pour confirmation d'envoi.",
+                    })
                 return
 
             if path == "/api/trading/reconcile":

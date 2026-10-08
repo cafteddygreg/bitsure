@@ -217,14 +217,17 @@ def update_trailing_stop(
 
     current_sl = float(trade["sl_price"]) if trade.get("sl_price") is not None else None
     direction = (trade.get("direction") or "BUY").upper()
+    symbol = normalize_symbol(str(trade.get("symbol") or ""))
+    # Pas minimum de déplacement pour éviter de remplacer un SL identique au tick près toutes les 10s
+    min_step = 0.10 if symbol.startswith("BTC") else max(current_price * 0.0001, EPSILON)
 
     if direction == "BUY":
         new_sl = current_price - trail_distance
-        if new_sl > EPSILON and (current_sl is None or new_sl > current_sl + EPSILON):
+        if new_sl > EPSILON and (current_sl is None or new_sl >= current_sl + min_step):
             return new_sl
     else:
         new_sl = current_price + trail_distance
-        if current_sl is None or new_sl < current_sl - EPSILON:
+        if current_sl is None or new_sl <= current_sl - min_step:
             return new_sl
     return None
 

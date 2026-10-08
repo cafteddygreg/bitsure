@@ -127,6 +127,22 @@ export function App() {
   const [binanceSecret, setBinanceSecret] = useState('');
   const [binanceTestnet, setBinanceTestnet] = useState(true);
   const [safetyPinInput, setSafetyPinInput] = useState('');
+  const [testingApiConn, setTestingApiConn] = useState(false);
+  const [liveAccount, setLiveAccount] = useState<any | null>(null);
+  const [liveOpenOrders, setLiveOpenOrders] = useState<any[]>([]);
+  const [loadingLiveAccount, setLoadingLiveAccount] = useState(false);
+  const [liveOrderSymbol, setLiveOrderSymbol] = useState('BTCUSDT');
+  const [liveOrderSide, setLiveOrderSide] = useState<'BUY' | 'SELL'>('BUY');
+  const [liveOrderAmount, setLiveOrderAmount] = useState('25');
+  const [liveOrderAmountMode, setLiveOrderAmountMode] = useState<'fixed' | 'percentage'>('fixed');
+  const [liveOrderType, setLiveOrderType] = useState<'MARKET' | 'LIMIT'>('MARKET');
+  const [liveOrderEntryPrice, setLiveOrderEntryPrice] = useState('');
+  const [liveOrderSL, setLiveOrderSL] = useState('');
+  const [liveOrderTP, setLiveOrderTP] = useState('');
+  const [liveOrderLeverage, setLiveOrderLeverage] = useState('5');
+  const [liveOrderMarginType, setLiveOrderMarginType] = useState<'ISOLATED' | 'CROSS'>('ISOLATED');
+  const [liveOrderReduceOnly, setLiveOrderReduceOnly] = useState(false);
+  const [liveOrderDraftCheck, setLiveOrderDraftCheck] = useState<any | null>(null);
 
   // Account, Security PIN, Promo & Support
   const [promoCodeInput, setPromoCodeInput] = useState('');
@@ -259,19 +275,51 @@ export function App() {
     }
   }, [showToast]);
 
-  useEffect(() => {
-    loadUserAndCoreData();
-    runAnalysis('BTCUSDT', '1h', 'day');
+  const loadLiveAccountAndOrders = useCallback(async () => {
+    setLoadingLiveAccount(true);
+    try {
+      const [cfgRes, accRes] = await Promise.all([
+        apiFetch('/api/trading/config'),
+        apiFetch('/api/trading/account'),
+      ]);
+      setTradingCfg(cfgRes.config);
+      setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
+      if (accRes.connected && accRes.account) {
+        setLiveAccount(accRes.account);
+      } else {
+        setLiveAccount(null);
+      }
+      setLiveOpenOrders(accRes.open_orders || []);
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setLoadingLiveAccount(false);
+    }
   }, []);
 
   useEffect(() => {
+    loadUserAndCoreData();
+    runAnalysis('BTCUSDT', '1h', 'day');
+    const intervalId = setInterval(() => {
+      apiFetch('/api/trading/config')
+        .then((res) => {
+          setTradingCfg(res.config);
+          setLiveTrades(res.live_trades || { open: [], closed: [] });
+        })
+        .catch(() => {});
+    }, 15000);
+    return () => clearInterval(intervalId);
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'safety') loadLiveAccountAndOrders();
     if (activeTab === 'history') loadHistoryAndJournal();
     if (activeTab === 'account') loadTickets();
     if (activeTab === 'admin') {
       loadAdminOverview();
       loadTickets();
     }
-  }, [activeTab, loadHistoryAndJournal, loadTickets, loadAdminOverview]);
+  }, [activeTab, loadLiveAccountAndOrders, loadHistoryAndJournal, loadTickets, loadAdminOverview]);
 
   // Handlers
   const handleQuickSwitch = async (targetUid: number) => {
@@ -401,7 +449,7 @@ export function App() {
     }
   };
 
-  const handleUpdateTradingConfig = async (patch: Partial<TradingConfigState>) => {
+  const handleUpdateTradingConfig = async (patch: Partial<TradingConfigState> & { pin?: string }) => {
     try {
       await apiFetch('/api/trading/config', {
         method: 'POST',
@@ -409,6 +457,7 @@ export function App() {
       });
       const cfgRes = await apiFetch('/api/trading/config');
       setTradingCfg(cfgRes.config);
+      setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
       showToast('Paramètres de trading mis à jour.', 'success');
     } catch (err: any) {
       showToast(err.message, 'error');
@@ -423,6 +472,7 @@ export function App() {
       });
       const cfgRes = await apiFetch('/api/trading/config');
       setTradingCfg(cfgRes.config);
+      setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
       showToast(res.message, 'success');
     } catch (err: any) {
       showToast(err.message, 'error');
@@ -440,11 +490,81 @@ export function App() {
           testnet: binanceTestnet,
         }),
       });
-      const cfgRes = await apiFetch('/api/trading/config');
-      setTradingCfg(cfgRes.config);
+      await loadLiveAccountAndOrders();
       setBinanceKey('');
       setBinanceSecret('');
+      showToast(res.message, res.credentials_valid ? 'success' : 'error');
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleTestBinanceConnection = async () => {
+    setTestingApiConn(true);
+    try {
+      const res = await apiFetch('/api/trading/test-connection', { method: 'POST' });
+      await loadLiveAccountAndOrders();
+      showToast(res.message, res.credentials_valid ? 'success' : 'error');
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    } finally {
+      setTestingApiConn(false);
+    }
+  };
+
+  const handleCloseLivePosition = async (tradeId: number) => {
+    try {
+      const res = await apiFetch('/api/trading/close-position', {
+        method: 'POST',
+        body: JSON.stringify({ trade_id: tradeId }),
+      });
+      await loadLiveAccountAndOrders();
       showToast(res.message, 'success');
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleCancelLiveOrder = async (symbol: string, orderId: string) => {
+    try {
+      const res = await apiFetch('/api/trading/cancel-order', {
+        method: 'POST',
+        body: JSON.stringify({ symbol, order_id: orderId }),
+      });
+      await loadLiveAccountAndOrders();
+      showToast(res.message, 'info');
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleLiveOrderAction = async (action: 'validate' | 'execute') => {
+    try {
+      const res = await apiFetch('/api/trading/live-order', {
+        method: 'POST',
+        body: JSON.stringify({
+          action,
+          symbol: liveOrderSymbol,
+          side: liveOrderSide,
+          amount: parseFloat(liveOrderAmount) || 0,
+          amount_mode: liveOrderAmountMode,
+          order_type: liveOrderType,
+          entry_price: liveOrderType === 'LIMIT' ? parseFloat(liveOrderEntryPrice) || null : null,
+          sl_price: liveOrderSL ? parseFloat(liveOrderSL) : null,
+          tp_price: liveOrderTP ? parseFloat(liveOrderTP) : null,
+          leverage: parseInt(liveOrderLeverage, 10) || 1,
+          margin_type: liveOrderMarginType,
+          reduce_only: liveOrderReduceOnly,
+        }),
+      });
+      if (action === 'validate') {
+        setLiveOrderDraftCheck(res.checks);
+        showToast(res.message, 'info');
+      } else {
+        setLiveOrderDraftCheck(null);
+        await loadLiveAccountAndOrders();
+        showToast(res.message, 'success');
+      }
     } catch (err: any) {
       showToast(err.message, 'error');
     }
@@ -631,6 +751,7 @@ export function App() {
                 label: 'Auto-Trade & Safety',
                 icon: ShieldCheck,
                 warn: tradingCfg?.safety_lock || tradingCfg?.safety_warn,
+                apiConnected: Boolean(tradingCfg?.credentials_valid),
               },
               { id: 'history', label: 'Historique & Journal', icon: BookOpen },
               { id: 'account', label: 'Compte, Plans & PIN', icon: CreditCard },
@@ -648,14 +769,37 @@ export function App() {
                       : 'text-[#94A3B8] hover:text-[#F1F5F9] hover:bg-white/[0.04] border border-transparent'
                   }`}
                 >
-                  <div className="flex items-center gap-2.5">
-                    <Icon className="w-4 h-4" />
-                    <span>{item.label}</span>
+                  <div className="flex items-center gap-2">
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span className="truncate">{item.label}</span>
                   </div>
-                  {item.count !== undefined && item.count > 0 && (
-                    <span className="font-mono-tabular text-[11px] text-[#94A3B8]">{item.count}</span>
-                  )}
-                  {item.warn && <span className="w-2 h-2 rounded-full bg-[#F59E0B]" />}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {item.id === 'safety' && (
+                      <span
+                        title={
+                          item.apiConnected
+                            ? `Clés API Binance chargées et opérationnelles (${tradingCfg?.testnet ? 'TESTNET' : 'LIVE'})`
+                            : 'Clés API Binance absentes ou non opérationnelles'
+                        }
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono-tabular font-bold border ${
+                          item.apiConnected
+                            ? 'bg-[#10B981]/15 text-[#10B981] border-[#10B981]/40'
+                            : 'bg-[#F43F5E]/15 text-[#FB7185] border-[#F43F5E]/40'
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            item.apiConnected ? 'bg-[#10B981] animate-pulse' : 'bg-[#F43F5E]'
+                          }`}
+                        />
+                        {item.apiConnected ? 'API OK' : 'API OFF'}
+                      </span>
+                    )}
+                    {item.count !== undefined && item.count > 0 && (
+                      <span className="font-mono-tabular text-[11px] text-[#94A3B8]">{item.count}</span>
+                    )}
+                    {item.warn && <span className="w-2 h-2 rounded-full bg-[#F59E0B]" title="Avertissement ou Safety Lock actif" />}
+                  </div>
                 </button>
               );
             })}
@@ -1519,7 +1663,7 @@ export function App() {
              ========================================================= */}
           {activeTab === 'safety' && tradingCfg && (
             <div className="space-y-6">
-              {/* Safety State Banner */}
+              {/* Top Status & Safety State Banner */}
               <div
                 className={`p-5 rounded-xl border flex flex-wrap items-center justify-between gap-4 ${
                   tradingCfg.safety_lock
@@ -1529,8 +1673,8 @@ export function App() {
                     : 'bg-[#10B981]/10 border-[#10B981]/30'
                 }`}
               >
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 font-display font-bold text-base">
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-2.5 font-display font-bold text-base">
                     {tradingCfg.safety_lock ? (
                       <>
                         <ShieldAlert className="w-5 h-5 text-[#F43F5E]" />
@@ -1539,7 +1683,7 @@ export function App() {
                     ) : tradingCfg.safety_warn ? (
                       <>
                         <AlertTriangle className="w-5 h-5 text-[#F59E0B]" />
-                        <span className="text-[#FBBF24]">SAFETY WARN (Vigilance Active)</span>
+                        <span className="text-[#FBBF24]">SAFETY WARN (Avertissement Temporaire Actif)</span>
                       </>
                     ) : (
                       <>
@@ -1547,236 +1691,1234 @@ export function App() {
                         <span className="text-[#34D399]">SAFETY CENTER OPÉRATIONNEL</span>
                       </>
                     )}
+
+                    <span
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-xs font-mono-tabular border ${
+                        tradingCfg.credentials_valid
+                          ? 'bg-[#10B981]/20 text-[#34D399] border-[#10B981]/40'
+                          : 'bg-[#F43F5E]/20 text-[#FB7185] border-[#F43F5E]/40'
+                      }`}
+                    >
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          tradingCfg.credentials_valid ? 'bg-[#10B981] animate-pulse' : 'bg-[#F43F5E]'
+                        }`}
+                      />
+                      {tradingCfg.credentials_valid
+                        ? `API BINANCE CONNECTÉE (${tradingCfg.market_type.toUpperCase()} • ${
+                            tradingCfg.testnet ? 'TESTNET' : 'LIVE RÉEL'
+                          })`
+                        : 'API BINANCE DÉCONNECTÉE / CLÉS REQUISES'}
+                    </span>
                   </div>
+
                   <div className="text-xs text-[#94A3B8]">
                     {tradingCfg.safety_lock_reason ||
                       tradingCfg.safety_warn_reason ||
-                      'Tous les garde-fous de risque (exposition max 20%, fraicheur de signal 180s, TTL 3600s) sont actifs.'}
+                      tradingCfg.api_status_message ||
+                      'Tous les garde-fous de risque (exposition max 20%, fraîcheur de signal 180s, TTL 3600s) sont actifs.'}
                   </div>
+                  {(tradingCfg.safety_lock_at || tradingCfg.safety_warn_at) && (
+                    <div className="text-[11px] font-mono-tabular text-[#64748B]">
+                      {tradingCfg.safety_lock_at && (
+                        <span>
+                          Lock activé il y a {Math.round(tradingCfg.safety_lock_age_seconds || 0)}s (TTL:{' '}
+                          {tradingCfg.safety_lock_ttl_seconds}s){' '}
+                        </span>
+                      )}
+                      {tradingCfg.safety_warn_at && (
+                        <span>
+                          • Warn horodaté : {new Date(tradingCfg.safety_warn_at * 1000).toLocaleTimeString()}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 text-xs">
-                  {tradingCfg.safety_lock ? (
-                    <div className="flex items-center gap-2">
-                      {user?.has_pin && (
-                        <input
-                          type="password"
-                          maxLength={4}
-                          placeholder="PIN (4 ch.)"
-                          value={safetyPinInput}
-                          onChange={(e) => setSafetyPinInput(e.target.value)}
-                          className="w-24 px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded font-mono-tabular text-[#F1F5F9]"
-                        />
-                      )}
-                      <button
-                        onClick={() => handleSafetyAction('unlock')}
-                        className="px-3.5 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg"
-                      >
-                        Déverrouiller Safety Lock
-                      </button>
-                    </div>
-                  ) : (
+                  {(tradingCfg.safety_lock || tradingCfg.safety_warn || user?.has_pin) && (
+                    <input
+                      type="password"
+                      maxLength={6}
+                      placeholder="PIN (6 chiffres)"
+                      value={safetyPinInput}
+                      onChange={(e) => setSafetyPinInput(e.target.value)}
+                      className="w-32 px-2.5 py-2 bg-[#090D16] border border-white/15 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                    />
+                  )}
+                  {(tradingCfg.safety_lock || tradingCfg.safety_warn) && (
+                    <button
+                      onClick={() => handleSafetyAction('clearsafe')}
+                      className="px-3.5 py-2 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors"
+                    >
+                      Acquitter / Déverrouiller (/clearsafe)
+                    </button>
+                  )}
+                  {!tradingCfg.safety_lock && (
                     <button
                       onClick={() => handleSafetyAction('engage_lock', 'Verrouillage d’urgence manuel par l’opérateur')}
-                      className="px-3.5 py-2 bg-[#F43F5E]/20 hover:bg-[#F43F5E]/30 border border-[#F43F5E]/40 text-[#FB7185] font-semibold rounded-lg"
+                      className="px-3.5 py-2 bg-[#F43F5E]/20 hover:bg-[#F43F5E]/30 border border-[#F43F5E]/40 text-[#FB7185] font-semibold rounded-lg transition-colors"
                     >
-                      Activer Arrêt d'Urgence (Safety Lock)
+                      Verrouiller Safe Mode
                     </button>
                   )}
                   <button
-                    onClick={() =>
-                      apiFetch('/api/trading/reconcile', { method: 'POST' }).then(() =>
-                        showToast('Réconciliation des positions Binance exécutée.', 'success')
-                      )
-                    }
-                    className="px-3.5 py-2 bg-[#111827] hover:bg-[#1E293B] border border-white/15 text-[#F1F5F9] rounded-lg"
+                    onClick={() => handleSafetyAction('emergency_stop')}
+                    className="px-3.5 py-2 bg-[#F43F5E] hover:bg-[#E11D48] text-white font-semibold rounded-lg transition-colors"
+                    title="Ferme toutes les positions ouvertes et désactive AutoTrade (/emergency)"
                   >
-                    Réconcilier Positions Binance
+                    🛑 Emergency Stop All (/emergency)
+                  </button>
+                  <button
+                    onClick={() =>
+                      apiFetch('/api/trading/reconcile', { method: 'POST' }).then(() => {
+                        loadLiveAccountAndOrders();
+                        showToast('Réconciliation DB ↔ Binance exécutée.', 'success');
+                      })
+                    }
+                    className="px-3.5 py-2 bg-[#111827] hover:bg-[#1E293B] border border-white/15 text-[#F1F5F9] rounded-lg transition-colors"
+                  >
+                    Réconcilier DB ↔ Binance
                   </button>
                 </div>
               </div>
 
+              {/* Row 1: Complete Bot Auto-Trade Parameters + API Keys & Real-Time Account */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                {/* Left: Auto-Trade & Risk Parameters */}
-                <div className="lg:col-span-7 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
-                  <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
-                    <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                      Paramètres d'Exécution & Gestion du Risque
-                    </h3>
-                    <button
-                      onClick={() => handleUpdateTradingConfig({ enabled: !tradingCfg.enabled })}
-                      className={`px-3 py-1 rounded text-xs font-semibold ${
-                        tradingCfg.enabled
-                          ? 'bg-[#10B981] text-[#090D16]'
-                          : 'bg-[#1E293B] text-[#94A3B8] border border-white/10'
-                      }`}
-                    >
-                      Auto-Trade : {tradingCfg.enabled ? 'ACTIVÉ' : 'DÉSACTIVÉ'}
-                    </button>
+                {/* Left (7 cols): Full Bot Configuration (/config, /autotrade, /periodic_analysis) */}
+                <div className="lg:col-span-7 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] pb-3.5">
+                    <div>
+                      <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                        Configuration Complète Auto-Trade & Stratégie (Miroir Bot Telegram)
+                      </h3>
+                      <p className="text-xs text-[#64748B]">
+                        Synchronisé en temps réel avec `/config`, `/autotrade` et `/periodic_analysis`. Toute modification critique suspend Auto-Trade par sécurité.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() =>
+                          handleUpdateTradingConfig({
+                            enabled: !tradingCfg.enabled,
+                            pin: safetyPinInput,
+                          })
+                        }
+                        className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                          tradingCfg.enabled
+                            ? 'bg-[#10B981] text-[#090D16]'
+                            : 'bg-[#1E293B] text-[#94A3B8] border border-white/10 hover:text-[#F1F5F9]'
+                        }`}
+                      >
+                        Auto-Trade : {tradingCfg.enabled ? 'ON ✅' : 'OFF ❌'}
+                      </button>
+                      <button
+                        onClick={() => handleUpdateTradingConfig({ testnet: !tradingCfg.testnet })}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-mono-tabular font-semibold border transition-colors ${
+                          tradingCfg.testnet
+                            ? 'bg-[#3B82F6]/15 text-[#60A5FA] border-[#3B82F6]/40'
+                            : 'bg-[#F59E0B]/15 text-[#FBBF24] border-[#F59E0B]/40'
+                        }`}
+                      >
+                        {tradingCfg.testnet ? 'MODE: TESTNET' : 'MODE: LIVE RÉEL'}
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                    <div>
-                      <label className="block text-[#94A3B8] mb-1">Type de Marché Binance</label>
-                      <select
-                        value={tradingCfg.market_type}
-                        onChange={(e) => handleUpdateTradingConfig({ market_type: e.target.value as 'futures' | 'spot' })}
-                        className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+                  {/* Section 1: Market, Style & Periodic Analysis (/setmarket, /settradingstyle, /setanalysistf, /setanalysisinterval) */}
+                  <div className="space-y-3">
+                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#10B981]">
+                      1. Marché, Style & Analyse Périodique
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                      <div>
+                        <label className="block text-[#94A3B8] mb-1">Marché (/setmarket)</label>
+                        <select
+                          value={tradingCfg.market_type}
+                          onChange={(e) =>
+                            handleUpdateTradingConfig({ market_type: e.target.value as 'futures' | 'spot' })
+                          }
+                          className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+                        >
+                          <option value="futures">FUTURES (USDT-M)</option>
+                          <option value="spot">SPOT</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[#94A3B8] mb-1">Style (/settradingstyle)</label>
+                        <select
+                          value={tradingCfg.trading_style}
+                          onChange={(e) => {
+                            const st = e.target.value;
+                            const patch: Partial<TradingConfigState> = { trading_style: st };
+                            if (st === 'scalping') patch.analysis_timeframe = '5m';
+                            if (st === 'scalping_15m') patch.analysis_timeframe = '15m';
+                            handleUpdateTradingConfig(patch);
+                          }}
+                          className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+                        >
+                          {STYLES.map((st) => (
+                            <option key={st.id} value={st.id}>
+                              {st.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[#94A3B8] mb-1">Timeframe (/setanalysistf)</label>
+                        <select
+                          value={tradingCfg.analysis_timeframe}
+                          onChange={(e) => handleUpdateTradingConfig({ analysis_timeframe: e.target.value })}
+                          className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                        >
+                          {TIMEFRAMES.map((tf) => (
+                            <option key={tf} value={tf}>
+                              {tf.toUpperCase()}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[#94A3B8] mb-1">Intervalle Scan (/setanalysisinterval)</label>
+                        <div className="flex gap-1.5">
+                          {[5, 10].map((mins) => (
+                            <button
+                              key={mins}
+                              type="button"
+                              onClick={() => handleUpdateTradingConfig({ analysis_interval_minutes: mins })}
+                              className={`flex-1 py-2 rounded-lg font-mono-tabular font-semibold border transition-colors ${
+                                tradingCfg.analysis_interval_minutes === mins
+                                  ? 'bg-[#10B981]/20 border-[#10B981] text-[#10B981]'
+                                  : 'bg-[#090D16] border-white/10 text-[#94A3B8] hover:text-[#F1F5F9]'
+                              }`}
+                            >
+                              {mins} min
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-[#090D16] border border-white/[0.06] text-xs">
+                      <label className="flex items-center gap-2.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={tradingCfg.periodic_analysis_enabled}
+                          onChange={(e) =>
+                            handleUpdateTradingConfig({ periodic_analysis_enabled: e.target.checked })
+                          }
+                        />
+                        <span className="font-medium text-[#F1F5F9]">
+                          Analyse Périodique Automatique (/periodic_analysis) — toutes les{' '}
+                          {tradingCfg.analysis_interval_minutes} min en {tradingCfg.analysis_timeframe.toUpperCase()}
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedTimeframe(tradingCfg.analysis_timeframe);
+                          setSelectedStyle(tradingCfg.trading_style);
+                          runMultiScan();
+                          showToast(
+                            `Scan périodique immédiat lancé (${tradingCfg.analysis_timeframe.toUpperCase()} • ${tradingCfg.trading_style})`,
+                            'info'
+                          );
+                        }}
+                        className="px-3 py-1.5 bg-[#10B981]/15 hover:bg-[#10B981]/25 border border-[#10B981]/40 text-[#10B981] rounded-md font-semibold flex items-center gap-1.5"
                       >
-                        <option value="futures">Binance Futures ( Perpétuels USDT )</option>
-                        <option value="spot">Binance Spot</option>
-                      </select>
+                        <Play className="w-3.5 h-3.5" />
+                        <span>Scanner Maintenant (/periodic_analysis now)</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Section 2: Leverage, Risk, Max Positions, Min Score, Daily Max Loss, Cooldown */}
+                  <div className="space-y-3 pt-2 border-t border-white/[0.06]">
+                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#10B981]">
+                      2. Paramètres de Risque, Levier & Filtres d'Exécution
                     </div>
 
-                    <div>
-                      <label className="block text-[#94A3B8] mb-1">Style Stratégique</label>
-                      <select
-                        value={tradingCfg.trading_style}
-                        onChange={(e) => handleUpdateTradingConfig({ trading_style: e.target.value })}
-                        className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
-                      >
-                        {STYLES.map((st) => (
-                          <option key={st.id} value={st.id}>
-                            {st.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-[#94A3B8] mb-1">Levier par défaut (1x–20x)</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="20"
-                        value={tradingCfg.leverage}
-                        onChange={(e) => handleUpdateTradingConfig({ leverage: Number(e.target.value) })}
-                        className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[#94A3B8] mb-1">Risque par Trade (% du capital)</label>
-                      <input
-                        type="number"
-                        step="0.25"
-                        min="0.25"
-                        max="10"
-                        value={tradingCfg.risk_per_trade}
-                        onChange={(e) => handleUpdateTradingConfig({ risk_per_trade: Number(e.target.value) })}
-                        className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[#94A3B8] mb-1">Score Teddy Minimum Requis (50–95)</label>
-                      <input
-                        type="number"
-                        min="50"
-                        max="95"
-                        value={tradingCfg.min_score}
-                        onChange={(e) => handleUpdateTradingConfig({ min_score: Number(e.target.value) })}
-                        className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[#94A3B8] mb-1">Perte Max Journalière (%) • Suivi : {tradingCfg.daily_loss_tracked.toFixed(2)} USDT</label>
-                      <div className="flex gap-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
+                      {/* Leverage */}
+                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[#94A3B8]">Levier (/setleverage 1–125)</span>
+                          <span className="font-mono-tabular font-bold text-[#10B981]">x{tradingCfg.leverage}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {[1, 2, 5, 10, 20, 50].map((lev) => (
+                            <button
+                              key={lev}
+                              type="button"
+                              onClick={() => handleUpdateTradingConfig({ leverage: lev })}
+                              className={`px-2 py-1 rounded font-mono-tabular text-[11px] border ${
+                                tradingCfg.leverage === lev
+                                  ? 'bg-[#10B981] text-[#090D16] border-[#10B981] font-bold'
+                                  : 'bg-[#111827] text-[#94A3B8] border-white/10 hover:text-[#F1F5F9]'
+                              }`}
+                            >
+                              x{lev}
+                            </button>
+                          ))}
+                        </div>
                         <input
                           type="number"
-                          step="0.5"
-                          value={tradingCfg.max_daily_loss}
-                          onChange={(e) => handleUpdateTradingConfig({ max_daily_loss: Number(e.target.value) })}
-                          className="flex-1 px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                          min="1"
+                          max="125"
+                          value={tradingCfg.leverage}
+                          onChange={(e) =>
+                            handleUpdateTradingConfig({
+                              leverage: Math.min(125, Math.max(1, Number(e.target.value) || 1)),
+                            })
+                          }
+                          className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
                         />
-                        <button
-                          onClick={() => handleSafetyAction('reset_daily_loss')}
-                          className="px-2.5 py-2 bg-[#1E293B] rounded-lg text-[#94A3B8] hover:text-[#F1F5F9]"
-                        >
-                          Reset
-                        </button>
+                      </div>
+
+                      {/* Risk per trade */}
+                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[#94A3B8]">Risque / Trade (/setrisk)</span>
+                          <span className="font-mono-tabular font-bold text-[#10B981]">
+                            {tradingCfg.risk_per_trade}%
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {[1, 2, 5, 10].map((r) => (
+                            <button
+                              key={r}
+                              type="button"
+                              onClick={() => handleUpdateTradingConfig({ risk_per_trade: r })}
+                              className={`px-2 py-1 rounded font-mono-tabular text-[11px] border ${
+                                tradingCfg.risk_per_trade === r
+                                  ? 'bg-[#10B981] text-[#090D16] border-[#10B981] font-bold'
+                                  : 'bg-[#111827] text-[#94A3B8] border-white/10 hover:text-[#F1F5F9]'
+                              }`}
+                            >
+                              {r}%
+                            </button>
+                          ))}
+                        </div>
+                        <input
+                          type="number"
+                          step="0.25"
+                          min="0.25"
+                          max="20"
+                          value={tradingCfg.risk_per_trade}
+                          onChange={(e) =>
+                            handleUpdateTradingConfig({
+                              risk_per_trade: Math.min(20, Math.max(0.25, Number(e.target.value) || 1)),
+                            })
+                          }
+                          className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                        />
+                      </div>
+
+                      {/* Max Positions */}
+                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[#94A3B8]">Max Positions (/setmaxpos)</span>
+                          <span className="font-mono-tabular font-bold text-[#10B981]">
+                            {tradingCfg.max_positions}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {[1, 3, 5, 10].map((mp) => (
+                            <button
+                              key={mp}
+                              type="button"
+                              onClick={() => handleUpdateTradingConfig({ max_positions: mp })}
+                              className={`px-2.5 py-1 rounded font-mono-tabular text-[11px] border ${
+                                tradingCfg.max_positions === mp
+                                  ? 'bg-[#10B981] text-[#090D16] border-[#10B981] font-bold'
+                                  : 'bg-[#111827] text-[#94A3B8] border-white/10 hover:text-[#F1F5F9]'
+                              }`}
+                            >
+                              {mp}
+                            </button>
+                          ))}
+                        </div>
+                        <input
+                          type="number"
+                          min="1"
+                          max="10"
+                          value={tradingCfg.max_positions}
+                          onChange={(e) =>
+                            handleUpdateTradingConfig({
+                              max_positions: Math.min(10, Math.max(1, Number(e.target.value) || 1)),
+                            })
+                          }
+                          className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                        />
+                      </div>
+
+                      {/* Min Score */}
+                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[#94A3B8]">Score Min (/setminscore)</span>
+                          <span className="font-mono-tabular font-bold text-[#10B981]">
+                            {tradingCfg.min_score}/100
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {[65, 68, 72, 78].map((sc) => (
+                            <button
+                              key={sc}
+                              type="button"
+                              onClick={() => handleUpdateTradingConfig({ min_score: sc })}
+                              className={`px-2 py-1 rounded font-mono-tabular text-[11px] border ${
+                                tradingCfg.min_score === sc
+                                  ? 'bg-[#10B981] text-[#090D16] border-[#10B981] font-bold'
+                                  : 'bg-[#111827] text-[#94A3B8] border-white/10 hover:text-[#F1F5F9]'
+                              }`}
+                            >
+                              {sc}
+                            </button>
+                          ))}
+                        </div>
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          value={tradingCfg.min_score}
+                          onChange={(e) =>
+                            handleUpdateTradingConfig({
+                              min_score: Math.min(100, Math.max(0, Number(e.target.value) || 68)),
+                            })
+                          }
+                          className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                        />
+                      </div>
+
+                      {/* Daily Max Loss */}
+                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[#94A3B8]">Perte Max/Jour (/setdailymaxloss)</span>
+                          <span className="font-mono-tabular font-bold text-[#F43F5E]">
+                            {tradingCfg.max_daily_loss}%
+                          </span>
+                        </div>
+                        <div className="text-[11px] font-mono-tabular text-[#64748B]">
+                          Cumul jour : {(tradingCfg.daily_loss_tracked || 0).toFixed(2)} USDT
+                        </div>
+                        <div className="flex gap-1.5">
+                          <input
+                            type="number"
+                            step="0.5"
+                            min="0.5"
+                            max="100"
+                            value={tradingCfg.max_daily_loss}
+                            onChange={(e) =>
+                              handleUpdateTradingConfig({
+                                max_daily_loss: Math.min(100, Math.max(0.5, Number(e.target.value) || 5)),
+                              })
+                            }
+                            className="flex-1 px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSafetyAction('reset_daily_loss')}
+                            className="px-2.5 py-1.5 bg-[#1E293B] hover:bg-[#334155] rounded text-[11px] text-[#F1F5F9]"
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Cooldown */}
+                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[#94A3B8]">Cooldown (/setcooldown)</span>
+                          <span className="font-mono-tabular font-bold text-[#F59E0B]">
+                            {tradingCfg.cooldown_seconds || 0}s
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {[0, 60, 300, 900, 3600].map((cd) => (
+                            <button
+                              key={cd}
+                              type="button"
+                              onClick={() => handleUpdateTradingConfig({ cooldown_seconds: cd })}
+                              className={`px-2 py-1 rounded font-mono-tabular text-[11px] border ${
+                                (tradingCfg.cooldown_seconds || 0) === cd
+                                  ? 'bg-[#10B981] text-[#090D16] border-[#10B981] font-bold'
+                                  : 'bg-[#111827] text-[#94A3B8] border-white/10 hover:text-[#F1F5F9]'
+                              }`}
+                            >
+                              {cd === 0 ? '0s' : cd < 3600 ? `${cd / 60}m` : '1h'}
+                            </button>
+                          ))}
+                        </div>
+                        <input
+                          type="number"
+                          min="0"
+                          max="86400"
+                          value={tradingCfg.cooldown_seconds || 0}
+                          onChange={(e) =>
+                            handleUpdateTradingConfig({
+                              cooldown_seconds: Math.min(86400, Math.max(0, Number(e.target.value) || 0)),
+                            })
+                          }
+                          className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                        />
                       </div>
                     </div>
                   </div>
 
-                  <div className="pt-2 flex flex-wrap gap-4 text-xs">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={tradingCfg.trailing_stop}
-                        onChange={(e) => handleUpdateTradingConfig({ trailing_stop: e.target.checked })}
-                      />
-                      <span>Trailing Stop Dynamique ATR</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={tradingCfg.dca_enabled}
-                        onChange={(e) => handleUpdateTradingConfig({ dca_enabled: e.target.checked })}
-                      />
-                      <span>DCA Intelligent Autorisé</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={tradingCfg.periodic_analysis_enabled}
-                        onChange={(e) => handleUpdateTradingConfig({ periodic_analysis_enabled: e.target.checked })}
-                      />
-                      <span>Scan Périodique Automatique ({tradingCfg.analysis_interval_minutes}m)</span>
-                    </label>
+                  {/* Section 3: Trailing Stop ATR & DCA Parameters (/settrailing, /setdca) */}
+                  <div className="space-y-3 pt-2 border-t border-white/[0.06]">
+                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#10B981]">
+                      3. Trailing Stop Dynamique (ATR) & DCA (/settrailing • /setdca)
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                      {/* Trailing Stop */}
+                      <div className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-2 cursor-pointer font-semibold text-[#F1F5F9]">
+                            <input
+                              type="checkbox"
+                              checked={tradingCfg.trailing_stop}
+                              onChange={(e) => handleUpdateTradingConfig({ trailing_stop: e.target.checked })}
+                            />
+                            <span>Trailing Stop ATR (/settrailing)</span>
+                          </label>
+                          <span className="font-mono-tabular text-[#10B981]">
+                            {tradingCfg.trailing_stop ? 'ON' : 'OFF'} ({tradingCfg.trailing_stop_pct ?? 1.0}%)
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {[1, 1.5, 2, 3, 5].map((pct) => (
+                            <button
+                              key={pct}
+                              type="button"
+                              onClick={() =>
+                                handleUpdateTradingConfig({ trailing_stop: true, trailing_stop_pct: pct })
+                              }
+                              className={`px-2 py-1 rounded font-mono-tabular text-[11px] border ${
+                                tradingCfg.trailing_stop_pct === pct
+                                  ? 'bg-[#10B981] text-[#090D16] border-[#10B981] font-bold'
+                                  : 'bg-[#111827] text-[#94A3B8] border-white/10 hover:text-[#F1F5F9]'
+                              }`}
+                            >
+                              {pct}%
+                            </button>
+                          ))}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[#94A3B8] text-[11px]">Facteur / Distance (0.1–20%) :</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0.1"
+                            max="20"
+                            value={tradingCfg.trailing_stop_pct ?? 1.0}
+                            onChange={(e) =>
+                              handleUpdateTradingConfig({
+                                trailing_stop_pct: Math.min(20, Math.max(0.1, Number(e.target.value) || 1.0)),
+                              })
+                            }
+                            className="w-24 px-2 py-1 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          />
+                        </div>
+                      </div>
+
+                      {/* DCA */}
+                      <div className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-2 cursor-pointer font-semibold text-[#F1F5F9]">
+                            <input
+                              type="checkbox"
+                              checked={tradingCfg.dca_enabled}
+                              onChange={(e) => handleUpdateTradingConfig({ dca_enabled: e.target.checked })}
+                            />
+                            <span>Configuration DCA (/setdca)</span>
+                          </label>
+                          <span className="font-mono-tabular text-[#F59E0B]">
+                            {tradingCfg.dca_enabled ? 'ON' : 'OFF'} ({tradingCfg.dca_steps ?? 3} ét.,{' '}
+                            {tradingCfg.dca_step_pct ?? 2.0}%)
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[11px] text-[#94A3B8] mb-1">Étapes (1–10)</label>
+                            <input
+                              type="number"
+                              min="1"
+                              max="10"
+                              value={tradingCfg.dca_steps ?? 3}
+                              onChange={(e) =>
+                                handleUpdateTradingConfig({
+                                  dca_steps: Math.min(10, Math.max(1, Number(e.target.value) || 3)),
+                                })
+                              }
+                              className="w-full px-2 py-1 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] text-[#94A3B8] mb-1">Écart % (0.1–20%)</label>
+                            <input
+                              type="number"
+                              step="0.5"
+                              min="0.1"
+                              max="20"
+                              value={tradingCfg.dca_step_pct ?? 2.0}
+                              onChange={(e) =>
+                                handleUpdateTradingConfig({
+                                  dca_step_pct: Math.min(20, Math.max(0.1, Number(e.target.value) || 2.0)),
+                                })
+                              }
+                              className="w-full px-2 py-1 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Section 4: Whitelist & Blacklist (/whitelist, /blacklist) */}
+                  <div className="space-y-3 pt-2 border-t border-white/[0.06]">
+                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#10B981]">
+                      4. Filtrage des Symboles Documentés (/whitelist • /blacklist)
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                      {/* Whitelist */}
+                      <div className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-[#F1F5F9]">✅ Whitelist AutoTrade</span>
+                          {(tradingCfg.symbol_whitelist || []).length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateTradingConfig({ symbol_whitelist: [] })}
+                              className="text-[11px] text-[#F43F5E] hover:underline"
+                            >
+                              Vider (clear)
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {SYMBOLS.map((s) => {
+                            const active = (tradingCfg.symbol_whitelist || []).includes(s.id);
+                            return (
+                              <button
+                                key={s.id}
+                                type="button"
+                                onClick={() => {
+                                  const cur = tradingCfg.symbol_whitelist || [];
+                                  const next = active ? cur.filter((x) => x !== s.id) : [...cur, s.id];
+                                  handleUpdateTradingConfig({ symbol_whitelist: next });
+                                }}
+                                className={`px-2.5 py-1 rounded font-mono-tabular text-[11px] border transition-colors ${
+                                  active
+                                    ? 'bg-[#10B981]/20 border-[#10B981] text-[#10B981] font-semibold'
+                                    : 'bg-[#111827] border-white/10 text-[#94A3B8] hover:text-[#F1F5F9]'
+                                }`}
+                              >
+                                {active ? '✓ ' : '+ '}
+                                {s.id}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="text-[11px] text-[#64748B]">
+                          {(tradingCfg.symbol_whitelist || []).length === 0
+                            ? 'Aucune restriction (tous les symboles documentés sont autorisés).'
+                            : `Actifs autorisés : ${(tradingCfg.symbol_whitelist || []).join(', ')}`}
+                        </div>
+                      </div>
+
+                      {/* Blacklist */}
+                      <div className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-[#F1F5F9]">🚫 Blacklist AutoTrade</span>
+                          {(tradingCfg.symbol_blacklist || []).length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateTradingConfig({ symbol_blacklist: [] })}
+                              className="text-[11px] text-[#F43F5E] hover:underline"
+                            >
+                              Vider (clear)
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {SYMBOLS.map((s) => {
+                            const active = (tradingCfg.symbol_blacklist || []).includes(s.id);
+                            return (
+                              <button
+                                key={s.id}
+                                type="button"
+                                onClick={() => {
+                                  const cur = tradingCfg.symbol_blacklist || [];
+                                  const next = active ? cur.filter((x) => x !== s.id) : [...cur, s.id];
+                                  handleUpdateTradingConfig({ symbol_blacklist: next });
+                                }}
+                                className={`px-2.5 py-1 rounded font-mono-tabular text-[11px] border transition-colors ${
+                                  active
+                                    ? 'bg-[#F43F5E]/20 border-[#F43F5E] text-[#FB7185] font-semibold'
+                                    : 'bg-[#111827] border-white/10 text-[#94A3B8] hover:text-[#F1F5F9]'
+                                }`}
+                              >
+                                {active ? '✕ ' : '+ '}
+                                {s.id}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="text-[11px] text-[#64748B]">
+                          {(tradingCfg.symbol_blacklist || []).length === 0
+                            ? 'Aucun actif bloqué.'
+                            : `Actifs exclus : ${(tradingCfg.symbol_blacklist || []).join(', ')}`}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                {/* Right: Encrypted Binance API Credentials */}
-                <div className="lg:col-span-5 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
-                  <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
-                    <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                      Clés API Binance (Chiffrement Fernet)
-                    </h3>
-                    <span className="font-mono-tabular text-xs text-[#10B981]">
-                      {tradingCfg.has_custom_credentials ? `Clé : ${tradingCfg.api_key_masked}` : 'Testnet par défaut'}
-                    </span>
+                {/* Right (5 cols): API Credentials (/setapikeys) + Real-Time Account (/account) */}
+                <div className="lg:col-span-5 space-y-6">
+                  {/* Binance API Credentials Card */}
+                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                    <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
+                      <div className="flex items-center gap-2">
+                        <Key className="w-4 h-4 text-[#10B981]" />
+                        <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                          Clés API Binance (/setapikeys)
+                        </h3>
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 rounded text-[11px] font-mono-tabular font-semibold border ${
+                          tradingCfg.credentials_valid
+                            ? 'bg-[#10B981]/15 text-[#10B981] border-[#10B981]/40'
+                            : 'bg-[#F43F5E]/15 text-[#FB7185] border-[#F43F5E]/40'
+                        }`}
+                      >
+                        {tradingCfg.credentials_valid
+                          ? `● OPÉRATIONNEL (${tradingCfg.api_key_masked || 'Testnet'})`
+                          : '○ NON CONNECTÉ'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between p-3 rounded-lg bg-[#090D16] border border-white/[0.06] text-xs">
+                      <div>
+                        <div className="text-[#94A3B8]">Clé active :</div>
+                        <div className="font-mono-tabular font-semibold text-[#F1F5F9]">
+                          {tradingCfg.api_key_masked || 'Aucune clé chargée'} •{' '}
+                          {tradingCfg.testnet ? 'TESTNET' : 'LIVE'} ({tradingCfg.market_type.toUpperCase()})
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleTestBinanceConnection}
+                        disabled={testingApiConn}
+                        className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] flex items-center gap-1.5"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${testingApiConn ? 'animate-spin text-[#10B981]' : ''}`} />
+                        <span>Tester Connexion</span>
+                      </button>
+                    </div>
+
+                    <form onSubmit={handleSaveBinanceKeys} className="space-y-3 text-xs">
+                      <div>
+                        <label className="block text-[#94A3B8] mb-1">Binance API Key</label>
+                        <input
+                          type="text"
+                          value={binanceKey}
+                          onChange={(e) => setBinanceKey(e.target.value)}
+                          placeholder="Entrez votre clé API Binance..."
+                          className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[#94A3B8] mb-1">Binance API Secret</label>
+                        <input
+                          type="password"
+                          value={binanceSecret}
+                          onChange={(e) => setBinanceSecret(e.target.value)}
+                          placeholder="••••••••••••••••••••••••••••••••"
+                          className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                          required
+                        />
+                      </div>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={binanceTestnet}
+                          onChange={(e) => setBinanceTestnet(e.target.checked)}
+                        />
+                        <span>Environnement Binance Testnet (/settestnet on|off)</span>
+                      </label>
+                      <button
+                        type="submit"
+                        className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors"
+                      >
+                        Enregistrer & Vérifier les Clés API
+                      </button>
+                    </form>
                   </div>
 
-                  <form onSubmit={handleSaveBinanceKeys} className="space-y-3.5 text-xs">
-                    <div>
-                      <label className="block text-[#94A3B8] mb-1">Binance API Key</label>
-                      <input
-                        type="text"
-                        value={binanceKey}
-                        onChange={(e) => setBinanceKey(e.target.value)}
-                        placeholder="Entrez votre clé API Binance..."
-                        className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
-                        required
-                      />
+                  {/* Real-Time Binance Account Balance & Margin Card (/account, /balance) */}
+                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                    <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
+                      <div className="flex items-center gap-2">
+                        <Wallet className="w-4 h-4 text-[#10B981]" />
+                        <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                          Solde & Marge Compte Binance (/account)
+                        </h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={loadLiveAccountAndOrders}
+                        disabled={loadingLiveAccount}
+                        className="text-xs text-[#10B981] hover:underline flex items-center gap-1"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${loadingLiveAccount ? 'animate-spin' : ''}`} />
+                        <span>Rafraîchir</span>
+                      </button>
                     </div>
+
+                    {liveAccount ? (
+                      <div className="space-y-3 text-xs">
+                        <div className="grid grid-cols-2 gap-3 font-mono-tabular">
+                          <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06]">
+                            <div className="text-[10px] text-[#64748B] uppercase">Solde Total Wallet</div>
+                            <div className="text-base font-bold text-[#F1F5F9] mt-0.5">
+                              {Number(liveAccount.total_wallet_balance || 0).toLocaleString('en-US', {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })}{' '}
+                              USDT
+                            </div>
+                          </div>
+                          <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06]">
+                            <div className="text-[10px] text-[#64748B] uppercase">Disponible</div>
+                            <div className="text-base font-bold text-[#10B981] mt-0.5">
+                              {Number(liveAccount.available_balance || 0).toLocaleString('en-US', {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })}{' '}
+                              USDT
+                            </div>
+                          </div>
+                          <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06]">
+                            <div className="text-[10px] text-[#64748B] uppercase">PnL Non Réalisé</div>
+                            <div
+                              className={`text-base font-bold mt-0.5 ${
+                                Number(liveAccount.unrealized_pnl || 0) >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                              }`}
+                            >
+                              {Number(liveAccount.unrealized_pnl || 0) >= 0 ? '+' : ''}
+                              {Number(liveAccount.unrealized_pnl || 0).toFixed(2)} USDT
+                            </div>
+                          </div>
+                          <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06]">
+                            <div className="text-[10px] text-[#64748B] uppercase">Marge Utilisée</div>
+                            <div className="text-base font-bold text-[#F59E0B] mt-0.5">
+                              {liveAccount.market_type === 'futures' ? `${liveAccount.margin_used_pct || 0}%` : 'SPOT'}
+                            </div>
+                          </div>
+                        </div>
+
+                        {Array.isArray(liveAccount.assets) && liveAccount.assets.length > 0 && (
+                          <div className="space-y-1.5 pt-1">
+                            <div className="text-[11px] text-[#94A3B8] font-semibold">Actifs détectés :</div>
+                            <div className="max-h-32 overflow-y-auto divide-y divide-white/[0.05] font-mono-tabular">
+                              {liveAccount.assets.slice(0, 6).map((a: any) => (
+                                <div key={a.asset} className="py-1.5 flex items-center justify-between text-[11px]">
+                                  <span className="font-bold text-[#F1F5F9]">{a.asset}</span>
+                                  <span className="text-[#94A3B8]">
+                                    {liveAccount.market_type === 'futures'
+                                      ? `${Number(a.wallet || 0).toFixed(4)} (Dispo: ${Number(a.available || 0).toFixed(2)})`
+                                      : `${Number(a.total || 0).toFixed(4)} (~${Number(a.usdt_value || 0).toFixed(2)} USDT)`}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="p-4 rounded-lg bg-[#090D16] border border-white/[0.06] text-xs text-[#94A3B8]">
+                        Connectez des clés API Binance valides pour afficher le solde temps réel, la marge disponible et les positions sur le serveur Binance.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Row 2: Manual Live Order Ticket (/live, /live_long, /live_short) + Open Positions & Orders (/positions, /close) */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Manual Live Order Ticket (5 cols) */}
+                <div className="lg:col-span-5 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                  <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
                     <div>
-                      <label className="block text-[#94A3B8] mb-1">Binance API Secret</label>
-                      <input
-                        type="password"
-                        value={binanceSecret}
-                        onChange={(e) => setBinanceSecret(e.target.value)}
-                        placeholder="••••••••••••••••••••••••••••••••"
-                        className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
-                        required
-                      />
+                      <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                        Ticket d'Ordre Live Manuel (/live_long • /live_short)
+                      </h3>
+                      <p className="text-xs text-[#64748B]">
+                        Validation de pré-ordre + confirmation explicite avant envoi sur Binance ({tradingCfg.market_type.toUpperCase()}).
+                      </p>
                     </div>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={binanceTestnet}
-                        onChange={(e) => setBinanceTestnet(e.target.checked)}
-                      />
-                      <span>Environnement Binance Testnet (Recommandé pour validation)</span>
-                    </label>
-                    <button
-                      type="submit"
-                      className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors"
-                    >
-                      Chiffrer & Tester la Connexion Binance
-                    </button>
-                  </form>
+                  </div>
+
+                  <div className="space-y-3 text-xs">
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLiveOrderSide('BUY');
+                          setLiveOrderDraftCheck(null);
+                        }}
+                        className={`py-2 rounded-lg font-semibold border transition-colors ${
+                          liveOrderSide === 'BUY'
+                            ? 'bg-[#10B981] text-[#090D16] border-[#10B981]'
+                            : 'bg-[#090D16] text-[#94A3B8] border-white/10'
+                        }`}
+                      >
+                        🟢 OUVRIR LONG (BUY)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLiveOrderSide('SELL');
+                          setLiveOrderDraftCheck(null);
+                        }}
+                        className={`py-2 rounded-lg font-semibold border transition-colors ${
+                          liveOrderSide === 'SELL'
+                            ? 'bg-[#F43F5E] text-white border-[#F43F5E]'
+                            : 'bg-[#090D16] text-[#94A3B8] border-white/10'
+                        }`}
+                      >
+                        🔴 OUVRIR SHORT (SELL)
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">Symbole</label>
+                        <select
+                          value={liveOrderSymbol}
+                          onChange={(e) => {
+                            setLiveOrderSymbol(e.target.value);
+                            setLiveOrderDraftCheck(null);
+                          }}
+                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                        >
+                          {SYMBOLS.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.id}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">Type d'Ordre</label>
+                        <select
+                          value={liveOrderType}
+                          onChange={(e) => {
+                            setLiveOrderType(e.target.value as 'MARKET' | 'LIMIT');
+                            setLiveOrderDraftCheck(null);
+                          }}
+                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                        >
+                          <option value="MARKET">MARKET</option>
+                          <option value="LIMIT">LIMIT</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2.5">
+                      <div>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">Montant</label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={liveOrderAmount}
+                          onChange={(e) => {
+                            setLiveOrderAmount(e.target.value);
+                            setLiveOrderDraftCheck(null);
+                          }}
+                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">Mode Montant</label>
+                        <select
+                          value={liveOrderAmountMode}
+                          onChange={(e) => {
+                            setLiveOrderAmountMode(e.target.value as 'fixed' | 'percentage');
+                            setLiveOrderDraftCheck(null);
+                          }}
+                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded text-[#F1F5F9]"
+                        >
+                          <option value="fixed">USDT Fixe</option>
+                          <option value="percentage">% Solde</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">Levier (1–125)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="125"
+                          value={liveOrderLeverage}
+                          onChange={(e) => {
+                            setLiveOrderLeverage(e.target.value);
+                            setLiveOrderDraftCheck(null);
+                          }}
+                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                        />
+                      </div>
+                    </div>
+
+                    {liveOrderType === 'LIMIT' && (
+                      <div>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">Prix Limite d'Entrée</label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={liveOrderEntryPrice}
+                          onChange={(e) => {
+                            setLiveOrderEntryPrice(e.target.value);
+                            setLiveOrderDraftCheck(null);
+                          }}
+                          placeholder="Ex: 82500"
+                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                        />
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">Stop Loss (SL)</label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={liveOrderSL}
+                          onChange={(e) => {
+                            setLiveOrderSL(e.target.value);
+                            setLiveOrderDraftCheck(null);
+                          }}
+                          placeholder="Prix SL..."
+                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F43F5E]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">Take Profit (TP)</label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={liveOrderTP}
+                          onChange={(e) => {
+                            setLiveOrderTP(e.target.value);
+                            setLiveOrderDraftCheck(null);
+                          }}
+                          placeholder="Prix TP..."
+                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#10B981]"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[#94A3B8]">Marge :</span>
+                        {(['ISOLATED', 'CROSS'] as const).map((mt) => (
+                          <button
+                            key={mt}
+                            type="button"
+                            onClick={() => setLiveOrderMarginType(mt)}
+                            className={`px-2 py-1 rounded text-[11px] font-mono-tabular border ${
+                              liveOrderMarginType === mt
+                                ? 'bg-[#10B981]/20 border-[#10B981] text-[#10B981]'
+                                : 'bg-[#090D16] border-white/10 text-[#94A3B8]'
+                            }`}
+                          >
+                            {mt}
+                          </button>
+                        ))}
+                      </div>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={liveOrderReduceOnly}
+                          onChange={(e) => setLiveOrderReduceOnly(e.target.checked)}
+                        />
+                        <span>Reduce-Only</span>
+                      </label>
+                    </div>
+
+                    {liveOrderDraftCheck && (
+                      <div className="p-3 rounded-lg bg-[#090D16] border border-[#10B981]/40 space-y-1 font-mono-tabular text-[11px]">
+                        <div className="text-[#10B981] font-bold">✅ Pré-validation Binance réussie :</div>
+                        <div>
+                          Prix réf: {Number(liveOrderDraftCheck.price).toFixed(2)} • Quantité:{' '}
+                          <strong>{liveOrderDraftCheck.quantity}</strong>
+                        </div>
+                        <div>
+                          Marge engagée: {Number(liveOrderDraftCheck.margin_amount).toFixed(2)} USDT • Notional:{' '}
+                          {Number(liveOrderDraftCheck.notional).toFixed(2)} USDT
+                        </div>
+                        <div>
+                          SL: {liveOrderDraftCheck.sl_price || '—'} | TP: {liveOrderDraftCheck.tp_price || '—'}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleLiveOrderAction('validate')}
+                        className="flex-1 py-2.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] font-semibold rounded-lg transition-colors"
+                      >
+                        1. Valider l'Ordre
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!liveOrderDraftCheck}
+                        onClick={() => handleLiveOrderAction('execute')}
+                        className={`flex-1 py-2.5 font-semibold rounded-lg transition-colors ${
+                          liveOrderDraftCheck
+                            ? 'bg-[#10B981] hover:bg-[#059669] text-[#090D16]'
+                            : 'bg-[#090D16] text-[#64748B] border border-white/5 cursor-not-allowed'
+                        }`}
+                      >
+                        2. Confirmer Envoi Réel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Open Positions, Open Orders & Trade History (7 cols) */}
+                <div className="lg:col-span-7 space-y-6">
+                  {/* Open Positions (/positions, /close) */}
+                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl overflow-hidden">
+                    <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
+                      <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
+                        Positions AutoTrade & Live Ouvertes ({liveTrades.open.length}) — /positions
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={loadLiveAccountAndOrders}
+                        className="text-xs text-[#10B981] hover:underline"
+                      >
+                        Actualiser
+                      </button>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
+                            <th className="py-2.5 px-4">ID / Actif</th>
+                            <th className="py-2.5 px-4">Sens & Marché</th>
+                            <th className="py-2.5 px-4 text-right">Quantité</th>
+                            <th className="py-2.5 px-4 text-right">Entrée</th>
+                            <th className="py-2.5 px-4 text-right">SL / TP</th>
+                            <th className="py-2.5 px-4 text-right">Action (/close)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
+                          {liveTrades.open.length === 0 ? (
+                            <tr>
+                              <td colSpan={6} className="py-6 text-center text-[#64748B] font-sans">
+                                Aucune position ouverte enregistrée localement.
+                              </td>
+                            </tr>
+                          ) : (
+                            liveTrades.open.map((t: any) => (
+                              <tr key={t.id} className="hover:bg-white/[0.02]">
+                                <td className="py-3 px-4 font-semibold text-[#F1F5F9]">
+                                  #{t.id} {t.symbol}
+                                </td>
+                                <td className="py-3 px-4">
+                                  <span className={t.direction === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                                    {t.direction} x{t.leverage || 1}
+                                  </span>{' '}
+                                  <span className="text-[10px] text-[#64748B] uppercase">({t.market_type})</span>
+                                </td>
+                                <td className="py-3 px-4 text-right">{t.quantity}</td>
+                                <td className="py-3 px-4 text-right">{Number(t.entry_price || 0).toLocaleString()}</td>
+                                <td className="py-3 px-4 text-right">
+                                  <span className="text-[#F43F5E]">{t.sl_price ?? '—'}</span> /{' '}
+                                  <span className="text-[#10B981]">{t.tp_price ?? '—'}</span>
+                                </td>
+                                <td className="py-3 px-4 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCloseLivePosition(t.id)}
+                                    className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px]"
+                                  >
+                                    Fermer (#{t.id})
+                                  </button>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Open Binance Orders (live_orders / live_cancel_menu) */}
+                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl overflow-hidden">
+                    <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
+                      <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
+                        Ordres Protecteurs & Limites Ouverts sur Binance ({liveOpenOrders.length})
+                      </h3>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
+                            <th className="py-2.5 px-4">Symbole</th>
+                            <th className="py-2.5 px-4">Type & Sens</th>
+                            <th className="py-2.5 px-4 text-right">Prix / Stop</th>
+                            <th className="py-2.5 px-4 text-right">Quantité</th>
+                            <th className="py-2.5 px-4 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
+                          {liveOpenOrders.length === 0 ? (
+                            <tr>
+                              <td colSpan={5} className="py-5 text-center text-[#64748B] font-sans">
+                                Aucun ordre ouvert sur Binance actuellement.
+                              </td>
+                            </tr>
+                          ) : (
+                            liveOpenOrders.map((ord: any) => (
+                              <tr key={ord.orderId} className="hover:bg-white/[0.02]">
+                                <td className="py-2.5 px-4 font-semibold text-[#F1F5F9]">{ord.symbol}</td>
+                                <td className="py-2.5 px-4">
+                                  <span className={ord.side === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                                    {ord.side}
+                                  </span>{' '}
+                                  • {ord.type}
+                                </td>
+                                <td className="py-2.5 px-4 text-right">
+                                  {Number(ord.stopPrice || ord.price || 0).toLocaleString()}
+                                </td>
+                                <td className="py-2.5 px-4 text-right">
+                                  {ord.closePosition ? 'ClosePosition' : ord.origQty}
+                                </td>
+                                <td className="py-2.5 px-4 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCancelLiveOrder(ord.symbol, String(ord.orderId))}
+                                    className="px-2 py-1 bg-[#1E293B] hover:bg-[#F43F5E]/20 text-[#94A3B8] hover:text-[#FB7185] rounded text-[11px]"
+                                  >
+                                    Annuler
+                                  </button>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
