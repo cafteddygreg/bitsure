@@ -64,8 +64,6 @@ DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET = os.environ.get(
 DOCUMENTED_SYMBOLS = (
     "BTCUSDT",
     "ETHUSDT",
-    "BTCUSD",
-    "ETHUSD",
     "XAUUSD",
 )
 
@@ -130,8 +128,6 @@ ATR_MULTIPLIER_SL = 1.60                 # Stop-Loss calibré (1.60x ATR) pour �
 RR_RATIO_TARGET = 2.10                   # Objectif Risk/Reward calibré à 2.10R par validation walk-forward hors échantillon
 
 SYMBOL_CONFIGS = {
-    "BTCUSD":  {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.5, "min_cond": 4},
-    "ETHUSD":  {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.8, "min_cond": 4},
     "BTCUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.5, "min_cond": 4},
     "ETHUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.8, "min_cond": 4},
     "XAUUSD":  {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 2.5, "min_cond": 4},

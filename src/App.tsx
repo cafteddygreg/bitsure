@@ -66,8 +66,6 @@ const SYMBOLS = [
   { id: 'BTCUSDT', label: 'BTC / USDT', category: 'Crypto Spot/Perp' },
   { id: 'ETHUSDT', label: 'ETH / USDT', category: 'Crypto Spot/Perp' },
   { id: 'XAUUSD', label: 'XAU / USD (Or)', category: 'Matières Premières' },
-  { id: 'BTCUSD', label: 'BTC / USD', category: 'Crypto Index' },
-  { id: 'ETHUSD', label: 'ETH / USD', category: 'Crypto Index' },
 ];
 
 const TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d'];

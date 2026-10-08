@@ -3,4 +3,4 @@ services:
     name: bitsure-trading-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bitsurebot.py
+    startCommand: python main.py

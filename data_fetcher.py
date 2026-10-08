@@ -26,7 +26,7 @@ class DataFetcher:
         self.price_cache = {}
         self.history_cache = {}
         self.subscribed_symbols = set([
-            "BTCUSDT", "ETHUSDT", "BTCUSD", "ETHUSD", "XAUUSD"
+            "BTCUSDT", "ETHUSDT", "XAUUSD"
         ])
         self.ws = None
         self.ws_thread = None
@@ -141,10 +141,8 @@ class DataFetcher:
     async def _fetch_price(self, symbol: str) -> Optional[Dict]:
         # 1. Binance REST public multi-miroirs (data-api.binance.vision n'est jamais géo-bloqué)
         binance_sym = symbol
-        if symbol in ("BTCUSD", "ETHUSD"):
-            binance_sym = f"{symbol}T"  # BTCUSD -> BTCUSDT si besoin
 
-        if symbol.endswith("USDT") or ( symbol in ("BTCUSD", "ETHUSD") and not TWELVEDATA_API_KEY ):
+        if symbol.endswith("USDT"):
             price_urls = (
                 f"https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol={binance_sym}",
                 f"https://api.binance.com/api/v3/ticker/bookTicker?symbol={binance_sym}",
@@ -185,10 +183,10 @@ class DataFetcher:
             except Exception as e:
                 logger.warning(f"Price error {symbol}: {e}")
 
-        # 3. Repli Yahoo Finance pour XAUUSD / BTCUSD / ETHUSD si TwelveData absent
+        # 3. Repli Yahoo Finance pour XAUUSD si TwelveData absent
         try:
             import yfinance as yf
-            yf_map = {"XAUUSD": "GC=F", "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD"}
+            yf_map = {"XAUUSD": "GC=F"}
             yf_sym = yf_map.get(symbol)
             if yf_sym:
                 hist = yf.Ticker(yf_sym).history(period="1d", interval="5m")
@@ -221,8 +219,8 @@ class DataFetcher:
 
     async def _fetch_history(self, symbol: str, timeframe: str):
         # 1. Binance REST public multi-miroirs (data-api.binance.vision fonctionne partout, même US/Render)
-        if symbol.endswith("USDT") or (symbol in ("BTCUSD", "ETHUSD") and not TWELVEDATA_API_KEY):
-            target_sym = f"{symbol}T" if symbol in ("BTCUSD", "ETHUSD") else symbol
+        if symbol.endswith("USDT"):
+            target_sym = symbol
             try:
                 from binance_manager import get_klines_dataframe
                 df = get_klines_dataframe(target_sym, timeframe, market_type="spot", limit=500)
@@ -232,17 +230,6 @@ class DataFetcher:
                 logger.warning(f"Binance History error {target_sym}: {e}")
 
             if symbol.endswith("USDT"):
-                # Dernier recours : yfinance pour BTC-USD / ETH-USD si tous les miroirs Binance sont filtrés
-                try:
-                    import yfinance as yf
-                    base_coin = symbol[:-4]
-                    yf_interval = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}.get(timeframe, "1h")
-                    yf_period = "5d" if yf_interval in ("1m", "5m", "15m") else "60d"
-                    hist = yf.Ticker(f"{base_coin}-USD").history(period=yf_period, interval=yf_interval)
-                    if hist is not None and not hist.empty:
-                        return hist[["Open", "High", "Low", "Close", "Volume"]].astype(float)
-                except Exception as yf_err:
-                    logger.warning(f"YFinance fallback failed for {symbol}: {yf_err}")
                 return None
 
         # 2. TwelveData — pour les actifs hors Binance (forex, matières premières) si clé configurée
@@ -276,10 +263,10 @@ class DataFetcher:
             except Exception as e:
                 logger.warning(f"History error {symbol}: {e}")
 
-        # 3. Repli Yahoo Finance (ex: XAUUSD -> GC=F, BTCUSD -> BTC-USD, ETHUSD -> ETH-USD)
+        # 3. Repli Yahoo Finance (ex: XAUUSD -> GC=F)
         try:
             import yfinance as yf
-            yf_map = {"XAUUSD": "GC=F", "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD"}
+            yf_map = {"XAUUSD": "GC=F"}
             yf_sym = yf_map.get(symbol)
             if yf_sym:
                 yf_interval = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}.get(timeframe, "1h")

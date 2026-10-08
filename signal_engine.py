@@ -54,7 +54,7 @@ BUFFER_MULTIPLIERS = {
 
 ASSET_CLASS_RULES = {
     "crypto": {
-        "symbols": {"BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT"},
+        "symbols": {"BTCUSDT", "ETHUSDT"},
         "sl_factor": 1.00,
         "tp_factor": 1.00,
         "adx_delta": 0,
@@ -309,7 +309,7 @@ class SignalEngine:
         Args:
             df:     DataFrame OHLC (minimum 60 bougies).
             lang:   Code langue ("en" ou "fr").
-            symbol: Symbole (ex: "BTCUSDT", "BTCUSD").
+            symbol: Symbole (ex: "BTCUSDT", "ETHUSDT", "XAUUSD").
             style:  Style de trading ("scalping", "scalping_15m", "day", "swing", "position", ou None pour fallback config.py).
 
         Returns:
@@ -330,7 +330,7 @@ class SignalEngine:
             return SignalEngine._wait(lang)
 
         asset_class, asset_rules = SignalEngine._asset_profile(symbol)
-        cfg = SYMBOL_CONFIGS.get(symbol, SYMBOL_CONFIGS["BTCUSD"]).copy()
+        cfg = SYMBOL_CONFIGS.get(symbol, SYMBOL_CONFIGS["BTCUSDT"]).copy()
         cfg["adx_min"] = max(1, int(cfg["adx_min"] + asset_rules["adx_delta"]))
 
         close = df["Close"]

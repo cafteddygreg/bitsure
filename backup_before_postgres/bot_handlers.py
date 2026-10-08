@@ -33,8 +33,7 @@ weekly_scheduler = None
 paper_trader = PaperTrader()
 
 SYMBOLS_12 = [
-    "BTCUSD", "ETHUSD", "EURUSD", "GBPUSD", "USDJPY",
-    "AUDUSD", "XAUUSD", "AAPL", "TSLA", "NVDA"
+    "BTCUSDT", "ETHUSDT", "XAUUSD"
 ]
 
 def generate_signal_id():

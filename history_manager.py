@@ -183,7 +183,7 @@ class HistoryManager:
     def get_recent_signals(self, limit: int = 10, user_id: int = None) -> List[Dict]:
         try:
             self.conn.execute(
-                "DELETE FROM signals WHERE UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD')"
+                "DELETE FROM signals WHERE UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'XAUUSD')"
             )
             self.conn.commit()
         except Exception:
@@ -191,14 +191,14 @@ class HistoryManager:
         if user_id:
             rows = self.conn.execute(
                 "SELECT * FROM signals WHERE user_id = %s AND direction <> %s "
-                "AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD') "
+                "AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'XAUUSD') "
                 "ORDER BY created_at DESC LIMIT %s",
                 (user_id, "WAIT", limit),
             ).fetchall()
         else:
             rows = self.conn.execute(
                 "SELECT * FROM signals WHERE direction <> %s "
-                "AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD') "
+                "AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'XAUUSD') "
                 "ORDER BY created_at DESC LIMIT %s",
                 ("WAIT", limit),
             ).fetchall()

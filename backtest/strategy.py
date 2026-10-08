@@ -15,8 +15,6 @@ ATR_MULTIPLIER_SL = 1.60
 RR_RATIO_TARGET = 2.10
 
 SYMBOL_CONFIGS = {
-    "BTCUSD": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.5, "min_cond": 4},
-    "ETHUSD": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.8, "min_cond": 4},
     "BTCUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.5, "min_cond": 4},
     "ETHUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.8, "min_cond": 4},
     "XAUUSD": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 2.5, "min_cond": 4},
@@ -72,10 +70,7 @@ TREND_NEUTRAL = "NEUTRE"
 
 
 def strategy_symbol(symbol: str) -> str:
-    symbol = symbol.upper()
-    if symbol.endswith("USDT"):
-        return f"{symbol[:-4]}USD"
-    return symbol
+    return symbol.upper()
 
 
 class BacktestSignalEngine:
@@ -95,7 +90,7 @@ class BacktestSignalEngine:
     @staticmethod
     def _asset_profile(symbol: str) -> Tuple[str, Dict]:
         normalized = strategy_symbol(symbol)
-        if normalized in {"BTCUSD", "ETHUSD", "SOLUSD", "BNBUSD", "XRPUSD", "ADAUSD", "DOGEUSD"}:
+        if normalized in {"BTCUSDT", "ETHUSDT"}:
             rules = DEFAULT_ASSET_RULE.copy()
             rules.update(CRYPTO_RULE)
             return "crypto", rules
@@ -209,8 +204,8 @@ class BacktestSignalEngine:
             return BacktestSignalEngine._wait("signal_insufficient_data")
 
         asset_class, asset_rules = BacktestSignalEngine._asset_profile(raw_symbol)
-        # Cherche d'abord le symbole original (ex: BTCUSDT), puis normalisé (BTCUSD)
-        cfg = SYMBOL_CONFIGS.get(raw_symbol, SYMBOL_CONFIGS.get(normalized, SYMBOL_CONFIGS["BTCUSD"])).copy()
+        # Cherche d'abord le symbole original (ex: BTCUSDT)
+        cfg = SYMBOL_CONFIGS.get(raw_symbol, SYMBOL_CONFIGS.get(normalized, SYMBOL_CONFIGS["BTCUSDT"])).copy()
         cfg["adx_min"] = max(1, int(cfg["adx_min"] + asset_rules["adx_delta"]))
 
         close, high, low = df["Close"], df["High"], df["Low"]

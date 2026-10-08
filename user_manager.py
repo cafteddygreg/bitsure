@@ -345,7 +345,7 @@ class UserManager:
         from config import DOCUMENTED_SYMBOLS
         try:
             self.conn.execute(
-                "DELETE FROM watchlist WHERE user_id = %s AND UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD')",
+                "DELETE FROM watchlist WHERE user_id = %s AND UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'XAUUSD')",
                 (user_id,),
             )
             self.conn.commit()

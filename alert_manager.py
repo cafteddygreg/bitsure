@@ -69,7 +69,7 @@ class AlertManager:
                 from config import DOCUMENTED_SYMBOLS
                 with self.lock:
                     rows = self.conn.execute(
-                        "SELECT * FROM alerts WHERE triggered = 0 AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD')"
+                        "SELECT * FROM alerts WHERE triggered = 0 AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'XAUUSD')"
                     ).fetchall()
                     alerts = [dict(r) for r in rows if str(r["symbol"]).upper() in DOCUMENTED_SYMBOLS]
 

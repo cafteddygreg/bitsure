@@ -212,7 +212,7 @@ def _init_web_schema_and_seed():
             trading_config.ensure_config_row(uid)
 
             # Default watchlist
-            for sym in ("BTC USD", "ETH USD", "XAU USD"):
+            for sym in ("BTCUSDT", "ETHUSDT", "XAUUSD"):
                 um.add_to_watchlist(uid, sym)
 
         # Seed realistic paper positions, alerts, and historical signals for Pro & Admin accounts
@@ -454,9 +454,7 @@ def _load_fallback_csv(symbol: str):
     sym_clean = normalize_symbol(symbol)
     csv_map = {
         "BTCUSDT": "/app/applet/scratch/BTCUSDT_1h_tail.csv",
-        "BTCUSD": "/app/applet/scratch/BTCUSDT_1h_tail.csv",
         "ETHUSDT": "/app/applet/scratch/ETHUSDT_1h_tail.csv",
-        "ETHUSD": "/app/applet/scratch/ETHUSDT_1h_tail.csv",
         "XAUUSD": "/app/applet/scratch/BTCUSDT_1h_tail.csv",
     }
     path = csv_map.get(sym_clean, "/app/applet/scratch/BTCUSDT_1h_tail.csv")
@@ -490,12 +488,6 @@ def _analyze_symbol_complete(user_id: int, symbol: str, timeframe: str = "1h", s
     pt = PaperTrader()
     if last_price > 0:
         pt.update_price(norm_sym, last_price)
-        if norm_sym in ("BTCUSD", "BTCUSDT"):
-            pt.update_price("BTCUSD", last_price)
-            pt.update_price("BTCUSDT", last_price)
-        elif norm_sym in ("ETHUSD", "ETHUSDT"):
-            pt.update_price("ETHUSD", last_price)
-            pt.update_price("ETHUSDT", last_price)
         closed_exits = pt.check_exits()
         if closed_exits:
             db = get_db()
@@ -518,7 +510,7 @@ def _analyze_symbol_complete(user_id: int, symbol: str, timeframe: str = "1h", s
         for alert in am.get_all_alerts():
             try:
                 a_sym = normalize_symbol(alert["symbol"])
-                if a_sym == norm_sym or (a_sym in ("BTCUSD", "BTCUSDT") and norm_sym in ("BTCUSD", "BTCUSDT")) or (a_sym in ("ETHUSD", "ETHUSDT") and norm_sym in ("ETHUSD", "ETHUSDT")):
+                if a_sym == norm_sym:
                     cond = alert["condition"]
                     target_p = float(alert["price"])
                     hit = (cond == "above" and last_price >= target_p) or (cond == "below" and last_price <= target_p)
@@ -698,13 +690,13 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             if path == "/api/market/tickers":
                 fetcher = DataFetcher.get_instance()
-                symbols = ["BTCUSDT", "ETHUSDT", "XAUUSD", "BTCUSD", "ETHUSD"]
+                symbols = ["BTCUSDT", "ETHUSDT", "XAUUSD"]
                 tickers = []
                 for sym in symbols:
                     price = run_coro(fetcher.get_realtime_price(sym))
                     open_status = market_hours.is_market_open(sym)
                     msg = "Ouvert" if open_status else "Fermé"
-                    cfg_sym = SYMBOL_CONFIGS.get(sym, SYMBOL_CONFIGS["BTCUSD"])
+                    cfg_sym = SYMBOL_CONFIGS.get(sym, SYMBOL_CONFIGS["BTCUSDT"])
                     tickers.append({
                         "symbol": sym,
                         "price": price,
@@ -962,7 +954,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 um.approve_user(uid, "tester")
                 PaperTrader().init_capital(uid, PAPER_DEFAULT_CAPITAL)
                 trading_config.ensure_config_row(uid)
-                for s in ("BTC USD", "ETH USD", "XAU USD"):
+                for s in ("BTCUSDT", "ETHUSDT", "XAUUSD"):
                     um.add_to_watchlist(uid, s)
                 db.execute(
                     """
@@ -1013,7 +1005,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             if path == "/api/user/watchlist":
                 action = body.get("action", "add")
-                symbol = body.get("symbol", "BTC USD")
+                symbol = body.get("symbol", "BTCUSDT")
                 um = UserManager.get_instance()
                 if action == "remove":
                     um.remove_from_watchlist(user_id, symbol)

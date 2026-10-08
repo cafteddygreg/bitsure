@@ -237,7 +237,7 @@ class TradingSafetyTests(unittest.TestCase):
         signal = {
             "id": "manual-token123",
             "user_id": 42,
-            "symbol": "BTC USD",
+            "symbol": "BTCUSDT",
             "direction": "BUY",
             "entry_price": 100.0,
             "sl": 95.0,
@@ -312,10 +312,10 @@ class TradingSafetyTests(unittest.TestCase):
         self.assertEqual(syms, ["BTCUSDT"])
         self.assertEqual(src, "Whitelist (Symboles documentés)")
 
-        # 2. Sans Whitelist ni Watchlist : uniquement les 5 symboles documentés du bot
+        # 2. Sans Whitelist ni Watchlist : uniquement les 3 symboles documentés du bot
         cfg_default = TradingConfig(user_id=42, symbol_whitelist=[])
         syms_def, _ = _resolve_requested_scan_symbols(42, cfg_default)
-        self.assertEqual(syms_def, ["BTCUSDT", "ETHUSDT", "BTCUSD", "ETHUSD", "XAUUSD"])
+        self.assertEqual(syms_def, ["BTCUSDT", "ETHUSDT", "XAUUSD"])
 
 
 if __name__ == "__main__":

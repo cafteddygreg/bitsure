@@ -53,7 +53,7 @@ def fetch_pending_signals():
                         OR (status = 'skipped' AND COALESCE(rejection_reason, '') LIKE 'safe_mode:%%')
                       )
                   AND direction IN ('BUY', 'SELL')
-                  AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD')
+                  AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'XAUUSD')
                 ORDER BY id ASC
                 """
             )
@@ -350,7 +350,7 @@ def _get_auto_trade_user_ids(interval_minutes: int) -> list[int]:
 
 from config import DOCUMENTED_SYMBOLS
 
-# Uniquement les symboles documentés dans le bot (BTCUSDT, ETHUSDT, BTCUSD, ETHUSD, XAUUSD).
+# Uniquement les symboles documentés dans le bot (BTCUSDT, ETHUSDT, XAUUSD).
 # Aucun autre symbole ne peut être analysé ni apparaître dans les signaux ou rapports.
 ALLOWED_DOCUMENTED_SYMBOLS_SET = frozenset(DOCUMENTED_SYMBOLS)
 DEFAULT_PERIODIC_SCAN_SYMBOLS = list(DOCUMENTED_SYMBOLS)
@@ -364,7 +364,7 @@ def purge_undocumented_signals() -> int:
             cur.execute(
                 """
                 DELETE FROM signals
-                WHERE UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'BTCUSD', 'ETHUSD', 'XAUUSD')
+                WHERE UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'XAUUSD')
                 """
             )
             deleted = cur.rowcount or 0
@@ -378,7 +378,7 @@ def purge_undocumented_signals() -> int:
 
 def _resolve_requested_scan_symbols(user_id: int, config: TradingConfig) -> tuple[list[str], str]:
     """
-    Retourne UNIQUEMENT les symboles documentés dans le bot (`BTCUSDT`, `ETHUSDT`, `BTCUSD`, `ETHUSD`, `XAUUSD`).
+    Retourne UNIQUEMENT les symboles documentés dans le bot (`BTCUSDT`, `ETHUSDT`, `XAUUSD`).
     Tout symbole non documenté éventuellement présent dans une ancienne Whitelist ou Watchlist est strictement filtré.
     """
     # 1. Si une Whitelist explicite AutoTrade contient des symboles documentés :

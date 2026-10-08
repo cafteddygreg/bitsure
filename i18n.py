@@ -48,7 +48,7 @@ TEXTS = {
             "/myid – Afficher votre ID Telegram\n\n"
 
             "🔔 *Alertes & Watchlist*\n"
-            "/alert SYMBOLE condition PRIX – Créer une alerte (ex: /alert BTCUSD above 65000)\n"
+            "/alert SYMBOLE condition PRIX – Créer une alerte (ex: /alert BTCUSDT above 65000)\n"
             "/alerts – Afficher vos alertes actives\n"
             "/delalert ID – Supprimer une alerte\n"
             "/clearalerts – Supprimer toutes vos alertes\n"
@@ -172,7 +172,7 @@ TEXTS = {
         "symbole_invalide": "Symbole invalide.",
         "symboles_list": (
             "📊 *SYMBOLES BINANCE POPULAIRES*\n\n"
-            "🪙 *Cryptos*\nBTCUSDT – Bitcoin (USDT)\nETHUSDT – Ethereum (USDT)\nBTCUSD – Bitcoin\nETHUSD – Ethereum\n\n"
+            "🪙 *Cryptos*\nBTCUSDT – Bitcoin (USDT)\nETHUSDT – Ethereum (USDT)\n\n"
             "✨ *Matières premières*\nXAUUSD – Or (Gold)\n\n"
             "💡 Exemple : /analyse BTCUSDT"
         ),
@@ -464,7 +464,7 @@ TEXTS = {
             "/myid – View your Telegram ID\n\n"
 
             "🔔 *Alerts & Watchlist*\n"
-            "/alert SYMBOL condition PRICE – Create price alert (e.g., /alert BTCUSD above 65000)\n"
+            "/alert SYMBOL condition PRICE – Create price alert (e.g., /alert BTCUSDT above 65000)\n"
             "/alerts – List your active alerts\n"
             "/delalert ID – Delete an alert\n"
             "/clearalerts – Delete all active alerts\n"
@@ -588,7 +588,7 @@ TEXTS = {
         "symbole_invalide": "Invalid symbol.",
         "symboles_list": (
             "📊 *POPULAR BINANCE SYMBOLS*\n\n"
-            "🪙 *Cryptos*\nBTCUSDT – Bitcoin (USDT)\nETHUSDT – Ethereum (USDT)\nBTCUSD – Bitcoin\nETHUSD – Ethereum\n\n"
+            "🪙 *Cryptos*\nBTCUSDT – Bitcoin (USDT)\nETHUSDT – Ethereum (USDT)\n\n"
             "✨ *Commodities*\nXAUUSD – Gold\n\n"
             "💡 Example: /analyse BTCUSDT"
         ),

@@ -957,12 +957,10 @@ except ImportError:
             except Exception:
                 pass
 
-            # Fallback to Binance public mirror (e.g., GC=F -> PAXGUSDT gold spot token, BTC-USD -> BTCUSDT)
+            # Fallback to Binance public mirror (e.g., GC=F -> PAXGUSDT gold spot token)
             bin_map = {
                 "GC=F": "PAXGUSDT",
                 "XAUUSD=X": "PAXGUSDT",
-                "BTC-USD": "BTCUSDT",
-                "ETH-USD": "ETHUSDT",
             }
             bin_sym = bin_map.get(self.symbol.upper(), "BTCUSDT")
             bin_tf = interval if interval in ("1m", "5m", "15m", "1h", "4h", "1d") else "1h"

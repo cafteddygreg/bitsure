@@ -54,25 +54,17 @@ from utils import normalize_symbol, is_valid_symbol
 
 VALID_CASES = [
     # Slash separator
-    ("BTC/USD",   "BTCUSD"),
-    ("ETH/USD",   "ETHUSD"),
     ("BTC/USDT",  "BTCUSDT"),
     ("ETH/USDT",  "ETHUSDT"),
     # Space separator
-    ("BTC USD",   "BTCUSD"),
-    ("ETH USD",   "ETHUSD"),
-    # Dash separator
-    ("BTC-USD",   "BTCUSD"),
-    ("ETH-USD",   "ETHUSD"),
+    ("BTC USDT",  "BTCUSDT"),
+    ("ETH USDT",  "ETHUSDT"),
     # Lowercase
-    ("btcusd",    "BTCUSD"),
-    ("eth/usd",   "ETHUSD"),
     ("btc/usdt",  "BTCUSDT"),
+    ("eth/usdt",  "ETHUSDT"),
     # Already canonical — no-op
     ("BTCUSDT",   "BTCUSDT"),
     ("ETHUSDT",   "ETHUSDT"),
-    ("BTCUSD",    "BTCUSD"),
-    ("ETHUSD",    "ETHUSD"),
     # Dash between base and USDT
     ("ETH-USDT",  "ETHUSDT"),
     ("BTC-USDT",  "BTCUSDT"),
@@ -83,7 +75,7 @@ VALID_CASES = [
     ("xauusd",    "XAUUSD"),
     # Leading / trailing whitespace
     ("  BTCUSDT  ", "BTCUSDT"),
-    ("  btc/usd  ", "BTCUSD"),
+    ("  eth/usdt  ", "ETHUSDT"),
 ]
 
 
@@ -121,9 +113,9 @@ def test_normalize_symbol_invalid(raw):
 
 IS_VALID_CASES = [
     ("BTCUSDT",  True),
-    ("BTC/USD",  True),
-    ("btcusd",   True),
-    ("ETH USD",  True),
+    ("BTC/USDT", True),
+    ("btcusdt",  True),
+    ("ETH USDT", True),
     ("XAU/USD",  True),
     ("",         False),
     ("!!!",      False),
@@ -143,8 +135,7 @@ def test_is_valid_symbol(raw, expected):
 # ---------------------------------------------------------------------------
 
 IDEMPOTENT_CASES = [
-    "BTCUSDT", "ETHUSDT",
-    "BTCUSD", "ETHUSD", "XAUUSD",
+    "BTCUSDT", "ETHUSDT", "XAUUSD",
 ]
 
 

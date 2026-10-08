@@ -23,23 +23,12 @@ import re
 #   4. Reject symbols that are still not alphanumeric after the above steps
 #
 # Examples:
-#   "BTC USD"  → "BTCUSDT"
-#   "BTC/USD"  → "BTCUSDT"
-#   "BTC-USD"  → "BTCUSDT"
-#   "btcusd"   → "BTCUSDT"
+#   "BTC/USDT" → "BTCUSDT"
+#   "BTC-USDT" → "BTCUSDT"
+#   "btcusdt"  → "BTCUSDT"
 #   "ETHUSDT"  → "ETHUSDT"   (already canonical, no-op)
 #   "XAU/USD"  → "XAUUSD"
 # ---------------------------------------------------------------------------
-
-# Well-known base assets that Binance lists as <BASE>USDT, not <BASE>USD.
-# Extend this list when new perpetual-only assets are added.
-_USD_TO_USDT_BASES = {
-    "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "MATIC",
-    "AVAX", "LINK", "UNI", "ATOM", "LTC", "ETC", "BCH", "NEAR", "APT",
-    "OP", "ARB", "INJ", "SUI", "SEI", "TIA", "PYTH", "ORDI", "SATS",
-    "SHIB", "PEPE", "FLOKI", "BONK", "WIF", "JUP", "W", "STRK",
-    "MANTA", "ALT", "PIXEL", "PORTAL", "AEVO", "ETHFI", "ENA",
-}
 
 # Separator characters to strip before comparing tokens
 _SEPARATOR_RE = re.compile(r"[\s/\-_]+")
@@ -72,8 +61,7 @@ def normalize_symbol(symbol: str) -> str:
     # Étape 4 — Suppression des suffixes PERP / SWAP / FUTURES collés
     s = _PERP_SUFFIX_RE.sub("", s)
 
-    # Étape 5 — Conversion du suffixe *USD en *USDT uniquement pour les alias non-documentés
-    # Les symboles officiellement documentés (BTCUSD, ETHUSD, XAUUSD, BTCUSDT, ETHUSDT) restent intacts
+    # Étape 5 — Conversion des alias courts vers les symboles officiellement documentés (BTCUSDT, ETHUSDT, XAUUSD)
     if s in ("BTC", "XBT"):
         s = "BTCUSDT"
     elif s == "ETH":

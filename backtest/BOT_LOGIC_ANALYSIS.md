@@ -23,7 +23,7 @@ Flux observé :
 1. Normalisation des colonnes OHLCV vers `Open`, `High`, `Low`, `Close`, `Volume`.
 2. Validation minimale : DataFrame non vide, colonnes `Open`, `High`, `Low`, `Close`, longueur minimale 60 bougies.
 3. Détection de la classe d'actif via `_asset_profile(symbol)`.
-4. Chargement des seuils symbole depuis `SYMBOL_CONFIGS` dans `config.py`, avec fallback `BTCUSD`.
+4. Chargement des seuils symbole depuis `SYMBOL_CONFIGS` dans `config.py`, avec fallback `BTCUSDT`.
 5. Calcul des indicateurs.
 6. Construction des conditions BUY et SELL.
 7. Détermination du signal brut si au moins `min_cond` conditions sont vraies.
@@ -151,12 +151,12 @@ Dans `position_manager.py` :
 
 ### `SYMBOL_CONFIGS` dans `config.py`
 
-Les symboles natifs de la stratégie sont des formats de type `BTCUSD`, `ETHUSD`, etc. Pour Binance futures `BTCUSDT` et `ETHUSDT`, le backtest utilise un mapping vers `BTCUSD` et `ETHUSD` pour reprendre les seuils existants.
+Les symboles natifs de la stratégie sont `BTCUSDT`, `ETHUSDT` et `XAUUSD`.
 
 Exemples :
 
-- BTCUSD : ADX min 23, RSI BUY 48-68, RSI SELL 32-52, ATR max 5.5%, min conditions 4.
-- ETHUSD : ADX min 22, RSI BUY 47-70, RSI SELL 30-56, ATR max 6.0%, min conditions 4.
+- BTCUSDT : ADX min 22, RSI BUY 48-66, RSI SELL 34-52, ATR max 4.5%, min conditions 4.
+- ETHUSDT : ADX min 22, RSI BUY 48-66, RSI SELL 34-52, ATR max 4.8%, min conditions 4.
 
 ### Styles dans `signal_engine.py`
 
@@ -176,7 +176,7 @@ Exemples :
 
 ### Classes d'actifs
 
-Les cryptos listées incluent BTCUSD et ETHUSD. Elles appliquent notamment :
+Les cryptos listées incluent BTCUSDT et ETHUSDT. Elles appliquent notamment :
 
 - `sl_factor` 1.25 ;
 - `tp_factor` 1.15 ;
