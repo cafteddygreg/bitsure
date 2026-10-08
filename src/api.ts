@@ -1,5 +1,5 @@
 const SESSION_TOKEN_KEY = 'bitsure_session_token';
-const ACTIVE_UID_KEY = 'bitsure_active_uid';
+const ACTIVE_UID_KEY = 'bitsure_active_uid_v2';
 
 export function getStoredToken(): string {
   return localStorage.getItem(SESSION_TOKEN_KEY) || '';
@@ -18,7 +18,7 @@ export function setStoredSession(token: string, userId?: number) {
 
 export async function apiFetch<T = any>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getStoredToken();
-  const uid = localStorage.getItem(ACTIVE_UID_KEY) || '100201';
+  const uid = localStorage.getItem(ACTIVE_UID_KEY) || '';
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> || {}),
@@ -27,7 +27,9 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
     headers['Authorization'] = `Bearer ${token}`;
     headers['X-Session-Token'] = token;
   }
-  headers['X-User-Id'] = uid;
+  if (uid) {
+    headers['X-User-Id'] = uid;
+  }
 
   const response = await fetch(path, {
     ...options,

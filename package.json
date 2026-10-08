@@ -1,0 +1,29 @@
+{
+  "name": "bitsure-teddy-platform",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build",
+    "start": "node server.ts"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.1.4",
+    "express": "^5.1.0",
+    "lucide-react": "^1.16.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwindcss": "^4.1.4"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.14.1",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^4.4.1",
+    "tsx": "^4.19.3",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.2"
+  }
+}

@@ -215,8 +215,8 @@ def _init_web_schema_and_seed():
             for sym in ("BTCUSDT", "ETHUSDT", "XAUUSD"):
                 um.add_to_watchlist(uid, sym)
 
-        # Seed realistic paper positions, alerts, and historical signals for Pro & Admin accounts
-        for seed_uid in (100201, ADMIN_ID or 8176298717):
+        # Seed realistic paper positions, alerts, and historical signals for demo Pro account (100201) only
+        for seed_uid in (100201,):
             pt.open_position(seed_uid, "BTCUSDT", 82950.0, 81600.0, 85800.0, 0.04, side="BUY", leverage=2)
             pt.open_position(seed_uid, "ETHUSDT", 2545.0, 2480.0, 2690.0, 0.65, side="BUY", leverage=2)
             # One closed winning trade for stats
@@ -340,6 +340,45 @@ def _create_session(user_id: int, email: str) -> str:
     return token
 
 
+def _get_primary_bot_user_id() -> int:
+    """
+    Resolve the primary real Telegram bot user ID so the web platform automatically
+    displays the exact same signals, Auto-Trade configuration, and positions as the bot.
+    """
+    demo_ids = (100201, 100202, 100203)
+    db = get_db()
+    try:
+        # 1. User with configured Binance credentials
+        row = db.execute(
+            "SELECT user_id FROM binance_credentials WHERE user_id NOT IN (100201, 100202, 100203) ORDER BY is_valid DESC, updated_at DESC LIMIT 1"
+        ).fetchone()
+        if row and row["user_id"]:
+            return int(row["user_id"])
+    except Exception:
+        pass
+    try:
+        # 2. User with active Auto-Trade or Periodic Analysis in trading_config
+        row = db.execute(
+            "SELECT user_id FROM trading_config WHERE user_id NOT IN (100201, 100202, 100203) AND (auto_trade = TRUE OR periodic_analysis_enabled = TRUE) ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        if row and row["user_id"]:
+            return int(row["user_id"])
+    except Exception:
+        pass
+    if ADMIN_ID and int(ADMIN_ID) not in demo_ids:
+        return int(ADMIN_ID)
+    try:
+        # 3. Any real Telegram user in users table
+        row = db.execute(
+            "SELECT user_id FROM users WHERE user_id NOT IN (100201, 100202, 100203) ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        if row and row["user_id"]:
+            return int(row["user_id"])
+    except Exception:
+        pass
+    return int(ADMIN_ID or 8176298717)
+
+
 def _resolve_user_from_headers(headers) -> int:
     auth = headers.get("Authorization", "")
     token = ""
@@ -353,11 +392,10 @@ def _resolve_user_from_headers(headers) -> int:
         if row and float(row["expires_at"] or 0) > time.time():
             return int(row["user_id"])
 
-    # Fallback header X-User-Id or default demo Pro account (100201)
     uid_hdr = headers.get("X-User-Id", "").strip()
     if uid_hdr.isdigit():
         return int(uid_hdr)
-    return 100201
+    return _get_primary_bot_user_id()
 
 
 def _extract_price_float(price_obj: Any, default: float = 0.0) -> float:
@@ -719,15 +757,35 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/auth/me":
+                primary_uid = _get_primary_bot_user_id()
+                accounts_list = [
+                    {"email": "admin@bitsure.io", "role": "admin", "label": f"Greg Teddy (BOT / ADMIN #{primary_uid})", "user_id": primary_uid},
+                    {"email": "pro@bitsure.io", "role": "pro", "label": "Alex Laurent (PRO)", "user_id": 100201},
+                    {"email": "vip@bitsure.io", "role": "vip", "label": "Elena Rostova (VIP)", "user_id": 100202},
+                    {"email": "tester@bitsure.io", "role": "tester", "label": "Marc Dubois (TRIAL)", "user_id": 100203},
+                ]
+                try:
+                    db = get_db()
+                    real_rows = db.execute(
+                        "SELECT user_id, role, username FROM users WHERE user_id NOT IN (100201, 100202, 100203, %s) ORDER BY created_at DESC LIMIT 5",
+                        (primary_uid,),
+                    ).fetchall()
+                    for rr in real_rows:
+                        ruid = int(rr["user_id"])
+                        uname = rr["username"] or f"tg_{ruid}"
+                        rrole = rr["role"] or "pro"
+                        accounts_list.insert(1, {
+                            "email": f"{uname}@telegram.bot",
+                            "role": rrole,
+                            "label": f"@{uname} (Telegram #{ruid})",
+                            "user_id": ruid,
+                        })
+                except Exception:
+                    pass
                 self._send_json(200, {
                     "ok": True,
                     "user": _build_user_profile(user_id),
-                    "demo_accounts": [
-                        {"email": "pro@bitsure.io", "role": "pro", "label": "Alex Laurent (PRO)", "user_id": 100201},
-                        {"email": "vip@bitsure.io", "role": "vip", "label": "Elena Rostova (VIP)", "user_id": 100202},
-                        {"email": "admin@bitsure.io", "role": "admin", "label": "Greg Teddy (ADMIN)", "user_id": ADMIN_ID or 8176298717},
-                        {"email": "tester@bitsure.io", "role": "tester", "label": "Marc Dubois (TRIAL)", "user_id": 100203},
-                    ],
+                    "demo_accounts": accounts_list,
                 })
                 return
 
@@ -783,9 +841,20 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 if scope == "all":
                     signals = hm.get_recent_signals(limit=limit)
                 else:
-                    signals = hm.get_user_signals(user_id, limit=limit)
-                    if not signals:
-                        signals = hm.get_recent_signals(limit=limit)
+                    user_sigs = hm.get_user_signals(user_id, limit=limit)
+                    recent_sigs = hm.get_recent_signals(limit=limit)
+                    seen_ids = set()
+                    signals = []
+                    for s in (user_sigs + recent_sigs):
+                        sid = s.get("id")
+                        # Exclude seeded demo signals if viewing a real bot user
+                        if user_id not in (100201, 100202, 100203) and s.get("user_id") in (100201, 100202, 100203):
+                            continue
+                        if sid not in seen_ids:
+                            seen_ids.add(sid)
+                            signals.append(s)
+                    signals.sort(key=lambda x: float(x.get("timestamp") or x.get("created_at") or 0), reverse=True)
+                    signals = signals[:limit]
                 journal_entries = getattr(decision_journal, "_records", [])[-30:] if hasattr(decision_journal, "_records") else []
                 self._send_json(200, {
                     "ok": True,
@@ -1007,6 +1076,33 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     },
                 })
                 return
+
+            if not path.startswith("/api"):
+                import mimetypes
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                dist_dir = os.path.join(base_dir, "dist")
+                rel_path = path.lstrip("/") or "index.html"
+                candidate = os.path.abspath(os.path.join(dist_dir, rel_path))
+                if not candidate.startswith(os.path.abspath(dist_dir)) or not os.path.isfile(candidate):
+                    candidate = os.path.join(dist_dir, "index.html")
+                if os.path.isfile(candidate):
+                    mime_type, _ = mimetypes.guess_type(candidate)
+                    if candidate.endswith(".js") or candidate.endswith(".mjs"):
+                        mime_type = "application/javascript; charset=utf-8"
+                    elif candidate.endswith(".css"):
+                        mime_type = "text/css; charset=utf-8"
+                    elif candidate.endswith(".html"):
+                        mime_type = "text/html; charset=utf-8"
+                    elif candidate.endswith(".svg"):
+                        mime_type = "image/svg+xml"
+                    with open(candidate, "rb") as f:
+                        content = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", mime_type or "application/octet-stream")
+                    self.send_header("Content-Length", str(len(content)))
+                    self.end_headers()
+                    self.wfile.write(content)
+                    return
 
             self._send_json(404, {"ok": False, "error": f"Unknown endpoint {path}"})
         except Exception as e:
@@ -1555,10 +1651,36 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"ok": False, "error": str(e)})
 
 
+_bg_web_server: Optional[ThreadingHTTPServer] = None
+
+
+def start_background_web_server(host: str = "0.0.0.0", port: Optional[int] = None) -> Optional[ThreadingHTTPServer]:
+    """
+    Starts the Bitsure Web + API server in a background daemon thread so that
+    running `python main.py` on Railway serves both the Telegram Bot and the Website
+    in the exact same service/process.
+    """
+    global _bg_web_server
+    if _bg_web_server is not None:
+        return _bg_web_server
+    resolved_port = int(port or os.environ.get("PORT") or os.environ.get("PYTHON_API_PORT") or "3000")
+    try:
+        server = ThreadingHTTPServer((host, resolved_port), BitsureAPIHandler)
+        _bg_web_server = server
+        t = threading.Thread(target=server.serve_forever, name="bitsure-web-server", daemon=True)
+        t.start()
+        logger.info("Bitsure Teddy Web & API Server listening on http://%s:%d", host, resolved_port)
+        return server
+    except Exception as e:
+        logger.warning("Could not bind background web server on %s:%d: %s", host, resolved_port, e)
+        return None
+
+
 def main():
-    port = int(os.environ.get("PYTHON_API_PORT", "8001"))
-    server = ThreadingHTTPServer(("127.0.0.1", port), BitsureAPIHandler)
-    logger.info("Bitsure Teddy Python API Server listening on http://127.0.0.1:%d", port)
+    port = int(os.environ.get("PYTHON_API_PORT") or os.environ.get("PORT") or "8001")
+    host = os.environ.get("WEB_HOST", "0.0.0.0")
+    server = ThreadingHTTPServer((host, port), BitsureAPIHandler)
+    logger.info("Bitsure Teddy Python API Server listening on http://%s:%d", host, port)
     server.serve_forever()
 
 

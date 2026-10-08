@@ -508,6 +508,13 @@ pattern="^(menu_(?!autotrade|live|market_mode|analysis_config|positions|trading_
         )
 
     else:
+        if os.environ.get("DISABLE_EMBEDDED_WEB") != "1":
+            try:
+                from web_api_server import start_background_web_server
+                web_port = int(os.environ.get("PORT") or os.environ.get("WEB_PORT") or "3000")
+                start_background_web_server(host="0.0.0.0", port=web_port)
+            except Exception as web_err:
+                logger.warning(f"Embedded web server startup failed: {web_err}")
 
         logger.info("Starting polling mode.")
 

@@ -7,10 +7,40 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 const PYTHON_PORT = Number(process.env.PYTHON_API_PORT || 8001);
 
 let pythonProc: ChildProcess | null = null;
+let botProc: ChildProcess | null = null;
+
+function startTelegramBotIfConfigured() {
+  if (botProc) return;
+  if (!process.env.TELEGRAM_TOKEN || process.env.START_TELEGRAM_BOT !== '1') return;
+  console.log('[server] START_TELEGRAM_BOT=1 detected — starting Bitsure Teddy Telegram Bot (main.py)...');
+  botProc = spawn('python3', ['main.py'], {
+    cwd: __dirname,
+    env: {
+      ...process.env,
+      PYTHONPATH: __dirname,
+      DISABLE_EMBEDDED_WEB: '1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  botProc.stdout?.on('data', (chunk) => {
+    process.stdout.write(`[bot] ${chunk}`);
+  });
+
+  botProc.stderr?.on('data', (chunk) => {
+    process.stderr.write(`[bot] ${chunk}`);
+  });
+
+  botProc.on('exit', (code) => {
+    console.warn(`[server] Telegram Bot exited with code ${code}. Restarting in 5s...`);
+    botProc = null;
+    setTimeout(startTelegramBotIfConfigured, 5000);
+  });
+}
 
 function startPythonBackend() {
   if (pythonProc) return;
