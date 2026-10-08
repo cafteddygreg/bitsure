@@ -170,7 +170,25 @@ def _init_web_schema_and_seed():
         )
 
 
-_init_web_schema_and_seed()
+_web_schema_initialized = False
+_web_schema_lock = threading.Lock()
+
+
+def ensure_web_schema_initialized():
+    global _web_schema_initialized
+    if _web_schema_initialized:
+        return
+    with _web_schema_lock:
+        if _web_schema_initialized:
+            return
+        try:
+            _init_web_schema_and_seed()
+            _web_schema_initialized = True
+        except Exception as e:
+            logger.warning("Deferred web schema initialization warning: %s", e)
+
+
+threading.Thread(target=ensure_web_schema_initialized, name="bitsure-web-schema-init", daemon=True).start()
 
 # =====================================================================
 # HELPER FUNCTIONS & ASYNC RUNNER
@@ -599,9 +617,44 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self._send_json(200, {"ok": True})
 
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        # Fast-path for non-API static files and root "/" so Railway proxy gets instant 200 OK without waiting on DB
+        if not path.startswith("/api"):
+            import mimetypes
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            dist_dir = os.path.join(base_dir, "dist")
+            rel_path = path.lstrip("/") or "index.html"
+            candidate = os.path.abspath(os.path.join(dist_dir, rel_path))
+            if not candidate.startswith(os.path.abspath(dist_dir)) or not os.path.isfile(candidate):
+                candidate = os.path.join(dist_dir, "index.html")
+            if os.path.isfile(candidate):
+                mime_type, _ = mimetypes.guess_type(candidate)
+                if candidate.endswith(".js") or candidate.endswith(".mjs"):
+                    mime_type = "application/javascript; charset=utf-8"
+                elif candidate.endswith(".css"):
+                    mime_type = "text/css; charset=utf-8"
+                elif candidate.endswith(".html"):
+                    mime_type = "text/html; charset=utf-8"
+                elif candidate.endswith(".svg"):
+                    mime_type = "image/svg+xml"
+                with open(candidate, "rb") as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", mime_type or "application/octet-stream")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
+        ensure_web_schema_initialized()
         query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         user_id = _resolve_user_from_headers(self.headers)
 
@@ -962,6 +1015,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"ok": False, "error": str(e)})
 
     def do_POST(self):
+        ensure_web_schema_initialized()
         parsed = urlparse(self.path)
         path = parsed.path
         body = self._read_body()
@@ -1498,6 +1552,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
 
 _bg_web_server: Optional[ThreadingHTTPServer] = None
+_bg_extra_servers: List[ThreadingHTTPServer] = []
 
 
 def start_background_web_server(host: str = "0.0.0.0", port: Optional[int] = None) -> Optional[ThreadingHTTPServer]:
@@ -1509,17 +1564,38 @@ def start_background_web_server(host: str = "0.0.0.0", port: Optional[int] = Non
     global _bg_web_server
     if _bg_web_server is not None:
         return _bg_web_server
-    resolved_port = int(port or os.environ.get("PORT") or os.environ.get("PYTHON_API_PORT") or "3000")
+
+    env_port = int(os.environ.get("PORT") or "0")
+    target_port = int(port or env_port or os.environ.get("PYTHON_API_PORT") or "3000")
+
+    # Bind primary port
     try:
-        server = ThreadingHTTPServer((host, resolved_port), BitsureAPIHandler)
+        ThreadingHTTPServer.allow_reuse_address = True
+        server = ThreadingHTTPServer((host, target_port), BitsureAPIHandler)
         _bg_web_server = server
-        t = threading.Thread(target=server.serve_forever, name="bitsure-web-server", daemon=True)
+        t = threading.Thread(target=server.serve_forever, name=f"bitsure-web-{target_port}", daemon=True)
         t.start()
-        logger.info("Bitsure Teddy Web & API Server listening on http://%s:%d", host, resolved_port)
-        return server
+        logger.info("Bitsure Teddy Web & API Server listening on http://%s:%d", host, target_port)
     except Exception as e:
-        logger.warning("Could not bind background web server on %s:%d: %s", host, resolved_port, e)
-        return None
+        logger.warning("Could not bind background web server on %s:%d: %s", host, target_port, e)
+
+    # Also bind port 3000 and 8080 if Railway Target Port is set to 3000 while $PORT differs (or vice versa)
+    for fallback_port in (3000, 8080, env_port):
+        if fallback_port and fallback_port != target_port:
+            try:
+                extra_srv = ThreadingHTTPServer((host, fallback_port), BitsureAPIHandler)
+                _bg_extra_servers.append(extra_srv)
+                t_extra = threading.Thread(
+                    target=extra_srv.serve_forever,
+                    name=f"bitsure-web-{fallback_port}",
+                    daemon=True,
+                )
+                t_extra.start()
+                logger.info("Bitsure Teddy Web & API Server also listening on http://%s:%d", host, fallback_port)
+            except Exception:
+                pass
+
+    return _bg_web_server
 
 
 def main():

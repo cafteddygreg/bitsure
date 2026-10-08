@@ -6,6 +6,19 @@ Bitsure Teddy - Main Entry Point
 import logging
 import os
 
+# =========================================================
+# EARLY EMBEDDED WEB SERVER STARTUP (FOR RAILWAY / CLOUD)
+# =========================================================
+# Bind HTTP server immediately before heavy imports/DB init
+# so Railway's proxy healthcheck gets an instant response.
+if __name__ == "__main__" and os.environ.get("DISABLE_EMBEDDED_WEB") != "1" and not os.environ.get("WEBHOOK_URL"):
+    try:
+        from web_api_server import start_background_web_server
+        _early_port = int(os.environ.get("PORT") or os.environ.get("WEB_PORT") or "3000")
+        start_background_web_server(host="0.0.0.0", port=_early_port)
+    except Exception as _early_web_err:
+        print(f"[main] Early web server startup notice: {_early_web_err}", flush=True)
+
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
