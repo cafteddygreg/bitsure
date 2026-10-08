@@ -860,12 +860,20 @@ try:
     import telegram.ext  # noqa: F401
 except ImportError:
     tg_mod = types.ModuleType("telegram")
+    tg_mod.__path__ = []
     tg_ext_mod = types.ModuleType("telegram.ext")
     tg_const_mod = types.ModuleType("telegram.constants")
+    tg_err_mod = types.ModuleType("telegram.error")
 
     class _DummyTelegramObj:
         def __init__(self, *args, **kwargs):
             pass
+
+    class BadRequest(Exception):
+        pass
+
+    class TelegramError(Exception):
+        pass
 
     class _ContextTypes:
         DEFAULT_TYPE = Any
@@ -887,10 +895,13 @@ except ImportError:
     tg_ext_mod.PreCheckoutQueryHandler = _DummyTelegramObj
     tg_ext_mod.filters = _DummyTelegramObj()
     tg_const_mod.ParseMode = _ParseMode
+    tg_err_mod.BadRequest = BadRequest
+    tg_err_mod.TelegramError = TelegramError
 
     sys.modules["telegram"] = tg_mod
     sys.modules["telegram.ext"] = tg_ext_mod
     sys.modules["telegram.constants"] = tg_const_mod
+    sys.modules["telegram.error"] = tg_err_mod
 
 
 # =====================================================================

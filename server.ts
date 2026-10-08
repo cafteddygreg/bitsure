@@ -1,55 +1,127 @@
-import http from "node:http";
-import { execFile } from "node:child_process";
+import express from 'express';
+import { spawn, ChildProcess } from 'child_process';
+import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const PORT = Number(process.env.PORT || 3000);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-function getTestSummary(): Promise<string> {
-  return new Promise((resolve) => {
-    execFile("python3", ["-m", "unittest", "discover", "-s", "tests", "-v"], { timeout: 10000 }, (err, stdout, stderr) => {
-      const output = `${stdout || ""}\n${stderr || ""}`.trim();
-      resolve(output || (err ? String(err) : "Tests OK"));
-    });
+const PORT = 3000;
+const PYTHON_PORT = Number(process.env.PYTHON_API_PORT || 8001);
+
+let pythonProc: ChildProcess | null = null;
+
+function startPythonBackend() {
+  if (pythonProc) return;
+  console.log(`[server] Starting Python Bitsure Teddy API server on port ${PYTHON_PORT}...`);
+  pythonProc = spawn('python3', ['web_api_server.py'], {
+    cwd: __dirname,
+    env: {
+      ...process.env,
+      PYTHONPATH: __dirname,
+      PYTHON_API_PORT: String(PYTHON_PORT),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  pythonProc.stdout?.on('data', (chunk) => {
+    process.stdout.write(`[python] ${chunk}`);
+  });
+
+  pythonProc.stderr?.on('data', (chunk) => {
+    process.stderr.write(`[python] ${chunk}`);
+  });
+
+  pythonProc.on('exit', (code) => {
+    console.warn(`[server] Python API server exited with code ${code}. Restarting in 1.5s...`);
+    pythonProc = null;
+    setTimeout(startPythonBackend, 1500);
   });
 }
 
-const server = http.createServer(async (req, res) => {
-  if (req.url === "/api/health") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", service: "bitsure-teddy" }));
-    return;
+async function waitForPythonReady(timeoutMs = 15000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const ok = await new Promise<boolean>((resolve) => {
+      const req = http.get(`http://127.0.0.1:${PYTHON_PORT}/api/auth/me`, (res) => {
+        res.resume();
+        resolve((res.statusCode || 500) < 500);
+      });
+      req.on('error', () => resolve(false));
+      req.setTimeout(1000, () => {
+        req.destroy();
+        resolve(false);
+      });
+    });
+    if (ok) return true;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return false;
+}
+
+async function createServer() {
+  startPythonBackend();
+  await waitForPythonReady(12000);
+
+  const app = express();
+
+  // Proxy /api/* directly to the Python Bitsure Teddy engine on 127.0.0.1:8001
+  app.use('/api', (req, res) => {
+    const targetPath = `/api${req.url}`;
+    const options: http.RequestOptions = {
+      hostname: '127.0.0.1',
+      port: PYTHON_PORT,
+      path: targetPath,
+      method: req.method,
+      headers: {
+        ...req.headers,
+        host: `127.0.0.1:${PYTHON_PORT}`,
+      },
+    };
+
+    const proxyReq = http.request(options, (proxyRes) => {
+      res.status(proxyRes.statusCode || 200);
+      Object.entries(proxyRes.headers).forEach(([k, v]) => {
+        if (v !== undefined) res.setHeader(k, v);
+      });
+      proxyRes.pipe(res, { end: true });
+    });
+
+    proxyReq.on('error', (err) => {
+      console.error(`[proxy] Error forwarding ${req.method} ${targetPath}:`, err.message);
+      if (!res.headersSent) {
+        res.status(502).json({
+          ok: false,
+          error: `Python backend connecting (${err.message}). Please retry in a moment.`,
+        });
+      }
+    });
+
+    req.pipe(proxyReq, { end: true });
+  });
+
+  if (process.env.NODE_ENV === 'production') {
+    const distPath = path.join(__dirname, 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true, hmr: false },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
   }
 
-  const testOutput = await getTestSummary();
-  const escaped = testOutput
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[server] Bitsure Teddy Platform listening on http://0.0.0.0:${PORT}`);
+  });
+}
 
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(`<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8" />
-  <title>Bitsure Teddy — Trading Bot Engine</title>
-  <meta name="description" content="High-frequency algorithmic crypto trading bot and safety monitoring engine for Binance Spot & Futures." />
-  <style>
-    body { background: #0b0f17; color: #e2e8f0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; margin: 0; padding: 2rem; }
-    .card { max-width: 960px; margin: 0 auto; background: #111827; border: 1px solid #1f2937; border-radius: 8px; padding: 1.5rem; }
-    h1 { margin-top: 0; color: #38bdf8; font-size: 1.35rem; }
-    .badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 4px; background: #065f46; color: #d1fae5; font-size: 0.8rem; margin-bottom: 1rem; }
-    pre { background: #030712; padding: 1rem; border-radius: 6px; overflow-x: auto; border: 1px solid #1e293b; color: #a7f3d0; font-size: 0.85rem; line-height: 1.4; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <span class="badge">PYTHON ENGINE READY</span>
-    <h1>Bitsure Teddy — Diagnostic &amp; Suite de Tests</h1>
-    <pre>${escaped}</pre>
-  </div>
-</body>
-</html>`);
-});
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log("Bitsure Teddy status server listening on http://0.0.0.0:" + PORT);
+createServer().catch((err) => {
+  console.error('[server] Fatal startup error:', err);
+  process.exit(1);
 });

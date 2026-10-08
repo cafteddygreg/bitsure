@@ -1598,3 +1598,115 @@ async def _confirm_open_signal(query, context: ContextTypes.DEFAULT_TYPE, signal
         )
     else:
         await query.edit_message_text(f"⚠️ Échec d'ouverture : {trade.get('error_message')}")
+
+
+# ---------------------------------------------------------------------------
+# Commandes Administrateur AutoTrade (importées par admin_handlers.py)
+# ---------------------------------------------------------------------------
+
+async def admin_cmd_trading_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les statistiques globales du moteur AutoTrade pour l'administrateur."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM trading_config WHERE auto_trade = 1")
+            active_auto_row = cur.fetchone()
+            active_auto = active_auto_row[0] if active_auto_row else 0
+
+            cur.execute("SELECT COUNT(*) FROM trades WHERE status = 'open'")
+            open_row = cur.fetchone()
+            open_count = open_row[0] if open_row else 0
+
+            cur.execute(
+                """
+                SELECT COUNT(*), COALESCE(SUM(pnl_usdt), 0),
+                       COALESCE(SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END), 0)
+                FROM trades WHERE status = 'closed'
+                """
+            )
+            closed_row = cur.fetchone()
+            closed_count = closed_row[0] if closed_row else 0
+            total_pnl = float(closed_row[1] or 0.0) if closed_row else 0.0
+            wins = int(closed_row[2] or 0) if closed_row else 0
+    finally:
+        conn.close()
+
+    winrate = (wins / closed_count * 100.0) if closed_count else 0.0
+    text = (
+        "📊 *Statistiques Globales AutoTrade (Admin)*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• Utilisateurs AutoTrade ON : *{active_auto}*\n"
+        f"• Positions ouvertes : *{open_count}*\n"
+        f"• Trades clôturés : *{closed_count}*\n"
+        f"• Win rate global : *{winrate:.1f}%*\n"
+        f"• PnL global réalisé : *{total_pnl:+.2f} USDT*"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def admin_cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Liste toutes les positions AutoTrade actuellement ouvertes sur l'ensemble des comptes."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, user_id, symbol, direction, quantity, entry_price, sl_price, tp_price, market_type
+                FROM trades WHERE status = 'open'
+                ORDER BY opened_at DESC LIMIT 30
+                """
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        await update.message.reply_text("📈 Aucune position AutoTrade ouverte actuellement.")
+        return
+
+    lines = ["📈 *Positions AutoTrade Ouvertes (Tous Utilisateurs)*\n"]
+    for r in rows:
+        tid, uid, sym, direction, qty, entry_p, sl_p, tp_p, mtype = (
+            r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]
+        )
+        lines.append(
+            f"• `#{tid}` | User `{uid}` | *{escape_markdown(str(sym))}* ({mtype}) {direction} "
+            f"qty={qty} @ {entry_p} (SL {sl_p} / TP {tp_p})"
+        )
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def admin_cmd_forceclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Force la fermeture d'une position AutoTrade par son ID (/forceclose <trade_id>)."""
+    if not context.args:
+        await update.message.reply_text("Usage : `/forceclose <trade_id>`", parse_mode=ParseMode.MARKDOWN)
+        return
+    try:
+        trade_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ ID de position invalide.")
+        return
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id, symbol FROM trades WHERE id = %s AND status = 'open'", (trade_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        await update.message.reply_text(f"❌ Position ouverte #{trade_id} introuvable.")
+        return
+
+    target_user_id = int(row[0])
+    try:
+        result = close_trade_manual(trade_id, target_user_id)
+        await update.message.reply_text(
+            f"✅ Position #{trade_id} (`{escape_markdown(str(result.get('symbol', '')))}`, User `{target_user_id}`) "
+            f"fermée de force.\nPnL : `{result.get('pnl_usdt', 0.0):+.2f} USDT`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as exc:
+        await update.message.reply_text(f"⚠️ Échec de fermeture forcée pour #{trade_id} : {exc}")
+

@@ -403,23 +403,38 @@ async def deleteuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # AUTOTRADE ADMIN COMMANDS
 # =========================================================
 
-from trading_handlers import (
-    admin_cmd_trading_stats as _base_trading_stats,
-    admin_cmd_trades as _base_trades,
-    admin_cmd_forceclose as _base_forceclose,
-)
+try:
+    from trading_handlers import (
+        admin_cmd_trading_stats as _base_trading_stats,
+        admin_cmd_trades as _base_trades,
+        admin_cmd_forceclose as _base_forceclose,
+    )
+except ImportError as _imp_err:
+    logger.error("Failed to import admin trading commands from trading_handlers: %s", _imp_err)
+    _base_trading_stats = None
+    _base_trades = None
+    _base_forceclose = None
 
 async def admin_cmd_trading_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin_user(update):
+        return
+    if _base_trading_stats is None:
+        await update.message.reply_text("⚠️ Commande /trading_stats indisponible.")
         return
     await _base_trading_stats(update, context)
 
 async def admin_cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin_user(update):
         return
+    if _base_trades is None:
+        await update.message.reply_text("⚠️ Commande /trades indisponible.")
+        return
     await _base_trades(update, context)
 
 async def admin_cmd_forceclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin_user(update):
+        return
+    if _base_forceclose is None:
+        await update.message.reply_text("⚠️ Commande /forceclose indisponible.")
         return
     await _base_forceclose(update, context)
