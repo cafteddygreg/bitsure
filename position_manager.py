@@ -150,7 +150,7 @@ def _fetch_latest_closed_atr(
     market_type: str = "futures",
     period: int = 14,
 ) -> Optional[float]:
-    """Récupère l'ATR calculé strictement sur la dernière bougie clôturée (iloc[-2])."""
+    """Récupère l'ATR calculé strictement sur la dernière bougie clôturée."""
     try:
         df = get_klines_dataframe(
             symbol=normalize_symbol(symbol),
@@ -160,8 +160,16 @@ def _fetch_latest_closed_atr(
         )
         if df is None or len(df) < period + 2:
             return None
-        # Exclusion stricte de la bougie en cours de formation (iloc[:-1])
-        closed_df = df.iloc[:-1]
+        try:
+            from signal_engine import SignalEngine
+            if hasattr(SignalEngine, "filter_closed_candles"):
+                closed_df = SignalEngine.filter_closed_candles(df)
+            else:
+                closed_df = df.iloc[:-1]
+        except Exception:
+            closed_df = df.iloc[:-1]
+        if len(closed_df) < period + 1:
+            return None
         atr_series = calc_atr(closed_df["High"], closed_df["Low"], closed_df["Close"], period=period)
         val = float(atr_series.iloc[-1])
         if val > EPSILON and not (val != val):  # check not NaN
@@ -469,8 +477,9 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
             if hit_tp or hit_sl:
                 reason = "TP" if hit_tp else "SL"
                 protective_order_id = trade.get("tp_order_id") if hit_tp else trade.get("sl_order_id")
+                exit_price = current_price
                 if trade["market_type"] == "spot" or not protective_order_id:
-                    close_position(
+                    close_res = close_position(
                         trade["user_id"],
                         trade["symbol"],
                         trade["direction"],
@@ -478,11 +487,13 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
                         trade["market_type"],
                         execution_context=ORDER_CONTEXT_AUTOTRADE,
                     )
+                    if isinstance(close_res, dict) and close_res.get("executed_price"):
+                        exit_price = float(close_res["executed_price"])
                 elif _remote_position_exists(trade["user_id"], trade["symbol"], trade["direction"]):
                     # La position existe encore côté Binance : ne jamais clôturer localement par supposition
                     continue
                 _cancel_remaining_protection(trade, reason)
-                pnl_usdt, pnl_pct = close_trade(trade, reason, current_price)
+                pnl_usdt, pnl_pct = close_trade(trade, reason, exit_price)
                 if context and hasattr(context, "bot"):
                     await context.bot.send_message(
                         chat_id=trade["user_id"],
@@ -499,6 +510,7 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
             if new_sl:
                 if trade["market_type"] == "spot":
                     _persist_new_sl(trade["id"], new_sl)
+                    trade["sl_price"] = new_sl
                 else:
                     try:
                         new_sl_oid = replace_futures_stop_loss_order(
@@ -509,8 +521,15 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
                             old_sl_order_id=trade.get("sl_order_id"),
                             execution_context=ORDER_CONTEXT_AUTOTRADE,
                         )
+                        if not new_sl_oid:
+                            raise BinanceClientError(
+                                f"Nouveau SL non confirmé pour {trade['symbol']} (aucun orderId retourné)"
+                            )
                         _persist_new_sl(trade["id"], new_sl, sl_order_id=new_sl_oid)
+                        trade["sl_price"] = new_sl
+                        trade["sl_order_id"] = str(new_sl_oid)
                     except Exception as sl_err:
+                        trailing_failed = True
                         log_error(
                             logger,
                             trade["user_id"],
@@ -522,6 +541,7 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
                             f"Échec temporaire déplacement SL Futures ({trade['symbol']}): {sl_err}",
                             context=context,
                         )
+                        continue
 
             if config.safety_warn and (trade["market_type"] != "futures" or (trade.get("sl_order_id") and trade.get("tp_order_id"))):
                 clear_safety_warn(trade["user_id"])
@@ -577,13 +597,18 @@ def close_trade_manual(trade_id: int, user_id: int) -> Dict[str, Any]:
             )
 
     current_price = get_price(user_id, norm_sym, trade["market_type"])
-    close_position(
+    close_res = close_position(
         user_id,
         norm_sym,
         trade["direction"],
         trade["quantity"],
         trade["market_type"],
         execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED,
+    )
+    exit_price = (
+        float(close_res["executed_price"])
+        if isinstance(close_res, dict) and close_res.get("executed_price")
+        else current_price
     )
 
     for oid in (trade.get("sl_order_id"), trade.get("tp_order_id")):
@@ -596,7 +621,7 @@ def close_trade_manual(trade_id: int, user_id: int) -> Dict[str, Any]:
                 execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED,
             )
 
-    pnl_usdt, pnl_pct = close_trade(trade, "manual", current_price)
+    pnl_usdt, pnl_pct = close_trade(trade, "manual", exit_price)
     return {"pnl_usdt": pnl_usdt, "pnl_pct": pnl_pct, "symbol": norm_sym}
 
 
@@ -610,13 +635,18 @@ def emergency_stop_all(user_id: int) -> int:
         try:
             norm_sym = normalize_symbol(trade["symbol"])
             current_price = get_price(user_id, norm_sym, trade["market_type"])
-            close_position(
+            close_res = close_position(
                 user_id,
                 norm_sym,
                 trade["direction"],
                 trade["quantity"],
                 trade["market_type"],
                 execution_context=ORDER_CONTEXT_EMERGENCY,
+            )
+            exit_price = (
+                float(close_res["executed_price"])
+                if isinstance(close_res, dict) and close_res.get("executed_price")
+                else current_price
             )
             for oid in (trade.get("sl_order_id"), trade.get("tp_order_id")):
                 if oid:
@@ -627,7 +657,7 @@ def emergency_stop_all(user_id: int) -> int:
                         trade["market_type"],
                         execution_context=ORDER_CONTEXT_EMERGENCY,
                     )
-            close_trade(trade, "emergency", current_price)
+            close_trade(trade, "emergency", exit_price)
             closed += 1
         except Exception as e:
             log_error(logger, user_id, "emergency_stop_all.local", str(e))

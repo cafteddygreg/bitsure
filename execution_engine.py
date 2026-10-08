@@ -220,15 +220,17 @@ def execute_signal(signal: dict, config: TradingConfig, execution_context: str |
             execution_context=execution_context,
         )
 
+        actual_entry_price = float(result.get("executed_price") or entry_price)
         fields.update({
             "status": "open",
+            "entry_price": actual_entry_price,
             "quantity": result["quantity"],
             "binance_order_id": str(result.get("order_id")),
             "binance_client_order_id": result.get("client_order_id"),
             "sl_order_id": str(result.get("sl_order_id")) if result.get("sl_order_id") else None,
             "tp_order_id": str(result.get("tp_order_id")) if result.get("tp_order_id") else None,
         })
-        log_trade_opened(logger, user_id, symbol, direction, result["quantity"], entry_price)
+        log_trade_opened(logger, user_id, symbol, direction, result["quantity"], actual_entry_price)
         mark_signal_status(signal["id"], "executed")
 
     except (BinanceClientError, ValueError) as e:
@@ -519,16 +521,37 @@ async def run_market_analysis_for_user(
         if symbol not in ALLOWED_DOCUMENTED_SYMBOLS_SET:
             continue
         try:
+            htf_data: dict[str, object] = {}
+            base_tf = config.analysis_timeframe or "1h"
+            tf_min_map = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+            base_min = tf_min_map.get(base_tf, 60)
+
             if symbol in ("BTCUSDT", "ETHUSDT"):
                 df = await asyncio.to_thread(
                     get_klines_dataframe,
                     symbol,
-                    config.analysis_timeframe,
+                    base_tf,
                     config.market_type,
-                    300,
+                    500,
                 )
+                for htf, htf_min in (("1h", 60), ("4h", 240), ("1d", 1440)):
+                    if htf_min >= base_min and base_min * 500 < htf_min * 55:
+                        htf_df = await asyncio.to_thread(
+                            get_klines_dataframe,
+                            symbol,
+                            htf,
+                            config.market_type,
+                            120,
+                        )
+                        if htf_df is not None and not htf_df.empty:
+                            htf_data[htf] = htf_df
             else:
-                df = await fetcher_inst.get_historical_data(symbol, timeframe=config.analysis_timeframe)
+                df = await fetcher_inst.get_historical_data(symbol, timeframe=base_tf)
+                for htf, htf_min in (("1h", 60), ("4h", 240), ("1d", 1440)):
+                    if htf_min >= base_min and base_min * 500 < htf_min * 55:
+                        htf_df = await fetcher_inst.get_historical_data(symbol, timeframe=htf)
+                        if htf_df is not None and not htf_df.empty:
+                            htf_data[htf] = htf_df
             if df is None or df.empty:
                 errors += 1
                 continue
@@ -539,6 +562,8 @@ async def run_market_analysis_for_user(
                 "fr",
                 symbol=symbol,
                 style=config.trading_style,
+                htf_data=htf_data or None,
+                timeframe_minutes=float(base_min),
             )
             all_analyzed.append((symbol, result))
 

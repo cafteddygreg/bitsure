@@ -18,6 +18,7 @@ from binance.exceptions import BinanceAPIException, BinanceOrderException
 from binance_manager import (
     BinanceClientError,
     _client_for_user,
+    _extract_order_fill_price,
     get_account_balance,
     get_full_account_info,
     get_price,
@@ -109,12 +110,14 @@ def build_draft(
     if order_type == "LIMIT" and not entry_price:
         raise ValueError("Un prix d'entrée est requis pour un ordre LIMIT.")
 
+    eff_leverage = 1 if config.market_type == "spot" and leverage is None else int(leverage if leverage is not None else config.leverage)
+
     return LiveOrderDraft(
         symbol=normalize_symbol(symbol.upper()),
         side=side,
         amount=float(amount),
         amount_mode=amount_mode,
-        leverage=int(leverage if leverage is not None else config.leverage),
+        leverage=eff_leverage,
         sl_price=sl_price,
         tp_price=tp_price,
         trailing_stop=trailing_stop,
@@ -127,6 +130,8 @@ def build_draft(
 
 
 def validate_draft(user_id: int, draft: LiveOrderDraft) -> dict:
+    if draft.market_type not in ("spot", "futures"):
+        raise BinanceClientError(f"Type de marché non supporté : {draft.market_type}")
     if draft.market_type != "futures" and draft.side == "SELL" and not draft.reduce_only:
         raise BinanceClientError("SHORT non supporté en Spot standard. Utilise Futures.")
     if draft.leverage < 1 or draft.leverage > 125:
@@ -136,15 +141,17 @@ def validate_draft(user_id: int, draft: LiveOrderDraft) -> dict:
 
     config = get_config(user_id)
     try:
-        assert_trading_allowed(config)
+        assert_trading_allowed(config, require_auto_trade=False)
     except SafetyError as e:
         raise BinanceClientError(str(e))
     if not draft.reduce_only:
-        risk_check = check_can_open_position(user_id, config, draft.symbol, draft.side)
+        risk_check = check_can_open_position(
+            user_id, config, draft.symbol, draft.side, require_auto_trade=False
+        )
         if not risk_check.allowed:
             raise BinanceClientError(risk_check.reason or "Règle de risque non respectée.")
 
-    client = _client_for_user(user_id)
+    client = _client_for_user(user_id, market_type=draft.market_type)
     max_leverage = _get_max_leverage(client, draft.symbol) if draft.market_type == "futures" else 1
     if max_leverage and draft.leverage > max_leverage:
         raise BinanceClientError(f"Levier x{draft.leverage} supérieur au maximum Binance autorisé pour {draft.symbol} (x{max_leverage}).")
@@ -158,7 +165,8 @@ def validate_draft(user_id: int, draft: LiveOrderDraft) -> dict:
         raise BinanceClientError("Montant supérieur au solde disponible.")
 
     price = float(draft.entry_price or get_price(user_id, draft.symbol, draft.market_type))
-    notional = margin_amount * draft.leverage
+    eff_lev = draft.leverage if draft.market_type == "futures" else 1
+    notional = margin_amount * eff_lev
     raw_qty = notional / price if price else 0.0
     step_size = filters.get("LOT_SIZE", {}).get("stepSize") or filters.get("MARKET_LOT_SIZE", {}).get("stepSize", "0.001")
     quantity = round_step_size(raw_qty, step_size)
@@ -175,6 +183,12 @@ def validate_draft(user_id: int, draft: LiveOrderDraft) -> dict:
     sl_price = _round_tick(draft.sl_price, tick_size)
     tp_price = _round_tick(draft.tp_price, tick_size)
 
+    if not draft.reduce_only and sl_price is not None and tp_price is not None:
+        if draft.side == "BUY" and not (sl_price < price < tp_price):
+            raise BinanceClientError("SL/TP incohérents avec un ordre BUY (attendu: SL < Prix < TP).")
+        if draft.side == "SELL" and not (tp_price < price < sl_price):
+            raise BinanceClientError("SL/TP incohérents avec un ordre SELL (attendu: TP < Prix < SL).")
+
     return {
         "balance": balance,
         "margin_amount": margin_amount,
@@ -190,13 +204,14 @@ def validate_draft(user_id: int, draft: LiveOrderDraft) -> dict:
 def execute_draft(user_id: int, draft: LiveOrderDraft, execution_context: Optional[str] = None) -> dict:
     _assert_order_context_allowed(user_id, execution_context, require_auto_trade=False)
     checks = validate_draft(user_id, draft)
-    client = _client_for_user(user_id)
+    client = _client_for_user(user_id, market_type=draft.market_type)
     result = {"checks": checks}
     opposite = "SELL" if draft.side == "BUY" else "BUY"
     client_order_id = "live_" + hashlib.sha256(
         f"{user_id}:{draft.symbol}:{draft.side}:{draft.amount}:{draft.sl_price}:{draft.tp_price}:{int(time.time() // 60)}".encode()
     ).hexdigest()[:24]
 
+    opened_order = None
     try:
         if draft.market_type == "futures":
             try:
@@ -217,7 +232,21 @@ def execute_draft(user_id: int, draft: LiveOrderDraft, execution_context: Option
             if draft.reduce_only:
                 params["reduceOnly"] = True
             order = client.futures_create_order(**params)
+            opened_order = order
             result["order"] = order
+            if (checks["sl_price"] or checks["tp_price"]) and not draft.reduce_only:
+                from binance_manager import _cancel_conflicting_futures_protective_orders
+                target_types = set()
+                if checks["sl_price"]:
+                    target_types.add("STOP_MARKET")
+                if checks["tp_price"]:
+                    target_types.add("TAKE_PROFIT_MARKET")
+                _cancel_conflicting_futures_protective_orders(
+                    client,
+                    draft.symbol,
+                    side=opposite,
+                    order_types=target_types,
+                )
             if checks["sl_price"] and not draft.reduce_only:
                 result["sl_order"] = client.futures_create_order(
                     symbol=draft.symbol, side=opposite, type="STOP_MARKET",
@@ -242,6 +271,21 @@ def execute_draft(user_id: int, draft: LiveOrderDraft, execution_context: Option
                 )
             result["order"] = order
     except (BinanceAPIException, BinanceOrderException) as e:
+        if draft.market_type == "futures" and opened_order and draft.order_type == "MARKET" and not draft.reduce_only:
+            try:
+                client.futures_create_order(
+                    symbol=draft.symbol, side=opposite, type="MARKET",
+                    quantity=checks["quantity"], reduceOnly=True,
+                )
+            except Exception as close_err:
+                logger.critical(
+                    "Live position %s potentiellement ouverte sans protection pour user=%s: %s",
+                    draft.symbol, user_id, close_err,
+                )
+                raise BinanceClientError(
+                    "Ordre principal ouvert mais protection SL/TP échouée; fermeture automatique impossible."
+                )
+            raise BinanceClientError("Ordre principal ouvert puis refermé car la protection SL/TP a échoué.")
         logger.warning("Live order failed user=%s symbol=%s: %s", user_id, draft.symbol, getattr(e, "message", str(e)))
         raise BinanceClientError(f"Erreur Binance Live Trading : {getattr(e, 'message', str(e))}")
 
@@ -252,6 +296,7 @@ def execute_draft(user_id: int, draft: LiveOrderDraft, execution_context: Option
 def _save_live_trade(user_id: int, draft: LiveOrderDraft, result: dict) -> None:
     order = result.get("order", {})
     checks = result["checks"]
+    actual_price = _extract_order_fill_price(order) or checks["price"]
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -263,7 +308,7 @@ def _save_live_trade(user_id: int, draft: LiveOrderDraft, result: dict) -> None:
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'open', %s, %s, %s, %s, %s)
                 """,
                 (
-                    "live_manual", user_id, draft.symbol, draft.side, checks["price"], checks["sl_price"],
+                    "live_manual", user_id, draft.symbol, draft.side, actual_price, checks["sl_price"],
                     checks["tp_price"], checks["quantity"], draft.leverage, draft.market_type, time.time(),
                     str(order.get("orderId")) if order.get("orderId") else None,
                     order.get("clientOrderId"),
@@ -278,7 +323,7 @@ def _save_live_trade(user_id: int, draft: LiveOrderDraft, result: dict) -> None:
 
 def get_open_orders(user_id: int, symbol: Optional[str] = None) -> list[dict]:
     config = get_config(user_id)
-    client = _client_for_user(user_id)
+    client = _client_for_user(user_id, market_type=config.market_type)
     try:
         if config.market_type == "futures":
             return client.futures_get_open_orders(symbol=symbol) if symbol else client.futures_get_open_orders()
@@ -290,7 +335,7 @@ def get_open_orders(user_id: int, symbol: Optional[str] = None) -> list[dict]:
 def cancel_live_order(user_id: int, symbol: str, order_id: str, execution_context: Optional[str] = None) -> None:
     _assert_order_context_allowed(user_id, execution_context, require_auto_trade=False)
     config = get_config(user_id)
-    client = _client_for_user(user_id)
+    client = _client_for_user(user_id, market_type=config.market_type)
     try:
         if config.market_type == "futures":
             client.futures_cancel_order(symbol=normalize_symbol(symbol.upper()), orderId=order_id)

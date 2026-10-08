@@ -469,12 +469,23 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 tf = user_mgr.get_setting(user_id, "timeframe", DEFAULT_TIMEFRAME)
                 style = user_mgr.get_setting(user_id, "trading_style", "day")
+                tf_min_map = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+                base_min = tf_min_map.get(tf, 60)
                 results = []
                 engine = SignalEngine()
                 for sym in wl:
                     df = await fetcher.get_historical_data(sym, timeframe=tf)
                     if df is not None and not df.empty:
-                        res = engine.analyze(df, lang, symbol=sym, style=style)
+                        htf_data = {}
+                        for htf, htf_min in (("1h", 60), ("4h", 240), ("1d", 1440)):
+                            if htf_min >= base_min and base_min * len(df) < htf_min * 55:
+                                htf_df = await fetcher.get_historical_data(sym, timeframe=htf)
+                                if htf_df is not None and not htf_df.empty:
+                                    htf_data[htf] = htf_df
+                        res = engine.analyze(
+                            df, lang, symbol=sym, style=style,
+                            htf_data=htf_data or None, timeframe_minutes=float(base_min),
+                        )
                         results.append(f"• *{sym}*: {res['signal_text']} (Score: {res['teddy_score']})")
                     else:
                         results.append(f"• *{sym}*: {get_text(lang, 'data_unavailable')}")
@@ -944,7 +955,18 @@ async def analyse(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callb
         await msg.edit_text(get_text(lang, "analyse_error", symbol=symbol))
         return
     trading_style = user_mgr.get_setting(update.effective_user.id, "trading_style", "day")
-    result = SignalEngine.analyze(df, lang, symbol=symbol, style=trading_style)
+    tf_min_map = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+    base_min = tf_min_map.get(tf, 60)
+    htf_data = {}
+    for htf, htf_min in (("1h", 60), ("4h", 240), ("1d", 1440)):
+        if htf_min >= base_min and base_min * len(df) < htf_min * 55:
+            htf_df = await fetcher.get_historical_data(symbol, timeframe=htf)
+            if htf_df is not None and not htf_df.empty:
+                htf_data[htf] = htf_df
+    result = SignalEngine.analyze(
+        df, lang, symbol=symbol, style=trading_style,
+        htf_data=htf_data or None, timeframe_minutes=float(base_min),
+    )
     ind = result['indicators']
     rsi_val = ind.get('rsi', 50)
     adx_val = ind.get('adx', 20)
@@ -1219,6 +1241,10 @@ async def trend(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callbac
     if df is None or df.empty:
         await respond(update, get_text(lang, "trend_no_data"))
         return
+    df = SignalEngine.filter_closed_candles(df)
+    if df is None or len(df) < 50:
+        await respond(update, get_text(lang, "trend_no_data"))
+        return
     sma20 = df['Close'].rolling(20).mean().iloc[-1]
     sma50 = df['Close'].rolling(50).mean().iloc[-1]
     price = df['Close'].iloc[-1]
@@ -1249,6 +1275,10 @@ async def volatility(update: Update, context: ContextTypes.DEFAULT_TYPE, from_ca
     if df is None or df.empty:
         await respond(update, get_text(lang, "trend_no_data"))
         return
+    df = SignalEngine.filter_closed_candles(df)
+    if df is None or len(df) < 15:
+        await respond(update, get_text(lang, "trend_no_data"))
+        return
     atr_val = atr(df['High'], df['Low'], df['Close'], 14).iloc[-1]
     await respond(update, get_text(lang, "volatility_result", symbol=symbol, atr=format_number(atr_val)), parse_mode=ParseMode.MARKDOWN)
 
@@ -1269,6 +1299,10 @@ async def levels(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callba
     tf = user_mgr.get_setting(update.effective_user.id, "timeframe", DEFAULT_TIMEFRAME)
     df = await fetcher.get_historical_data(symbol, timeframe=tf)
     if df is None or df.empty:
+        await respond(update, get_text(lang, "levels_no_data"))
+        return
+    df = SignalEngine.filter_closed_candles(df)
+    if df is None or len(df) < 50:
         await respond(update, get_text(lang, "levels_no_data"))
         return
     from indicators import support_resistance, fibonacci_levels
@@ -1379,12 +1413,23 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tf = user_mgr.get_setting(user_id, "timeframe", DEFAULT_TIMEFRAME)
     style = user_mgr.get_setting(user_id, "trading_style", "day")
+    tf_min_map = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+    base_min = tf_min_map.get(tf, 60)
     results = []
     engine = SignalEngine()
     for sym in wl:
         df = await fetcher.get_historical_data(sym, timeframe=tf)
         if df is not None and not df.empty:
-            res = engine.analyze(df, lang, symbol=sym, style=style)
+            htf_data = {}
+            for htf, htf_min in (("1h", 60), ("4h", 240), ("1d", 1440)):
+                if htf_min >= base_min and base_min * len(df) < htf_min * 55:
+                    htf_df = await fetcher.get_historical_data(sym, timeframe=htf)
+                    if htf_df is not None and not htf_df.empty:
+                        htf_data[htf] = htf_df
+            res = engine.analyze(
+                df, lang, symbol=sym, style=style,
+                htf_data=htf_data or None, timeframe_minutes=float(base_min),
+            )
             results.append(f"• *{sym}*: {res['signal_text']} (Score: {res['teddy_score']})")
         else:
             results.append(f"• *{sym}*: {get_text(lang, 'data_unavailable')}")
@@ -1670,10 +1715,14 @@ async def paper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             price = float(price_data["price"])
 
-        # Calcul SL/TP basés sur l'ATR
+        # Calcul SL/TP basés sur l'ATR (uniquement sur bougies clôturées)
         df = await fetcher.get_historical_data(symbol, timeframe="1h")
         if df is not None and not df.empty:
-            atr_val = float(atr(df["High"], df["Low"], df["Close"]).iloc[-1])
+            closed_df = SignalEngine.filter_closed_candles(df, timeframe_minutes=60.0)
+            if len(closed_df) >= 15:
+                atr_val = float(atr(closed_df["High"], closed_df["Low"], closed_df["Close"]).iloc[-1])
+            else:
+                atr_val = float(atr(df["High"], df["Low"], df["Close"]).iloc[-1])
         else:
             atr_val = price * 0.02
 

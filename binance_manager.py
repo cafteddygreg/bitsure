@@ -78,18 +78,18 @@ def _signed_rest_get(
     testnet: bool = True,
 ) -> Optional[dict | list]:
     """Effectue une requête GET signée HMAC-SHA256 directe vers Binance (Spot ou Futures, Testnet ou Live).
-    Contourne tout blocage interne de python-binance (HTTP 451 US sur api.binance.com)."""
+    Ne mélange jamais les endpoints Testnet et Live ni Spot et Futures."""
     if market_type == "futures":
         bases = (
             ("https://testnet.binancefuture.com",)
             if testnet
-            else ("https://fapi.binance.com", "https://testnet.binancefuture.com")
+            else ("https://fapi.binance.com",)
         )
     else:
         bases = (
             ("https://testnet.binance.vision",)
             if testnet
-            else ("https://api4.binance.com", "https://api1.binance.com", "https://api.binance.com", "https://testnet.binance.vision")
+            else ("https://api4.binance.com", "https://api1.binance.com", "https://api.binance.com")
         )
 
     last_err = None
@@ -123,18 +123,18 @@ def _signed_rest_request(
     market_type: MarketType = "futures",
     testnet: bool = True,
 ) -> dict | list:
-    """Exécute une requête signée POST/DELETE directe vers Binance (Testnet ou Live) sans passer par api.binance.com."""
+    """Exécute une requête signée POST/DELETE directe vers Binance (Testnet ou Live) sans mélange d'environnements."""
     if market_type == "futures":
         bases = (
             ("https://testnet.binancefuture.com",)
             if testnet
-            else ("https://fapi.binance.com", "https://testnet.binancefuture.com")
+            else ("https://fapi.binance.com",)
         )
     else:
         bases = (
             ("https://testnet.binance.vision",)
             if testnet
-            else ("https://api4.binance.com", "https://api1.binance.com", "https://api.binance.com", "https://testnet.binance.vision")
+            else ("https://api4.binance.com", "https://api1.binance.com", "https://api.binance.com")
         )
 
     last_err = "Erreur réseau Binance"
@@ -224,27 +224,69 @@ _SPOT_PUBLIC_BASES = (
     "https://api1.binance.com",
     "https://api2.binance.com",
     "https://api3.binance.com",
-    "https://testnet.binance.vision",
     "https://api.binance.com",
 )
 
 _FUTURES_PUBLIC_BASES = (
-    "https://testnet.binancefuture.com",
     "https://fapi.binance.com",
 )
 
 
+def _extract_order_fill_price(order: Optional[dict]) -> Optional[float]:
+    """Extrait le prix réel d'exécution (fill) depuis la réponse d'ordre Binance."""
+    if not isinstance(order, dict):
+        return None
+    try:
+        avg_price = float(order.get("avgPrice") or 0.0)
+        if avg_price > 0:
+            return avg_price
+    except (TypeError, ValueError):
+        pass
+
+    fills = order.get("fills")
+    if isinstance(fills, list) and fills:
+        total_qty = 0.0
+        total_cost = 0.0
+        for f in fills:
+            try:
+                p = float(f.get("price") or 0.0)
+                q = float(f.get("qty") or 0.0)
+                if p > 0 and q > 0:
+                    total_qty += q
+                    total_cost += p * q
+            except (TypeError, ValueError):
+                continue
+        if total_qty > 0:
+            return total_cost / total_qty
+
+    try:
+        exec_qty = float(order.get("executedQty") or 0.0)
+        cum_quote = float(order.get("cummulativeQuoteQty") or order.get("cumQuote") or 0.0)
+        if exec_qty > 0 and cum_quote > 0:
+            return cum_quote / exec_qty
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        price = float(order.get("price") or 0.0)
+        if price > 0:
+            return price
+    except (TypeError, ValueError):
+        pass
+
+    return None
+
+
 def get_tradable_symbols(market_type: MarketType = "futures", quote_asset: str = "USDT") -> list[str]:
-    """Return active Binance symbols for the requested market and quote asset."""
-    bases = (
-        (*_FUTURES_PUBLIC_BASES, "https://data-api.binance.vision")
-        if market_type == "futures"
-        else _SPOT_PUBLIC_BASES
-    )
+    """Return active Binance symbols for the requested market and quote asset without mixing Spot and Futures."""
+    if market_type not in ("spot", "futures"):
+        raise BinanceClientError(f"Type de marché invalide : {market_type}")
+
+    bases = _FUTURES_PUBLIC_BASES if market_type == "futures" else _SPOT_PUBLIC_BASES
+    path = "/fapi/v1/exchangeInfo" if market_type == "futures" else "/api/v3/exchangeInfo"
 
     for base in bases:
         try:
-            path = "/api/v3/exchangeInfo" if "binance.vision" in base or market_type == "spot" else "/fapi/v1/exchangeInfo"
             r = requests.get(f"{base}{path}", timeout=6)
             if r.status_code == 200:
                 info = r.json()
@@ -278,21 +320,19 @@ def get_klines_dataframe(
     limit: int = 500,
 ) -> Optional[pd.DataFrame]:
     """Fetch public Binance OHLCV data as a DataFrame compatible with SignalEngine.
-    Uses multi-mirror public endpoints (including data-api.binance.vision which is never geo-blocked).
+    Prioritizes the exact market endpoint (Futures vs Spot).
     """
     symbol = normalize_symbol(symbol)
     klines = None
 
     if market_type == "futures":
         endpoints = [
-            "https://data-api.binance.vision/api/v3/klines",
             *(f"{b}/fapi/v1/klines" for b in _FUTURES_PUBLIC_BASES),
-            *(f"{b}/api/v3/klines" for b in _SPOT_PUBLIC_BASES if "binance.vision" not in b),
+            "https://data-api.binance.vision/api/v3/klines",
         ]
     else:
         endpoints = [
             *(f"{b}/api/v3/klines" for b in _SPOT_PUBLIC_BASES),
-            *(f"{b}/fapi/v1/klines" for b in _FUTURES_PUBLIC_BASES),
         ]
 
     for url in endpoints:
@@ -347,26 +387,41 @@ def make_client_order_id(prefix: str, unique_key: str, max_len: int = 36) -> str
 
 def get_price(user_id: int, symbol: str, market_type: MarketType = "futures") -> float:
     symbol = normalize_symbol(symbol)
+    if market_type not in ("spot", "futures"):
+        raise BinanceClientError(f"Type de marché invalide : {market_type}")
     try:
-        client = _client_for_user(user_id)
+        client = _client_for_user(user_id, market_type=market_type)
         if market_type == "futures":
             ticker = client.futures_symbol_ticker(symbol=symbol)
         else:
             ticker = client.get_symbol_ticker(symbol=symbol)
         return float(ticker["price"])
     except Exception as first_err:
-        # Fallback REST direct sur les miroirs publics (évite l'erreur HTTP 451 US de api.binance.com)
-        urls = (
-            (f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}",
-             f"https://testnet.binancefuture.com/fapi/v1/ticker/price?symbol={symbol}",
-             f"https://data-api.binance.vision/api/v3/ticker/price?symbol={symbol}")
-            if market_type == "futures"
-            else (
-                f"https://data-api.binance.vision/api/v3/ticker/price?symbol={symbol}",
-                f"https://testnet.binance.vision/api/v3/ticker/price?symbol={symbol}",
-                f"https://api1.binance.com/api/v3/ticker/price?symbol={symbol}",
+        is_testnet = False
+        try:
+            creds = get_binance_credentials(user_id, market_type=market_type)
+            if creds is not None:
+                is_testnet = bool(creds.get("testnet", False))
+            else:
+                is_testnet = bool(get_config(user_id).testnet)
+        except Exception:
+            is_testnet = False
+
+        if market_type == "futures":
+            urls = (
+                (f"https://testnet.binancefuture.com/fapi/v1/ticker/price?symbol={symbol}",)
+                if is_testnet
+                else (f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}",)
             )
-        )
+        else:
+            urls = (
+                (f"https://testnet.binance.vision/api/v3/ticker/price?symbol={symbol}",)
+                if is_testnet
+                else (
+                    f"https://data-api.binance.vision/api/v3/ticker/price?symbol={symbol}",
+                    f"https://api1.binance.com/api/v3/ticker/price?symbol={symbol}",
+                )
+            )
         for url in urls:
             try:
                 r = requests.get(url, timeout=5)
@@ -464,7 +519,7 @@ def format_price_for_symbol(price: float, filters: dict) -> str:
 
 def set_leverage(user_id: int, symbol: str, leverage: int) -> None:
     symbol = normalize_symbol(symbol)
-    client = _client_for_user(user_id)
+    client = _client_for_user(user_id, market_type="futures")
     try:
         client.futures_change_leverage(symbol=symbol, leverage=leverage)
     except BinanceAPIException as e:
@@ -485,17 +540,20 @@ def open_position(
 ) -> dict:
     """
     Ouvre une position au marché, puis place SL/TP.
-    Retourne un dict avec les IDs d'ordres (à stocker dans la table `trades`).
+    Retourne un dict avec les IDs d'ordres et le prix réel d'exécution (à stocker dans la table `trades`).
     Lève BinanceClientError en cas d'échec (message safe pour l'utilisateur).
     """
+    if market_type not in ("spot", "futures"):
+        raise BinanceClientError(f"Type de marché non supporté : {market_type}")
+
     _assert_order_context_allowed(
         user_id, execution_context, require_auto_trade=(execution_context == ORDER_CONTEXT_AUTOTRADE)
     )
-    client = _client_for_user(user_id)
+    client = _client_for_user(user_id, market_type=market_type)
     symbol = normalize_symbol(symbol)
     direction = direction.upper()
 
-    # Regles Spot vs Futures
+    # Règles strictes Spot vs Futures
     if market_type == "spot":
         leverage = 1
         if direction == "SELL":
@@ -530,7 +588,7 @@ def open_position(
         if min_notional > 0 and notional < min_notional:
             raise BinanceClientError(f"Valeur notionnelle ({notional:.2f} USDT) inférieure au minimum requis par Binance ({min_notional:.2f} USDT).")
 
-        result = {"quantity": quantity}
+        result: dict = {"quantity": quantity, "executed_price": None}
 
         if market_type == "futures":
             if leverage:
@@ -545,8 +603,22 @@ def open_position(
             opened_order = order
             result["order_id"] = order["orderId"]
             result["client_order_id"] = order.get("clientOrderId")
+            result["executed_price"] = _extract_order_fill_price(order)
 
             opposite = "SELL" if direction == "BUY" else "BUY"
+
+            if sl_price or tp_price:
+                target_types = set()
+                if sl_price:
+                    target_types.add("STOP_MARKET")
+                if tp_price:
+                    target_types.add("TAKE_PROFIT_MARKET")
+                _cancel_conflicting_futures_protective_orders(
+                    client,
+                    symbol,
+                    side=opposite,
+                    order_types=target_types,
+                )
 
             if sl_price:
                 sl_order = client.futures_create_order(
@@ -569,6 +641,7 @@ def open_position(
             order = client.create_order(**order_params)
             result["order_id"] = order["orderId"]
             result["client_order_id"] = order.get("clientOrderId")
+            result["executed_price"] = _extract_order_fill_price(order)
             result["sl_order_id"] = None
             result["tp_order_id"] = None
 
@@ -601,7 +674,9 @@ def open_position(
 
 
 def get_available_balance(user_id: int, market_type: MarketType = "futures", asset: str = "USDT") -> float:
-    client = _client_for_user(user_id)
+    if market_type not in ("spot", "futures"):
+        raise BinanceClientError(f"Type de marché non supporté : {market_type}")
+    client = _client_for_user(user_id, market_type=market_type)
     try:
         if market_type == "futures":
             acc = client.futures_account()
@@ -616,7 +691,7 @@ def get_open_binance_positions(user_id: int, market_type: MarketType = "futures"
     """Return real open positions from Binance for reconciliation/risk checks."""
     if market_type != "futures":
         return []
-    client = _client_for_user(user_id)
+    client = _client_for_user(user_id, market_type="futures")
     try:
         positions = []
         for pos in client.futures_position_information():
@@ -637,7 +712,9 @@ def get_open_binance_positions(user_id: int, market_type: MarketType = "futures"
 
 def get_open_binance_orders(user_id: int, market_type: MarketType = "futures", symbol: Optional[str] = None) -> list[dict]:
     """Return open Binance orders for reconciliation."""
-    client = _client_for_user(user_id)
+    if market_type not in ("spot", "futures"):
+        raise BinanceClientError(f"Type de marché non supporté : {market_type}")
+    client = _client_for_user(user_id, market_type=market_type)
     try:
         if market_type == "futures":
             return client.futures_get_open_orders(symbol=symbol) if symbol else client.futures_get_open_orders()
@@ -655,10 +732,15 @@ def close_position(
     execution_context: Optional[str] = None,
 ) -> dict:
     """Ferme une position au marché (côté opposé à l'ouverture)."""
+    if market_type not in ("spot", "futures"):
+        raise BinanceClientError(f"Type de marché non supporté : {market_type}")
+
     _assert_order_context_allowed(user_id, execution_context, require_auto_trade=(execution_context == ORDER_CONTEXT_AUTOTRADE))
-    client = _client_for_user(user_id)
+    client = _client_for_user(user_id, market_type=market_type)
     symbol = symbol.upper()
     direction = direction.upper()
+    if market_type == "spot" and direction == "SELL":
+        raise BinanceClientError("Fermeture d'une position SHORT impossible en mode Spot standard.")
     opposite = "SELL" if direction == "BUY" else "BUY"
 
     try:
@@ -687,14 +769,17 @@ def close_position(
             order = client.create_order(
                 symbol=symbol, side=opposite, type="MARKET", quantity=qty
             )
-        return {"order_id": order["orderId"]}
+        return {
+            "order_id": order["orderId"],
+            "executed_price": _extract_order_fill_price(order),
+        }
     except (BinanceAPIException, BinanceOrderException) as e:
         raise BinanceClientError(f"Erreur Binance à la fermeture : {getattr(e, 'message', str(e))}")
 
 
 def cancel_order(user_id: int, symbol: str, order_id: str, market_type: MarketType = "futures", execution_context: Optional[str] = None) -> None:
     _assert_order_context_allowed(user_id, execution_context, require_auto_trade=(execution_context == ORDER_CONTEXT_AUTOTRADE))
-    client = _client_for_user(user_id)
+    client = _client_for_user(user_id, market_type=market_type)
     try:
         if market_type == "futures":
             client.futures_cancel_order(symbol=symbol, orderId=order_id)
@@ -705,6 +790,99 @@ def cancel_order(user_id: int, symbol: str, order_id: str, market_type: MarketTy
         logger.warning("Annulation ordre %s (%s) impossible : %s", order_id, symbol, e.message)
 
 
+def _find_futures_protective_orders(
+    client: Client,
+    symbol: str,
+    side: Optional[str] = None,
+    order_types: Optional[set[str]] = None,
+) -> list[dict]:
+    """Détecte les ordres protecteurs closePosition/reduceOnly déjà ouverts sur Binance Futures."""
+    symbol = normalize_symbol(symbol)
+    target_types = {t.upper() for t in (order_types or {"STOP_MARKET", "STOP", "TAKE_PROFIT_MARKET", "TAKE_PROFIT"})}
+    if not hasattr(client, "futures_get_open_orders"):
+        return []
+    try:
+        open_orders = client.futures_get_open_orders(symbol=symbol) or []
+    except Exception as e:
+        logger.warning("Impossible de lister les ordres protecteurs ouverts sur %s : %s", symbol, e)
+        return []
+
+    matched: list[dict] = []
+    for o in open_orders:
+        if not isinstance(o, dict):
+            continue
+        o_sym = normalize_symbol(str(o.get("symbol") or symbol))
+        if o_sym != symbol:
+            continue
+        o_type = str(o.get("type") or o.get("origType") or "").upper()
+        if o_type not in target_types:
+            continue
+        if side and str(o.get("side") or "").upper() != side.upper():
+            continue
+        is_close_pos = str(o.get("closePosition", "")).lower() in ("true", "1") or bool(o.get("closePosition"))
+        is_reduce_only = str(o.get("reduceOnly", "")).lower() in ("true", "1") or bool(o.get("reduceOnly"))
+        if is_close_pos or is_reduce_only or o_type in ("STOP_MARKET", "TAKE_PROFIT_MARKET"):
+            matched.append(o)
+    return matched
+
+
+def _cancel_conflicting_futures_protective_orders(
+    client: Client,
+    symbol: str,
+    side: Optional[str] = None,
+    order_types: Optional[set[str]] = None,
+    exclude_order_ids: Optional[set[str]] = None,
+) -> list[str]:
+    """Annule tous les ordres protecteurs closePosition en conflit avant d'en créer/remplacer un."""
+    symbol = normalize_symbol(symbol)
+    excluded = {str(oid) for oid in (exclude_order_ids or set()) if oid is not None}
+    cancelled_ids: list[str] = []
+    for o in _find_futures_protective_orders(client, symbol, side=side, order_types=order_types):
+        oid = o.get("orderId")
+        if oid is None or str(oid) in excluded:
+            continue
+        try:
+            client.futures_cancel_order(symbol=symbol, orderId=oid)
+            cancelled_ids.append(str(oid))
+        except Exception as e:
+            logger.warning("Annulation ordre protecteur en conflit %s (%s) impossible : %s", oid, symbol, e)
+    return cancelled_ids
+
+
+def _confirm_futures_protective_order(
+    client: Client,
+    symbol: str,
+    created_order: Optional[dict],
+    expected_side: str,
+    expected_type: str,
+) -> str:
+    """Confirme que le nouvel ordre protecteur existe réellement avant de valider l'opération."""
+    if not isinstance(created_order, dict) or created_order.get("orderId") is None:
+        raise BinanceClientError(
+            f"Confirmation SL/TP échouée sur {symbol}: aucun orderId retourné par Binance."
+        )
+    new_oid = str(created_order["orderId"])
+    status = str(created_order.get("status") or "NEW").upper()
+    if status in ("CANCELED", "EXPIRED", "REJECTED"):
+        raise BinanceClientError(
+            f"Confirmation SL/TP échouée sur {symbol}: ordre #{new_oid} en statut {status}."
+        )
+    if hasattr(client, "futures_get_open_orders"):
+        try:
+            open_orders = client.futures_get_open_orders(symbol=symbol)
+            if isinstance(open_orders, list) and open_orders:
+                open_ids = {str(o.get("orderId")) for o in open_orders if isinstance(o, dict) and o.get("orderId") is not None}
+                if new_oid not in open_ids:
+                    raise BinanceClientError(
+                        f"Confirmation SL/TP échouée sur {symbol}: le nouvel ordre #{new_oid} est absent des ordres ouverts Binance."
+                    )
+        except BinanceClientError:
+            raise
+        except Exception as e:
+            logger.debug("Vérification open_orders post-création non concluante sur %s: %s", symbol, e)
+    return new_oid
+
+
 def replace_futures_stop_loss_order(
     user_id: int,
     symbol: str,
@@ -712,34 +890,137 @@ def replace_futures_stop_loss_order(
     new_sl_price: float,
     old_sl_order_id: Optional[str] = None,
     execution_context: Optional[str] = None,
-) -> Optional[str]:
-    """Remplace l'ordre STOP_MARKET sur Binance Futures lors d'un déplacement de Trailing Stop."""
+) -> str:
+    """Remplace l'ordre STOP_MARKET sur Binance Futures lors d'un déplacement de Trailing Stop.
+
+    Garanties de sécurité :
+    - Détecte tous les ordres STOP_MARKET closePosition existants dans la même direction.
+    - Si un ordre STOP_MARKET existant a déjà exactement le même stopPrice formaté, le conserve.
+    - Crée le nouvel ordre AVANT d'annuler l'ancien lorsque Binance l'accepte, ou annule les ordres
+      STOP_MARKET en conflit (erreur -4130 closePosition GTE existant) et recrée immédiatement
+      la protection dans le même flux atomique.
+    - Confirme que le nouveau SL existe réellement avant de retourner son orderId.
+    """
     _assert_order_context_allowed(
         user_id,
         execution_context,
         require_auto_trade=(execution_context == ORDER_CONTEXT_AUTOTRADE),
     )
-    client = _client_for_user(user_id)
+    client = _client_for_user(user_id, market_type="futures")
     symbol = normalize_symbol(symbol)
     opposite = "SELL" if direction.upper() == "BUY" else "BUY"
     filters = get_symbol_filters(client, symbol, "futures")
+    formatted_stop = format_price_for_symbol(new_sl_price, filters)
+
+    existing_sl_orders = _find_futures_protective_orders(
+        client,
+        symbol,
+        side=opposite,
+        order_types={"STOP_MARKET", "STOP"},
+    )
+
+    # Si un ordre STOP_MARKET actif possède déjà ce stopPrice exact, éviter un doublon inutile
+    for existing in existing_sl_orders:
+        ex_id = existing.get("orderId")
+        ex_stop = existing.get("stopPrice")
+        try:
+            if ex_id is not None and ex_stop is not None and abs(float(ex_stop) - float(formatted_stop)) <= 1e-9:
+                # Nettoyer d'éventuels doublons supplémentaires tout en gardant celui-ci
+                _cancel_conflicting_futures_protective_orders(
+                    client,
+                    symbol,
+                    side=opposite,
+                    order_types={"STOP_MARKET", "STOP"},
+                    exclude_order_ids={str(ex_id)},
+                )
+                return str(ex_id)
+        except (TypeError, ValueError):
+            pass
+
+    # Annuler d'abord l'ancien SL connu et tout autre STOP_MARKET closePosition en conflit
+    # (Binance refuse un 2e STOP_MARKET closePosition=True dans la même direction avec -4130)
+    ids_to_cancel: set[str] = set()
     if old_sl_order_id:
-        cancel_order(user_id, symbol, str(old_sl_order_id), "futures", execution_context=execution_context)
+        ids_to_cancel.add(str(old_sl_order_id))
+    for existing in existing_sl_orders:
+        if existing.get("orderId") is not None:
+            ids_to_cancel.add(str(existing["orderId"]))
+
+    old_stop_price_fallback: Optional[str] = None
+    for existing in existing_sl_orders:
+        if existing.get("stopPrice") is not None:
+            old_stop_price_fallback = str(existing["stopPrice"])
+            break
+
+    for oid in ids_to_cancel:
+        cancel_order(user_id, symbol, oid, "futures", execution_context=execution_context)
+
     try:
         sl_order = client.futures_create_order(
             symbol=symbol,
             side=opposite,
             type="STOP_MARKET",
-            stopPrice=format_price_for_symbol(new_sl_price, filters),
+            stopPrice=formatted_stop,
             closePosition=True,
         )
-        return str(sl_order.get("orderId")) if sl_order.get("orderId") is not None else None
     except BinanceAPIException as e:
-        raise BinanceClientError(f"Erreur Binance (mise à jour SL {symbol}) : {e.message}")
+        msg = getattr(e, "message", str(e))
+        # Si un ordre STOP_MARKET closePosition a survécu ou est apparu entre-temps, purger et réessayer une fois
+        if "closePosition" in msg or getattr(e, "code", None) == -4130:
+            _cancel_conflicting_futures_protective_orders(
+                client,
+                symbol,
+                side=opposite,
+                order_types={"STOP_MARKET", "STOP"},
+            )
+            try:
+                sl_order = client.futures_create_order(
+                    symbol=symbol,
+                    side=opposite,
+                    type="STOP_MARKET",
+                    stopPrice=formatted_stop,
+                    closePosition=True,
+                )
+            except Exception as retry_err:
+                # Ne jamais laisser volontairement la position sans protection : tenter de restaurer l'ancien SL
+                if old_stop_price_fallback:
+                    try:
+                        client.futures_create_order(
+                            symbol=symbol,
+                            side=opposite,
+                            type="STOP_MARKET",
+                            stopPrice=old_stop_price_fallback,
+                            closePosition=True,
+                        )
+                    except Exception:
+                        pass
+                raise BinanceClientError(f"Erreur Binance (mise à jour SL {symbol}) : {getattr(retry_err, 'message', str(retry_err))}")
+        else:
+            # Tenter de restaurer l'ancien SL si nous venons de l'annuler et que le nouveau prix est rejeté
+            if ids_to_cancel and old_stop_price_fallback:
+                try:
+                    client.futures_create_order(
+                        symbol=symbol,
+                        side=opposite,
+                        type="STOP_MARKET",
+                        stopPrice=old_stop_price_fallback,
+                        closePosition=True,
+                    )
+                except Exception:
+                    pass
+            raise BinanceClientError(f"Erreur Binance (mise à jour SL {symbol}) : {msg}")
+
+    return _confirm_futures_protective_order(
+        client,
+        symbol,
+        sl_order,
+        expected_side=opposite,
+        expected_type="STOP_MARKET",
+    )
 
 
 def test_connection(user_id: int) -> bool:
-    """Utilisé par /setapikeys pour valider les clés dès leur saisie (supporte Futures Testnet et Spot)."""
+    """Utilisé par /setapikeys pour valider les clés dès leur saisie sur le marché configuré sans bascule silencieuse."""
     config = get_config(user_id)
     creds = get_binance_credentials(user_id, market_type=config.market_type)
     if not creds or not creds.get("api_key") or not creds.get("api_secret"):
@@ -754,21 +1035,6 @@ def test_connection(user_id: int) -> bool:
         testnet=bool(creds.get("testnet", True)),
     )
     if isinstance(data, dict) and ("balances" in data or "assets" in data or "totalWalletBalance" in data):
-        return True
-
-    # Si l'utilisateur a entré une clé Spot Testnet alors qu'il est en mode Futures (ou inversement), on teste l'autre marché
-    alt_market: MarketType = "spot" if config.market_type == "futures" else "futures"
-    alt_path = "/api/v3/account" if alt_market == "spot" else "/fapi/v2/account"
-    alt_data = _signed_rest_get(
-        creds["api_key"],
-        creds["api_secret"],
-        alt_path,
-        market_type=alt_market,
-        testnet=bool(creds.get("testnet", True)),
-    )
-    if isinstance(alt_data, dict) and ("balances" in alt_data or "assets" in alt_data or "totalWalletBalance" in alt_data):
-        from trading_config import update_config
-        update_config(user_id, market_type=alt_market)
         return True
 
     client = _client_for_user(user_id, market_type=config.market_type)
@@ -787,14 +1053,16 @@ def test_connection(user_id: int) -> bool:
 
 def get_full_account_info(user_id: int, market_type: MarketType = "futures") -> dict:
     """
-    Récupère toutes les informations du compte Binance :
+    Récupère toutes les informations du compte Binance strictement pour le market_type configuré :
     - Solde total (USDT + actifs)
     - Détail des actifs
     - Positions ouvertes + PnL non réalisé
     - Taux d'utilisation de la marge (Futures)
-    - Historique des ordres récents et commissions
-    Supporte un fallback REST signé direct + bascule automatique Spot/Futures Testnet si la clé correspond à l'autre marché.
+    Ne bascule jamais silencieusement entre Spot et Futures.
     """
+    if market_type not in ("spot", "futures"):
+        raise BinanceClientError(f"Type de marché non supporté : {market_type}")
+
     creds = get_binance_credentials(user_id, market_type=market_type)
     if not creds or not creds.get("api_key") or not creds.get("api_secret"):
         raise BinanceClientError("Aucune clé API Binance configurée. Utilise /setapikeys pour les ajouter.")
@@ -856,7 +1124,6 @@ def get_full_account_info(user_id: int, market_type: MarketType = "futures") -> 
         total_usdt = 0.0
         usdt_free = 0.0
 
-        # Récupérer tous les prix publics en 1 seul appel léger sur data-api.binance.vision
         prices_map = {}
         try:
             r = requests.get("https://data-api.binance.vision/api/v3/ticker/price", timeout=5)
@@ -891,22 +1158,16 @@ def get_full_account_info(user_id: int, market_type: MarketType = "futures") -> 
 
         summary["assets"].sort(key=lambda x: x.get("usdt_value", 0), reverse=True)
         summary["total_wallet_balance"] = round(total_usdt, 2)
-        summary["available_balance"] = round(usdt_free if usdt_free > 0 else total_usdt, 2)
+        summary["available_balance"] = round(usdt_free, 2)
 
     is_testnet = bool(creds.get("testnet", True))
 
-    # 1. Essai direct REST signé sur le marché demandé (évite tout blocage HTTP 451 de python-binance)
+    # 1. Essai direct REST signé strictement sur le marché demandé
     if market_type == "futures":
         f_acc = _signed_rest_get(creds["api_key"], creds["api_secret"], "/fapi/v2/account", market_type="futures", testnet=is_testnet)
         if isinstance(f_acc, dict) and ("assets" in f_acc or "totalWalletBalance" in f_acc):
             f_pos = _signed_rest_get(creds["api_key"], creds["api_secret"], "/fapi/v2/positionRisk", market_type="futures", testnet=is_testnet)
             _populate_futures(f_acc, f_pos if isinstance(f_pos, list) else [])
-            return summary
-
-        # Si l'utilisateur a enregistré une clé Spot Testnet alors que son profil est en Futures, on tente Spot automatiquement
-        s_acc = _signed_rest_get(creds["api_key"], creds["api_secret"], "/api/v3/account", market_type="spot", testnet=is_testnet)
-        if isinstance(s_acc, dict) and "balances" in s_acc:
-            _populate_spot(s_acc)
             return summary
     else:
         s_acc = _signed_rest_get(creds["api_key"], creds["api_secret"], "/api/v3/account", market_type="spot", testnet=is_testnet)
@@ -914,14 +1175,7 @@ def get_full_account_info(user_id: int, market_type: MarketType = "futures") -> 
             _populate_spot(s_acc)
             return summary
 
-        # Et inversement si clé Futures Testnet utilisée en mode Spot
-        f_acc = _signed_rest_get(creds["api_key"], creds["api_secret"], "/fapi/v2/account", market_type="futures", testnet=is_testnet)
-        if isinstance(f_acc, dict) and ("assets" in f_acc or "totalWalletBalance" in f_acc):
-            f_pos = _signed_rest_get(creds["api_key"], creds["api_secret"], "/fapi/v2/positionRisk", market_type="futures", testnet=is_testnet)
-            _populate_futures(f_acc, f_pos if isinstance(f_pos, list) else [])
-            return summary
-
-    # 2. Fallback sur le client python-binance (utile pour les mocks de tests unitaires ou configurations spécifiques)
+    # 2. Fallback sur le client python-binance strictement sur le marché demandé
     client = _client_for_user(user_id, market_type=market_type)
     try:
         if market_type == "futures":

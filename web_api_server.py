@@ -802,7 +802,8 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "config": {
                         "user_id": cfg.user_id,
-                        "enabled": cfg.enabled,
+                        "enabled": cfg.auto_trade,
+                        "auto_trade": cfg.auto_trade,
                         "periodic_analysis_enabled": cfg.periodic_analysis_enabled,
                         "analysis_interval_minutes": cfg.analysis_interval_minutes,
                         "analysis_timeframe": cfg.analysis_timeframe,
@@ -815,12 +816,13 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         "min_score": cfg.min_score,
                         "trailing_stop": cfg.trailing_stop,
                         "dca_enabled": cfg.dca_enabled,
-                        "symbols": cfg.symbols,
-                        "daily_loss_tracked": cfg.daily_loss_tracked,
-                        "credentials_valid": cfg.credentials_valid,
+                        "symbols": cfg.symbol_whitelist,
+                        "daily_loss_tracked": cfg.daily_loss_accum,
+                        "credentials_valid": bool(creds and creds.get("is_valid")),
                         "has_custom_credentials": bool(creds and creds.get("api_key")),
                         "api_key_masked": (creds["api_key"][:6] + "..." + creds["api_key"][-4:]) if (creds and creds.get("api_key") and len(creds["api_key"]) > 10) else None,
-                        "is_testnet": creds.get("testnet", True) if creds else True,
+                        "testnet": bool(cfg.testnet),
+                        "is_testnet": bool(cfg.testnet),
                         "safety_lock": cfg.safety_lock,
                         "safety_lock_reason": cfg.safety_lock_reason,
                         "safety_lock_at": cfg.safety_lock_at,
@@ -1149,16 +1151,20 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             if path == "/api/trading/config":
                 updates = {}
                 allowed_fields = {
-                    "enabled", "periodic_analysis_enabled", "analysis_interval_minutes",
+                    "auto_trade", "periodic_analysis_enabled", "analysis_interval_minutes",
                     "analysis_timeframe", "trading_style", "market_type", "leverage",
                     "risk_per_trade", "max_positions", "max_daily_loss", "min_score",
-                    "trailing_stop", "dca_enabled", "symbols",
+                    "trailing_stop", "dca_enabled", "symbol_whitelist", "testnet",
                 }
+                if "enabled" in body and "auto_trade" not in body:
+                    updates["auto_trade"] = bool(body["enabled"])
+                if "symbols" in body and "symbol_whitelist" not in body:
+                    updates["symbol_whitelist"] = body["symbols"]
                 for k, v in body.items():
                     if k in allowed_fields:
                         updates[k] = v
                 cfg = trading_config.update_config(user_id, **updates)
-                self._send_json(200, {"ok": True, "message": "Configuration de trading mise à jour.", "enabled": cfg.enabled})
+                self._send_json(200, {"ok": True, "message": "Configuration de trading mise à jour.", "enabled": cfg.auto_trade})
                 return
 
             if path == "/api/trading/safety":
@@ -1187,7 +1193,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     trading_safety.clear_safety_warn(user_id)
                     msg = "Avertissement Safety Warn acquitté."
                 elif action == "reset_daily_loss":
-                    trading_config.update_config(user_id, daily_loss_tracked=0.0)
+                    trading_config.update_config(user_id, daily_loss_accum=0.0)
                     msg = "Compteur de perte journalière réinitialisé à 0.00 USDT."
                 else:
                     msg = "Action effectuée."
@@ -1197,12 +1203,14 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             if path == "/api/trading/credentials":
                 api_key = (body.get("api_key") or "").strip()
                 api_secret = (body.get("api_secret") or "").strip()
-                testnet = bool(body.get("testnet", True))
+                cfg = trading_config.get_config(user_id)
+                testnet = bool(body["testnet"]) if "testnet" in body else bool(cfg.testnet)
                 if not api_key or not api_secret:
                     self._send_json(400, {"ok": False, "error": "Clé API et Secret API requis."})
                     return
-                cfg = trading_config.get_config(user_id)
-                trading_config.save_binance_credentials(user_id, api_key, api_secret, testnet=testnet, valid=True)
+                if "testnet" in body and bool(cfg.testnet) != testnet:
+                    trading_config.update_config(user_id, testnet=testnet)
+                trading_config.save_binance_credentials(user_id, api_key, api_secret, testnet=testnet)
                 ok_conn, conn_msg = test_connection(user_id)
                 self._send_json(200, {
                     "ok": True,

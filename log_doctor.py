@@ -267,7 +267,7 @@ def analyze_logs_locally(
             else:
                 user_checks.append("🟢 *Safe Mode* : Aucun verrouillage actif (`safety_lock=False`).")
 
-            mode_label = "TESTNET 🧪" if cfg.is_testnet else "LIVE RÉEL 🚨"
+            mode_label = "TESTNET 🧪" if cfg.testnet else "LIVE RÉEL 🚨"
             user_checks.append(
                 f"⚙️ *Profil AutoTrade* : Marché `{cfg.market_type.upper()}` | Mode `{mode_label}` | AutoTrade `{'ON' if cfg.auto_trade else 'OFF'}`"
             )

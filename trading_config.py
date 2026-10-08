@@ -122,7 +122,7 @@ class TradingConfig:
 
 
 def ensure_config_row(user_id: int) -> None:
-    """Crée une ligne de config par défaut si elle n'existe pas encore et met à niveau les seuils par défaut."""
+    """Crée une ligne de config par défaut si elle n'existe pas encore sans écraser les choix existants."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -144,17 +144,6 @@ def ensure_config_row(user_id: int) -> None:
                     DEFAULTS["analysis_timeframe"],
                     DEFAULTS["analysis_interval_minutes"], DEFAULTS["testnet"],
                 ),
-            )
-            # Mise à niveau automatique des anciens seuils (< 78 -> 78) pour gagner plus et perdre moins
-            cur.execute(
-                """
-                UPDATE trading_config
-                SET min_score = %s,
-                    max_daily_loss = LEAST(COALESCE(max_daily_loss, 3.0), 3.0),
-                    trailing_stop = TRUE
-                WHERE user_id = %s AND min_score < %s
-                """,
-                (DEFAULTS["min_score"], user_id, DEFAULTS["min_score"]),
             )
         conn.commit()
     finally:
@@ -291,13 +280,21 @@ def get_binance_credentials(user_id: int, market_type: Optional[str] = None) -> 
     finally:
         conn.close()
 
-    if not row:
-        effective_market = market_type
+    effective_market = market_type
+    cfg_testnet: Optional[bool] = None
+    try:
+        cfg = get_config(user_id)
         if not effective_market:
-            try:
-                effective_market = get_config(user_id).market_type
-            except Exception:
-                effective_market = DEFAULT_MARKET_TYPE
+            effective_market = cfg.market_type
+        cfg_testnet = bool(cfg.testnet)
+    except Exception:
+        if not effective_market:
+            effective_market = DEFAULT_MARKET_TYPE
+
+    if not row:
+        effective_testnet = BINANCE_TESTNET if cfg_testnet is None else cfg_testnet
+        if not effective_testnet:
+            return None
         if effective_market == "spot" and DEFAULT_BINANCE_SPOT_TESTNET_API_KEY and DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET:
             return {
                 "api_key": DEFAULT_BINANCE_SPOT_TESTNET_API_KEY,
@@ -313,7 +310,29 @@ def get_binance_credentials(user_id: int, market_type: Optional[str] = None) -> 
                 "is_valid": True,
             }
         return None
-    return {"api_key": row[0], "api_secret": row[1], "testnet": row[2], "is_valid": row[3]}
+
+    stored_testnet = bool(row[2])
+    if cfg_testnet is not None and stored_testnet != cfg_testnet:
+        # Si l'utilisateur est en mode Testnet mais que la ligne stockée est Live (ou inversement),
+        # ne jamais utiliser des clés d'un autre environnement.
+        if cfg_testnet:
+            if effective_market == "spot" and DEFAULT_BINANCE_SPOT_TESTNET_API_KEY and DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET:
+                return {
+                    "api_key": DEFAULT_BINANCE_SPOT_TESTNET_API_KEY,
+                    "api_secret": DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET,
+                    "testnet": True,
+                    "is_valid": True,
+                }
+            if DEFAULT_BINANCE_TESTNET_API_KEY and DEFAULT_BINANCE_TESTNET_API_SECRET:
+                return {
+                    "api_key": DEFAULT_BINANCE_TESTNET_API_KEY,
+                    "api_secret": DEFAULT_BINANCE_TESTNET_API_SECRET,
+                    "testnet": True,
+                    "is_valid": True,
+                }
+        return None
+
+    return {"api_key": row[0], "api_secret": row[1], "testnet": stored_testnet, "is_valid": bool(row[3])}
 
 
 def mark_credentials_invalid(user_id: int, reason: str = "") -> None:

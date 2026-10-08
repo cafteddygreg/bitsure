@@ -136,21 +136,102 @@ class SignalEngine:
         score = max(0, min(100, score))
         return int(round(score))
 
+    TIMEFRAME_RULE_MINUTES = {
+        "1m": 1,
+        "1min": 1,
+        "5m": 5,
+        "5min": 5,
+        "15m": 15,
+        "15min": 15,
+        "1h": 60,
+        "60m": 60,
+        "60min": 60,
+        "4h": 240,
+        "240m": 240,
+        "240min": 240,
+        "1d": 1440,
+        "1D": 1440,
+        "1440m": 1440,
+    }
+
+    PANDAS_RESAMPLE_RULES = {
+        5: "5min",
+        15: "15min",
+        60: "1h",
+        240: "4h",
+        1440: "1D",
+    }
+
+    @staticmethod
+    def filter_closed_candles(
+        df: Optional[pd.DataFrame],
+        now: Optional[pd.Timestamp] = None,
+        timeframe_minutes: Optional[float] = None,
+    ) -> Optional[pd.DataFrame]:
+        """
+        Retourne uniquement les bougies effectivement clôturées.
+        - Respecte `df.attrs['last_candle_open']` / `df.attrs['has_open_candle']` si défini.
+        - Respecte la colonne `is_closed` si présente.
+        - Respecte la colonne `CloseTime` / `close_time` si présente.
+        - Vérifie `OpenTime + timeframe <= now` sur un `DatetimeIndex` sans introduire
+          de décalage sur des données historiques déjà clôturées.
+        """
+        if df is None or df.empty:
+            return df
+
+        out = df.copy()
+        if isinstance(out.index, pd.DatetimeIndex) and not out.index.is_monotonic_increasing:
+            out = out.sort_index()
+
+        if df.attrs.get("last_candle_open") is True or df.attrs.get("has_open_candle") is True:
+            if len(out) >= 1:
+                out = out.iloc[:-1]
+                out.attrs = dict(df.attrs)
+                out.attrs["last_candle_open"] = False
+                out.attrs["has_open_candle"] = False
+
+        if "is_closed" in out.columns:
+            out = out[out["is_closed"].astype(bool)]
+            if out.empty:
+                return out
+
+        ref_ts = pd.Timestamp(now) if now is not None else pd.Timestamp.now(tz="UTC")
+
+        close_col = "CloseTime" if "CloseTime" in out.columns else ("close_time" if "close_time" in out.columns else None)
+        if close_col is not None and not out.empty:
+            raw_ct = out[close_col]
+            if pd.api.types.is_numeric_dtype(raw_ct):
+                med = float(raw_ct.dropna().median()) if not raw_ct.dropna().empty else 0.0
+                unit = "ms" if med > 1e11 else "s"
+                ct_series = pd.to_datetime(raw_ct, unit=unit, utc=True)
+            else:
+                ct_series = pd.to_datetime(raw_ct, utc=True)
+            ref_utc = ref_ts.tz_localize("UTC") if ref_ts.tzinfo is None else ref_ts.tz_convert("UTC")
+            out = out[ct_series <= ref_utc]
+            if out.empty:
+                return out
+
+        if isinstance(out.index, pd.DatetimeIndex) and len(out.index) >= 2:
+            tf_min = timeframe_minutes or SignalEngine._infer_timeframe_minutes(out)
+            if tf_min is not None and tf_min > 0:
+                if out.index.tz is None:
+                    ref_cmp = ref_ts.tz_convert("UTC").tz_localize(None) if ref_ts.tzinfo is not None else ref_ts
+                else:
+                    ref_cmp = ref_ts.tz_localize(out.index.tz) if ref_ts.tzinfo is None else ref_ts.tz_convert(out.index.tz)
+                candle_close_times = out.index + pd.Timedelta(minutes=float(tf_min))
+                out = out[candle_close_times <= ref_cmp]
+
+        return out
+
     @staticmethod
     def _detect_timeframe_trend(df: Optional[pd.DataFrame]) -> str:
-        """Detecte la tendance avec la logique SMA deja utilisee par le moteur."""
-        if df is None:
-            return TREND_NEUTRAL
-        if SignalEngine._valid_df(df, min_len=50):
-            fast_p, slow_p = 20, 50
-        elif SignalEngine._valid_df(df, min_len=12):
-            fast_p, slow_p = 5, 12
-        else:
+        """Détecte la tendance avec la règle SMA20 / SMA50 (exige au moins 50 bougies clôturées)."""
+        if df is None or not SignalEngine._valid_df(df, min_len=50):
             return TREND_NEUTRAL
 
         close = df["Close"]
-        sma_fast_val = sma(close, fast_p).iloc[-1]
-        sma_slow_val = sma(close, slow_p).iloc[-1]
+        sma_fast_val = sma(close, 20).iloc[-1]
+        sma_slow_val = sma(close, 50).iloc[-1]
         last_price = close.iloc[-1]
 
         if pd.isna(last_price) or pd.isna(sma_fast_val) or pd.isna(sma_slow_val):
@@ -162,58 +243,157 @@ class SignalEngine:
         return TREND_NEUTRAL
 
     @staticmethod
-    def _resample_ohlc(df: pd.DataFrame, rule: str) -> Optional[pd.DataFrame]:
-        if not isinstance(df.index, pd.DatetimeIndex):
+    def _resample_ohlc(
+        df: pd.DataFrame,
+        rule: str,
+        base_minutes: Optional[float] = None,
+    ) -> Optional[pd.DataFrame]:
+        """
+        Resample OHLCV vers le véritable timeframe demandé (`5min`, `15min`, `1h`, `4h`, `1D`).
+        - Ne downsample jamais un timeframe supérieur vers un timeframe inférieur.
+        - Respecte les frontières temporelles UTC (`closed='left', label='left'`).
+        - Exclut toute bougie supérieure incomplète au début ou à la fin (zéro look-ahead).
+        """
+        if df is None or df.empty or not isinstance(df.index, pd.DatetimeIndex):
             return None
 
+        work_df = df.sort_index() if not df.index.is_monotonic_increasing else df
+        inferred_base = base_minutes or SignalEngine._infer_timeframe_minutes(work_df)
+        target_minutes = SignalEngine.TIMEFRAME_RULE_MINUTES.get(rule)
+
+        if inferred_base is not None and target_minutes is not None:
+            if target_minutes < inferred_base - 1e-6:
+                return None
+            if abs(target_minutes - inferred_base) <= 1e-6:
+                return work_df.copy()
+
+        pandas_rule = SignalEngine.PANDAS_RESAMPLE_RULES.get(target_minutes, rule) if target_minutes else rule
         agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
-        if "Volume" in df.columns:
+        if "Volume" in work_df.columns:
             agg["Volume"] = "sum"
-        resampled = df.resample(rule).agg(agg).dropna(subset=["Open", "High", "Low", "Close"])
+
+        resampled = (
+            work_df.resample(pandas_rule, closed="left", label="left")
+            .agg(agg)
+            .dropna(subset=["Open", "High", "Low", "Close"])
+        )
+        if resampled.empty:
+            return None
+
+        if inferred_base is not None and inferred_base > 0 and target_minutes is not None:
+            first_open_ts = work_df.index[0]
+            last_close_ts = work_df.index[-1] + pd.Timedelta(minutes=float(inferred_base))
+            target_delta = pd.Timedelta(minutes=float(target_minutes))
+            expected_bars = max(1, int(round(float(target_minutes) / float(inferred_base))))
+            counts = work_df["Close"].resample(pandas_rule, closed="left", label="left").count()
+            counts = counts.reindex(resampled.index).fillna(0)
+            valid_mask = (
+                (resampled.index >= first_open_ts)
+                & ((resampled.index + target_delta) <= last_close_ts)
+                & (counts >= expected_bars)
+            )
+            resampled = resampled[valid_mask]
+
         return resampled if not resampled.empty else None
 
     @staticmethod
     def _infer_timeframe_minutes(df: pd.DataFrame) -> Optional[float]:
-        if not isinstance(df.index, pd.DatetimeIndex) or len(df.index) < 3:
+        if not isinstance(df.index, pd.DatetimeIndex) or len(df.index) < 2:
             return None
 
         deltas = df.index.to_series().diff().dropna().dt.total_seconds() / 60
+        deltas = deltas[deltas > 0]
         if deltas.empty:
             return None
         return float(deltas.median())
 
     @staticmethod
-    def _compute_timeframe_trends(df: pd.DataFrame) -> Dict[str, str]:
+    def _build_mtf_frames(
+        df: pd.DataFrame,
+        htf_data: Optional[Dict[str, pd.DataFrame]] = None,
+        now: Optional[pd.Timestamp] = None,
+    ) -> Dict[str, Optional[pd.DataFrame]]:
         """
-        Construit les tendances multi-timeframes selon la hiérarchie naturelle :
-        - 5m  -> base 5m ("1h"), HTF1 15m ("4h"), HTF2 1h ("1d")
-        - 15m -> base 15m ("1h"), HTF1 1h ("4h"), HTF2 4h ("1d")
-        - 1h  -> base 1h ("1h"), HTF1 4h ("4h"), HTF2 1D ("1d")
-        - 4h  -> base 4h ("4h"), HTF2 1D ("1d")
+        Construit les DataFrames multi-timeframes réels :
+        - '5m'  est réellement 5m (5 minutes)
+        - '15m' est réellement 15m (15 minutes)
+        - '1h'  est réellement 1h (60 minutes)
+        - '4h'  est réellement 4h (240 minutes)
+        - '1d'  est réellement 1d (1440 minutes)
+        Aucune série 5m/15m/1h n'est jamais renommée en '4h' ou '1d'.
+        """
+        frames: Dict[str, Optional[pd.DataFrame]] = {
+            "5m": None,
+            "15m": None,
+            "1h": None,
+            "4h": None,
+            "1d": None,
+        }
+        if df is None or df.empty:
+            return frames
+
+        closed_df = SignalEngine.filter_closed_candles(df, now=now)
+        if closed_df is None or closed_df.empty:
+            return frames
+
+        inferred_minutes = SignalEngine._infer_timeframe_minutes(closed_df)
+        last_close_ts = None
+        if isinstance(closed_df.index, pd.DatetimeIndex) and inferred_minutes is not None and len(closed_df.index) > 0:
+            last_close_ts = closed_df.index[-1] + pd.Timedelta(minutes=float(inferred_minutes))
+
+        specs = (
+            ("5m", "5min", 5),
+            ("15m", "15min", 15),
+            ("1h", "1h", 60),
+            ("4h", "4h", 240),
+            ("1d", "1D", 1440),
+        )
+
+        for tf_key, rule, target_min in specs:
+            ext_df = None
+            if htf_data and tf_key in htf_data and htf_data[tf_key] is not None:
+                ext_norm = SignalEngine._normalize_df(htf_data[tf_key])
+                ext_closed = SignalEngine.filter_closed_candles(ext_norm, now=now, timeframe_minutes=float(target_min))
+                if ext_closed is not None and not ext_closed.empty:
+                    if last_close_ts is not None and isinstance(ext_closed.index, pd.DatetimeIndex):
+                        if ext_closed.index.tz is None and last_close_ts.tzinfo is not None:
+                            cutoff = last_close_ts.tz_convert("UTC").tz_localize(None)
+                        elif ext_closed.index.tz is not None and last_close_ts.tzinfo is None:
+                            cutoff = last_close_ts.tz_localize(ext_closed.index.tz)
+                        else:
+                            cutoff = last_close_ts
+                        ext_closed = ext_closed[(ext_closed.index + pd.Timedelta(minutes=float(target_min))) <= cutoff]
+                    if not ext_closed.empty:
+                        ext_df = ext_closed
+
+            if ext_df is not None:
+                frames[tf_key] = ext_df
+            elif inferred_minutes is not None and inferred_minutes <= target_min + 1e-6:
+                frames[tf_key] = SignalEngine._resample_ohlc(closed_df, rule, base_minutes=inferred_minutes)
+
+        return frames
+
+    @staticmethod
+    def _compute_timeframe_trends(
+        df: pd.DataFrame,
+        htf_data: Optional[Dict[str, pd.DataFrame]] = None,
+        now: Optional[pd.Timestamp] = None,
+    ) -> Dict[str, str]:
+        """
+        Calcule les tendances sur les véritables timeframes 1h, 4h et 1d.
+        - '1h' représente exclusivement des bougies 1h clôturées.
+        - '4h' représente exclusivement des bougies 4h clôturées.
+        - '1d' représente exclusivement des bougies 1d clôturées.
         """
         inferred_minutes = SignalEngine._infer_timeframe_minutes(df)
-        frames = {"1h": None, "4h": None, "1d": None}
+        if inferred_minutes is None and not htf_data:
+            return {
+                "1h": SignalEngine._detect_timeframe_trend(df),
+                "4h": TREND_NEUTRAL,
+                "1d": TREND_NEUTRAL,
+            }
 
-        if inferred_minutes is None:
-            frames["1h"] = df
-        elif inferred_minutes <= 7:
-            frames["1h"] = df
-            frames["4h"] = SignalEngine._resample_ohlc(df, "15min")
-            frames["1d"] = SignalEngine._resample_ohlc(df, "1h")
-        elif inferred_minutes <= 20:
-            frames["1h"] = df
-            frames["4h"] = SignalEngine._resample_ohlc(df, "1h")
-            frames["1d"] = SignalEngine._resample_ohlc(df, "4h")
-        elif inferred_minutes <= 90:
-            frames["1h"] = df
-            frames["4h"] = SignalEngine._resample_ohlc(df, "4h")
-            frames["1d"] = SignalEngine._resample_ohlc(df, "1D")
-        elif inferred_minutes <= 300:
-            frames["4h"] = df
-            frames["1d"] = SignalEngine._resample_ohlc(df, "1D")
-        else:
-            frames["1d"] = df
-
+        frames = SignalEngine._build_mtf_frames(df, htf_data=htf_data, now=now)
         return {
             "1h": SignalEngine._detect_timeframe_trend(frames["1h"]),
             "4h": SignalEngine._detect_timeframe_trend(frames["4h"]),
@@ -302,15 +482,27 @@ class SignalEngine:
         }
 
     @staticmethod
-    def analyze(df: pd.DataFrame, lang: str = "en", symbol: str = "", style: str = "day") -> Dict:
+    def analyze(
+        df: pd.DataFrame,
+        lang: str = "en",
+        symbol: str = "",
+        style: str = "day",
+        *,
+        htf_data: Optional[Dict[str, pd.DataFrame]] = None,
+        now: Optional[pd.Timestamp] = None,
+        timeframe_minutes: Optional[float] = None,
+    ) -> Dict:
         """
         Point d'entrée principal.
 
         Args:
-            df:     DataFrame OHLC (minimum 60 bougies).
+            df:     DataFrame OHLC (minimum 60 bougies clôturées).
             lang:   Code langue ("en" ou "fr").
             symbol: Symbole (ex: "BTCUSDT", "ETHUSDT", "XAUUSD").
             style:  Style de trading ("scalping", "scalping_15m", "day", "swing", "position", ou None pour fallback config.py).
+            htf_data: Dictionnaire optionnel de DataFrames de timeframes supérieurs {'1h': df_1h, '4h': df_4h, '1d': df_1d}.
+            now:    Horodatage de référence pour exclure toute bougie non clôturée.
+            timeframe_minutes: Durée en minutes d'une bougie de `df` (inférée automatiquement si absente).
 
         Returns:
             Dict contenant signal, SL, TP, teddy_score, indicators, score_detail, etc.
@@ -325,6 +517,7 @@ class SignalEngine:
         elif raw_symbol:
             return SignalEngine._wait(lang, f"Symbole non documenté ({raw_symbol})")
         df = SignalEngine._normalize_df(df)
+        df = SignalEngine.filter_closed_candles(df, now=now, timeframe_minutes=timeframe_minutes)
 
         if not SignalEngine._valid_df(df):
             return SignalEngine._wait(lang)
@@ -376,7 +569,7 @@ class SignalEngine:
         # ── Tendances ──────────────────────────────────────────────────────────
         trend_bull = last_price > sma20 > sma50
         trend_bear = last_price < sma20 < sma50
-        timeframe_trends = SignalEngine._compute_timeframe_trends(df)
+        timeframe_trends = SignalEngine._compute_timeframe_trends(df, htf_data=htf_data, now=now)
         tf_alignment = SignalEngine.check_tf_alignment(
             timeframe_trends["1h"],
             timeframe_trends["4h"],
