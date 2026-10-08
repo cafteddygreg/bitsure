@@ -360,6 +360,18 @@ def _resolve_user_from_headers(headers) -> int:
     return 100201
 
 
+def _extract_price_float(price_obj: Any, default: float = 0.0) -> float:
+    if isinstance(price_obj, dict):
+        try:
+            return float(price_obj.get("price") or price_obj.get("close") or default)
+        except Exception:
+            return default
+    try:
+        return float(price_obj) if price_obj is not None else default
+    except Exception:
+        return default
+
+
 def _build_user_profile(user_id: int) -> Dict[str, Any]:
     um = UserManager.get_instance()
     user = um.get_user(user_id)
@@ -693,13 +705,15 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 symbols = ["BTCUSDT", "ETHUSDT", "XAUUSD"]
                 tickers = []
                 for sym in symbols:
-                    price = run_coro(fetcher.get_realtime_price(sym))
+                    price_raw = run_coro(fetcher.get_realtime_price(sym))
+                    price_val = _extract_price_float(price_raw, 0.0)
                     open_status = market_hours.is_market_open(sym)
                     msg = "Ouvert" if open_status else "Fermé"
                     cfg_sym = SYMBOL_CONFIGS.get(sym, SYMBOL_CONFIGS["BTCUSDT"])
                     tickers.append({
                         "symbol": sym,
-                        "price": price,
+                        "price": price_val,
+                        "price_detail": price_raw if isinstance(price_raw, dict) else None,
                         "is_open": open_status,
                         "status_text": msg,
                         "config": cfg_sym,
@@ -759,8 +773,8 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     s = p["symbol"]
                     if s not in seen_syms:
                         seen_syms.add(s)
-                        live_p = run_coro(fetcher.get_realtime_price(s))
-                        if live_p:
+                        live_p = _extract_price_float(run_coro(fetcher.get_realtime_price(s)), 0.0)
+                        if live_p > 0:
                             pt.update_price(s, live_p)
                 pt.check_exits()
                 positions = pt.get_positions(user_id)
@@ -1127,7 +1141,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 leverage = float(body.get("leverage") or 1.0)
                 entry_price = float(body.get("entry_price") or 0.0)
                 if entry_price <= 0:
-                    entry_price = run_coro(DataFetcher.get_instance().get_realtime_price(symbol)) or 83000.0
+                    entry_price = _extract_price_float(run_coro(DataFetcher.get_instance().get_realtime_price(symbol)), 83000.0)
                 sl = float(body.get("sl") or (entry_price * 0.985 if side == "BUY" else entry_price * 1.015))
                 tp = float(body.get("tp") or (entry_price * 1.03 if side == "BUY" else entry_price * 0.97))
 
@@ -1154,7 +1168,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     return
                 exit_price = float(body.get("exit_price") or 0.0)
                 if exit_price <= 0:
-                    exit_price = run_coro(DataFetcher.get_instance().get_realtime_price(target["symbol"])) or float(target["entry"])
+                    exit_price = _extract_price_float(run_coro(DataFetcher.get_instance().get_realtime_price(target["symbol"])), float(target.get("entry_price") or target.get("entry") or 0.0))
                 closed = pt.close_position(user_id, position_id, exit_price, reason="MANUAL")
                 self._send_json(200, {
                     "ok": True,

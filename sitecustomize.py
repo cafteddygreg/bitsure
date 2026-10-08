@@ -77,10 +77,48 @@ except ImportError:
             return [float(v) if v is not None else float("nan") for v in vals]
         return vals
 
+    def _to_np_list(x):
+        if hasattr(x, "_values"):
+            return list(x._values)
+        if hasattr(x, "_data"):
+            return list(x._data)
+        if isinstance(x, (list, tuple)):
+            return list(x)
+        return [x]
+
+    def _np_maximum(a, b):
+        a_list = _to_np_list(a)
+        b_list = _to_np_list(b) if isinstance(b, (list, tuple)) or hasattr(b, "_values") else [b] * len(a_list)
+        res = [max(float(x), float(y)) for x, y in zip(a_list, b_list)]
+        if hasattr(a, "index"):
+            from pandas import Series
+            return Series(res, index=a.index)
+        return res
+
+    def _np_minimum(a, b):
+        a_list = _to_np_list(a)
+        b_list = _to_np_list(b) if isinstance(b, (list, tuple)) or hasattr(b, "_values") else [b] * len(a_list)
+        res = [min(float(x), float(y)) for x, y in zip(a_list, b_list)]
+        if hasattr(a, "index"):
+            from pandas import Series
+            return Series(res, index=a.index)
+        return res
+
+    def _np_abs(a):
+        if hasattr(a, "abs"):
+            return a.abs()
+        return [abs(float(x)) for x in _to_np_list(a)]
+
     np_mod.isnan = _np_isnan
     np_mod.isinf = _np_isinf
     np_mod.where = _np_where
     np_mod.array = _np_array
+    np_mod.maximum = _np_maximum
+    np_mod.minimum = _np_minimum
+    np_mod.abs = _np_abs
+    np_mod.arange = lambda n, dtype=float: [float(i) for i in range(int(n))]
+    np_mod.sin = lambda arr: [math.sin(float(x)) for x in _to_np_list(arr)]
+    np_mod.full = lambda n, val: [float(val) for _ in range(int(n))]
     np_mod.mean = lambda a: sum(a) / len(a) if len(a) else float("nan")
     np_mod.std = lambda a: math.sqrt(sum((x - (sum(a) / len(a))) ** 2 for x in a) / max(len(a) - 1, 1)) if len(a) > 1 else 0.0
     sys.modules["numpy"] = np_mod
@@ -95,35 +133,256 @@ except ImportError:
     pd_mod = types.ModuleType("pandas")
 
     def _parse_dt(val: Any, unit: Optional[str] = None) -> _dt.datetime:
+        if hasattr(val, "_dt") and isinstance(val._dt, _dt.datetime):
+            return val._dt
         if isinstance(val, _dt.datetime):
-            return val.replace(tzinfo=None) if val.tzinfo else val
+            if val.tzinfo is not None:
+                return val.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+            return val
         if isinstance(val, _dt.date):
             return _dt.datetime(val.year, val.month, val.day)
         if unit == "ms" or (isinstance(val, (int, float)) and val > 1e10):
-            return _dt.datetime.utcfromtimestamp(float(val) / 1000.0)
+            return _dt.datetime.fromtimestamp(float(val) / 1000.0, tz=_dt.timezone.utc).replace(tzinfo=None)
         if unit == "s" or isinstance(val, (int, float)):
-            return _dt.datetime.utcfromtimestamp(float(val))
+            return _dt.datetime.fromtimestamp(float(val), tz=_dt.timezone.utc).replace(tzinfo=None)
         s = str(val).strip()
         if s.endswith("Z"):
             s = s[:-1]
         if "+" in s[10:]:
             s = s[: s.rfind("+")]
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        s_clean = s.replace("T", " ")
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
             try:
-                return _dt.datetime.strptime(s[:19], fmt)
+                return _dt.datetime.strptime(s_clean[:19], fmt)
             except ValueError:
                 continue
         try:
             return _dt.datetime.fromisoformat(s)
         except Exception:
-            return _dt.datetime.utcnow()
+            return _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+
+    class Timedelta:
+        def __init__(self, value: Any = 0, unit: str = "min", **kwargs):
+            if isinstance(value, Timedelta):
+                self._seconds = float(value._seconds)
+            elif isinstance(value, _dt.timedelta):
+                self._seconds = float(value.total_seconds())
+            elif kwargs:
+                self._seconds = float(_dt.timedelta(**kwargs).total_seconds())
+            else:
+                u = str(unit).lower()
+                mult = (
+                    60.0 if u in ("m", "min", "minute", "minutes", "t")
+                    else (3600.0 if u in ("h", "hour", "hours")
+                    else (86400.0 if u in ("d", "day", "days")
+                    else (0.001 if u == "ms" else 1.0)))
+                )
+                self._seconds = float(value) * mult
+
+        def total_seconds(self) -> float:
+            return self._seconds
+
+        def _cmp_sec(self, other: Any) -> float:
+            if isinstance(other, Timedelta):
+                return other._seconds
+            if isinstance(other, _dt.timedelta):
+                return other.total_seconds()
+            return float(other)
+
+        def __gt__(self, other: Any) -> bool:
+            return self._seconds > self._cmp_sec(other)
+
+        def __ge__(self, other: Any) -> bool:
+            return self._seconds >= self._cmp_sec(other)
+
+        def __lt__(self, other: Any) -> bool:
+            return self._seconds < self._cmp_sec(other)
+
+        def __le__(self, other: Any) -> bool:
+            return self._seconds <= self._cmp_sec(other)
+
+        def __eq__(self, other: Any) -> bool:  # type: ignore[override]
+            try:
+                return abs(self._seconds - self._cmp_sec(other)) < 1e-9
+            except Exception:
+                return False
+
+        def __repr__(self) -> str:
+            return f"Timedelta({self._seconds}s)"
+
+    class Timestamp:
+        def __init__(self, ts: Any = None, unit: Optional[str] = None, tz: Any = None):
+            if isinstance(ts, Timestamp):
+                self._dt = ts._dt
+            elif ts is None:
+                self._dt = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+            else:
+                self._dt = _parse_dt(ts, unit=unit)
+            self.tz = None
+            self.tzinfo = None
+
+        @classmethod
+        def utcnow(cls) -> "Timestamp":
+            return cls(_dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None))
+
+        @classmethod
+        def now(cls, tz: Any = None) -> "Timestamp":
+            return cls(_dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None))
+
+        def tz_localize(self, tz: Any = None) -> "Timestamp":
+            return self
+
+        def tz_convert(self, tz: Any = None) -> "Timestamp":
+            return self
+
+        def strftime(self, fmt: str) -> str:
+            return self._dt.strftime(fmt)
+
+        def isoformat(self) -> str:
+            return self._dt.isoformat()
+
+        @property
+        def year(self) -> int:
+            return self._dt.year
+
+        @property
+        def month(self) -> int:
+            return self._dt.month
+
+        @property
+        def day(self) -> int:
+            return self._dt.day
+
+        @property
+        def hour(self) -> int:
+            return self._dt.hour
+
+        @property
+        def minute(self) -> int:
+            return self._dt.minute
+
+        @property
+        def second(self) -> int:
+            return self._dt.second
+
+        @property
+        def microsecond(self) -> int:
+            return self._dt.microsecond
+
+        def replace(self, **kwargs) -> "Timestamp":
+            clean_kw = {k: v for k, v in kwargs.items() if k != "tzinfo"}
+            return Timestamp(self._dt.replace(**clean_kw))
+
+        def timestamp(self) -> float:
+            return self._dt.replace(tzinfo=_dt.timezone.utc).timestamp()
+
+        def _other_dt(self, other: Any) -> _dt.datetime:
+            if isinstance(other, Timestamp):
+                return other._dt
+            if isinstance(other, _dt.datetime):
+                return _parse_dt(other)
+            return _parse_dt(other)
+
+        def __sub__(self, other: Any):
+            if isinstance(other, (Timestamp, _dt.datetime)):
+                other_dt = self._other_dt(other)
+                return Timedelta((self._dt - other_dt).total_seconds(), unit="s")
+            if isinstance(other, Timedelta):
+                return Timestamp(self._dt - _dt.timedelta(seconds=other._seconds))
+            if isinstance(other, _dt.timedelta):
+                return Timestamp(self._dt - other)
+            raise TypeError(f"Unsupported subtraction with {type(other)}")
+
+        def __add__(self, other: Any) -> "Timestamp":
+            if isinstance(other, Timedelta):
+                return Timestamp(self._dt + _dt.timedelta(seconds=other._seconds))
+            if isinstance(other, _dt.timedelta):
+                return Timestamp(self._dt + other)
+            raise TypeError(f"Unsupported addition with {type(other)}")
+
+        def __gt__(self, other: Any) -> bool:
+            return self._dt > self._other_dt(other)
+
+        def __ge__(self, other: Any) -> bool:
+            return self._dt >= self._other_dt(other)
+
+        def __lt__(self, other: Any) -> bool:
+            return self._dt < self._other_dt(other)
+
+        def __le__(self, other: Any) -> bool:
+            return self._dt <= self._other_dt(other)
+
+        def __eq__(self, other: Any) -> bool:  # type: ignore[override]
+            if not isinstance(other, (Timestamp, _dt.datetime, str)):
+                return False
+            try:
+                return self._dt == self._other_dt(other)
+            except Exception:
+                return False
+
+        def __hash__(self) -> int:
+            return hash(self._dt)
+
+        def __repr__(self) -> str:
+            return self._dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        def __str__(self) -> str:
+            return self.__repr__()
 
     class DatetimeIndex(list):
         def __init__(self, seq=()):
-            super().__init__(_parse_dt(x) if not isinstance(x, _dt.datetime) else x for x in seq)
+            super().__init__(x if isinstance(x, Timestamp) else Timestamp(x) for x in seq)
+            self.tz = None
+            self.tzinfo = None
 
-        def to_series(self):
+        @property
+        def is_monotonic_increasing(self) -> bool:
+            return all(self[i] <= self[i + 1] for i in range(len(self) - 1))
+
+        def to_series(self) -> "Series":
             return Series(list(self), index=DatetimeIndex(self))
+
+        def difference(self, other) -> "DatetimeIndex":
+            s = set(other)
+            return DatetimeIndex([x for x in self if x not in s])
+
+        def __getitem__(self, item):
+            res = super().__getitem__(item)
+            if isinstance(item, slice):
+                return DatetimeIndex(res)
+            return res
+
+        def __add__(self, other):
+            if isinstance(other, (Timedelta, _dt.timedelta)):
+                return DatetimeIndex([x + other for x in self])
+            return DatetimeIndex(super().__add__(other))
+
+        def __sub__(self, other):
+            if isinstance(other, (Timedelta, _dt.timedelta)):
+                return DatetimeIndex([x - other for x in self])
+            if isinstance(other, (Timestamp, _dt.datetime)):
+                return Series([x - other for x in self], index=DatetimeIndex(self))
+            raise TypeError(f"Unsupported subtraction on DatetimeIndex: {type(other)}")
+
+        def __le__(self, other):
+            if isinstance(other, (DatetimeIndex, Series, list, tuple)):
+                return Series([a <= b for a, b in zip(self, other)], index=DatetimeIndex(self), dtype=bool)
+            return Series([x <= other for x in self], index=DatetimeIndex(self), dtype=bool)
+
+        def __lt__(self, other):
+            if isinstance(other, (DatetimeIndex, Series, list, tuple)):
+                return Series([a < b for a, b in zip(self, other)], index=DatetimeIndex(self), dtype=bool)
+            return Series([x < other for x in self], index=DatetimeIndex(self), dtype=bool)
+
+        def __ge__(self, other):
+            if isinstance(other, (DatetimeIndex, Series, list, tuple)):
+                return Series([a >= b for a, b in zip(self, other)], index=DatetimeIndex(self), dtype=bool)
+            return Series([x >= other for x in self], index=DatetimeIndex(self), dtype=bool)
+
+        def __gt__(self, other):
+            if isinstance(other, (DatetimeIndex, Series, list, tuple)):
+                return Series([a > b for a, b in zip(self, other)], index=DatetimeIndex(self), dtype=bool)
+            return Series([x > other for x in self], index=DatetimeIndex(self), dtype=bool)
 
     class _DtAccessor:
         def __init__(self, series: "Series"):
@@ -132,8 +391,10 @@ except ImportError:
         def total_seconds(self) -> "Series":
             out = []
             for v in self._series._values:
-                if isinstance(v, _dt.timedelta):
-                    out.append(v.total_seconds())
+                if isinstance(v, (Timedelta, _dt.timedelta)):
+                    out.append(float(v.total_seconds()))
+                elif hasattr(v, "total_seconds"):
+                    out.append(float(v.total_seconds()))
                 elif isinstance(v, (int, float)) and not _is_nan(v):
                     out.append(float(v))
                 else:
@@ -150,17 +411,28 @@ except ImportError:
             return self._s._values[item]
 
     class _RollingSeries:
-        def __init__(self, series: "Series", window: int, min_periods: Optional[int] = None):
+        def __init__(self, series: "Series", window: int, min_periods: Optional[int] = None, center: bool = False):
             self._s = series
             self._w = max(int(window), 1)
             self._mp = int(min_periods) if min_periods is not None else self._w
+            self._center = bool(center)
 
         def _apply(self, fn: Callable[[List[float]], float]) -> "Series":
             vals = self._s._values
+            n = len(vals)
             out = []
-            for i in range(len(vals)):
-                start = max(0, i - self._w + 1)
-                win = [float(x) for x in vals[start : i + 1] if x is not None and not _is_nan(x)]
+            half = self._w // 2
+            for i in range(n):
+                if self._center:
+                    start, end = i - half, i + half + 1
+                    if start < 0 or end > n:
+                        out.append(float("nan"))
+                        continue
+                    raw_win = vals[start:end]
+                else:
+                    start = max(0, i - self._w + 1)
+                    raw_win = vals[start : i + 1]
+                win = [float(x) for x in raw_win if x is not None and not _is_nan(x)]
                 if len(win) < self._mp or not win:
                     out.append(float("nan"))
                 else:
@@ -185,7 +457,7 @@ except ImportError:
             return self._apply(_calc_std)
 
     class _EwmSeries:
-        def __init__(self, series: "Series", span: Optional[float] = None, alpha: Optional[float] = None, adjust: bool = False):
+        def __init__(self, series: "Series", span: Optional[float] = None, alpha: Optional[float] = None, min_periods: int = 1, adjust: bool = False):
             self._s = series
             if alpha is not None:
                 self._alpha = float(alpha)
@@ -193,23 +465,34 @@ except ImportError:
                 self._alpha = 2.0 / (float(span) + 1.0)
             else:
                 self._alpha = 0.5
+            self._min_p = int(min_periods or 1)
 
         def mean(self) -> "Series":
             vals = self._s._values
             out = []
             ema = None
+            valid_count = 0
             alpha = self._alpha
             for v in vals:
                 if v is None or _is_nan(v):
-                    out.append(ema if ema is not None else float("nan"))
+                    out.append(ema if (ema is not None and valid_count >= self._min_p) else float("nan"))
                     continue
                 fv = float(v)
+                valid_count += 1
                 if ema is None or _is_nan(ema):
                     ema = fv
                 else:
                     ema = alpha * fv + (1.0 - alpha) * ema
-                out.append(ema)
+                out.append(ema if valid_count >= self._min_p else float("nan"))
             return Series(out, index=self._s.index, dtype=float)
+
+    class _SeriesResampler:
+        def __init__(self, series: "Series", rule: str, closed: str = "left", label: str = "left"):
+            self._df_resampler = _Resampler(DataFrame({"_v": series._values}, index=series.index), rule, closed=closed, label=label)
+
+        def count(self) -> "Series":
+            buckets, bucket_order = self._df_resampler._build_buckets()
+            return Series([len(buckets[b]["_v"]) for b in bucket_order], index=DatetimeIndex(bucket_order), dtype=float)
 
     class Series:
         def __init__(self, data=None, index=None, dtype=None):
@@ -219,7 +502,7 @@ except ImportError:
                     index = data.index
             elif data is None:
                 vals = []
-            elif isinstance(data, (list, tuple)):
+            elif isinstance(data, (list, tuple, DatetimeIndex)):
                 vals = list(data)
             else:
                 vals = list(data)
@@ -235,12 +518,14 @@ except ImportError:
                         except Exception:
                             norm_vals.append(float("nan"))
                 vals = norm_vals
+            elif dtype is bool:
+                vals = [bool(v) for v in vals]
 
             self._values = vals
             self.dtype = dtype
             if index is None:
                 self.index = list(range(len(vals)))
-            elif isinstance(index, DatetimeIndex):
+            elif isinstance(index, DatetimeIndex) or (isinstance(index, list) and index and isinstance(index[0], (Timestamp, _dt.datetime))):
                 self.index = DatetimeIndex(index)
             else:
                 self.index = list(index)
@@ -265,6 +550,10 @@ except ImportError:
         def values(self) -> list:
             return self._values
 
+        def copy(self) -> "Series":
+            idx = DatetimeIndex(self.index) if isinstance(self.index, DatetimeIndex) else list(self.index)
+            return Series(list(self._values), index=idx, dtype=self.dtype)
+
         def __len__(self) -> int:
             return len(self._values)
 
@@ -274,21 +563,50 @@ except ImportError:
         def __getitem__(self, item):
             if isinstance(item, slice):
                 return self.iloc[item]
+            if isinstance(item, (Series, list, tuple)):
+                mask = item._values if isinstance(item, Series) else list(item)
+                if len(mask) == len(self._values) and all(isinstance(x, bool) for x in mask):
+                    vals = [v for v, m in zip(self._values, mask) if m]
+                    idx = [k for k, m in zip(self.index, mask) if m]
+                    new_idx = DatetimeIndex(idx) if isinstance(self.index, DatetimeIndex) else idx
+                    return Series(vals, index=new_idx, dtype=self.dtype)
             return self._values[item]
 
         def astype(self, dtype) -> "Series":
+            if dtype is bool:
+                return Series([bool(v) for v in self._values], index=self.index, dtype=bool)
+            if dtype is int:
+                return Series([int(v) if (v is not None and not _is_nan(v)) else 0 for v in self._values], index=self.index, dtype=int)
             return Series(self._values, index=self.index, dtype=dtype)
+
+        def reindex(self, new_index) -> "Series":
+            lookup = {k: v for k, v in zip(self.index, self._values)}
+            vals = [lookup.get(k, float("nan")) for k in new_index]
+            idx = DatetimeIndex(new_index) if isinstance(new_index, DatetimeIndex) else list(new_index)
+            return Series(vals, index=idx, dtype=self.dtype)
+
+        def resample(self, rule: str, closed: str = "left", label: str = "left") -> _SeriesResampler:
+            return _SeriesResampler(self, rule, closed=closed, label=label)
+
+        def where(self, cond, other=float("nan")) -> "Series":
+            c_vals = cond._values if isinstance(cond, Series) else list(cond)
+            o_vals = other._values if isinstance(other, Series) else [other] * len(self._values)
+            out = [v if bool(c) else o for v, c, o in zip(self._values, c_vals, o_vals)]
+            return Series(out, index=self.index, dtype=self.dtype)
 
         def diff(self, periods: int = 1) -> "Series":
             out = []
             vals = self._values
             for i in range(len(vals)):
                 if i < periods:
-                    out.append(float("nan"))
+                    if isinstance(vals[i], (Timestamp, _dt.datetime)):
+                        out.append(None)
+                    else:
+                        out.append(float("nan"))
                 else:
                     a, b = vals[i], vals[i - periods]
                     if a is None or b is None or _is_nan(a) or _is_nan(b):
-                        out.append(float("nan"))
+                        out.append(None if isinstance(a, (Timestamp, _dt.datetime)) else float("nan"))
                     else:
                         out.append(a - b)
             return Series(out, index=self.index, dtype=self.dtype)
@@ -315,11 +633,11 @@ except ImportError:
                 out.append(val)
             return Series(out, index=self.index, dtype=float)
 
-        def rolling(self, window: int, min_periods: Optional[int] = None) -> _RollingSeries:
-            return _RollingSeries(self, window=window, min_periods=min_periods)
+        def rolling(self, window: int, min_periods: Optional[int] = None, center: bool = False) -> _RollingSeries:
+            return _RollingSeries(self, window=window, min_periods=min_periods, center=center)
 
-        def ewm(self, span: Optional[float] = None, alpha: Optional[float] = None, adjust: bool = False) -> _EwmSeries:
-            return _EwmSeries(self, span=span, alpha=alpha, adjust=adjust)
+        def ewm(self, span: Optional[float] = None, alpha: Optional[float] = None, min_periods: int = 1, adjust: bool = False) -> _EwmSeries:
+            return _EwmSeries(self, span=span, alpha=alpha, min_periods=min_periods, adjust=adjust)
 
         def replace(self, to_replace, value) -> "Series":
             targets = to_replace if isinstance(to_replace, (list, tuple, set)) else [to_replace]
@@ -368,7 +686,11 @@ except ImportError:
             return sum(valid) if valid else 0.0
 
         def median(self) -> float:
-            valid = sorted(float(v) for v in self._values if v is not None and not _is_nan(v))
+            valid = sorted(
+                (v.total_seconds() if isinstance(v, (Timedelta, _dt.timedelta)) else float(v))
+                for v in self._values
+                if v is not None and not _is_nan(v)
+            )
             if not valid:
                 return float("nan")
             mid = len(valid) // 2
@@ -377,7 +699,10 @@ except ImportError:
             return (valid[mid - 1] + valid[mid]) / 2.0
 
         def _binop(self, other, op: Callable[[Any, Any], Any], dtype=float) -> "Series":
-            other_vals = other._values if isinstance(other, Series) else (list(other) if isinstance(other, (list, tuple)) else [other] * len(self._values))
+            if isinstance(other, (Series, DatetimeIndex, list, tuple)):
+                other_vals = other._values if isinstance(other, Series) else list(other)
+            else:
+                other_vals = [other] * len(self._values)
             out = []
             for a, b in zip(self._values, other_vals):
                 if a is None or b is None or _is_nan(a) or _is_nan(b):
@@ -434,8 +759,14 @@ except ImportError:
         def __and__(self, other):
             return self._binop(other, lambda a, b: bool(a) and bool(b), dtype=bool)
 
+        def __rand__(self, other):
+            return self._binop(other, lambda a, b: bool(b) and bool(a), dtype=bool)
+
         def __or__(self, other):
             return self._binop(other, lambda a, b: bool(a) or bool(b), dtype=bool)
+
+        def __ror__(self, other):
+            return self._binop(other, lambda a, b: bool(b) or bool(a), dtype=bool)
 
     class _DataFrameIloc:
         def __init__(self, df: "DataFrame"):
@@ -447,43 +778,61 @@ except ImportError:
                 new_idx = self._df.index[item]
                 if isinstance(self._df.index, DatetimeIndex):
                     new_idx = DatetimeIndex(new_idx)
-                return DataFrame(new_cols, index=new_idx)
+                res = DataFrame(new_cols, columns=self._df.columns, index=new_idx)
+                res.attrs = dict(self._df.attrs)
+                return res
             row = {c: self._df._data[c][item] for c in self._df.columns}
             return row
 
     class _Resampler:
-        def __init__(self, df: "DataFrame", rule: str):
+        def __init__(self, df: "DataFrame", rule: str, closed: str = "left", label: str = "left"):
             self._df = df
             self._rule = rule.strip()
+            self._closed = closed
+            self._label = label
 
-        def _bucket_dt(self, dt: _dt.datetime) -> _dt.datetime:
+        def _bucket_dt(self, dt: Any) -> Timestamp:
+            raw_dt = dt._dt if isinstance(dt, Timestamp) else (dt if isinstance(dt, _dt.datetime) else _parse_dt(dt))
             r = self._rule.lower()
-            if r in ("15min", "15m", "15t"):
-                return dt.replace(minute=(dt.minute // 15) * 15, second=0, microsecond=0)
-            if r in ("1h", "60min", "60m"):
-                return dt.replace(minute=0, second=0, microsecond=0)
-            if r in ("4h", "240min"):
-                return dt.replace(hour=(dt.hour // 4) * 4, minute=0, second=0, microsecond=0)
-            if r in ("1d", "d", "1day"):
-                return dt.replace(hour=0, minute=0, second=0, microsecond=0)
-            return dt.replace(minute=0, second=0, microsecond=0)
+            if r in ("5min", "5m", "5t"):
+                b = raw_dt.replace(minute=(raw_dt.minute // 5) * 5, second=0, microsecond=0)
+            elif r in ("15min", "15m", "15t"):
+                b = raw_dt.replace(minute=(raw_dt.minute // 15) * 15, second=0, microsecond=0)
+            elif r in ("1h", "60min", "60m"):
+                b = raw_dt.replace(minute=0, second=0, microsecond=0)
+            elif r in ("4h", "240min", "240m"):
+                b = raw_dt.replace(hour=(raw_dt.hour // 4) * 4, minute=0, second=0, microsecond=0)
+            elif r in ("1d", "d", "1day", "1440m"):
+                b = raw_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            else:
+                b = raw_dt.replace(minute=0, second=0, microsecond=0)
+            return Timestamp(b)
 
-        def agg(self, agg_map: Dict[str, str]) -> "DataFrame":
-            buckets: Dict[_dt.datetime, Dict[str, List[float]]] = {}
-            bucket_order: List[_dt.datetime] = []
+        def _build_buckets(self, cols: Optional[Iterable[str]] = None) -> Tuple[Dict[Timestamp, Dict[str, List[float]]], List[Timestamp]]:
+            target_cols = list(cols) if cols is not None else list(self._df.columns)
+            buckets: Dict[Timestamp, Dict[str, List[float]]] = {}
+            bucket_order: List[Timestamp] = []
             for i, dt in enumerate(self._df.index):
-                b = self._bucket_dt(dt if isinstance(dt, _dt.datetime) else _parse_dt(dt))
+                b = self._bucket_dt(dt)
                 if b not in buckets:
-                    buckets[b] = {c: [] for c in agg_map}
+                    buckets[b] = {c: [] for c in target_cols}
                     bucket_order.append(b)
-                for col in agg_map:
+                for col in target_cols:
                     if col in self._df._data:
                         val = self._df._data[col][i]
                         if val is not None and not _is_nan(val):
                             buckets[b][col].append(float(val))
+            return buckets, bucket_order
 
+        def count(self) -> "DataFrame":
+            buckets, bucket_order = self._build_buckets()
+            out_cols = {c: [float(len(buckets[b][c])) for b in bucket_order] for c in self._df.columns}
+            return DataFrame(out_cols, index=DatetimeIndex(bucket_order))
+
+        def agg(self, agg_map: Dict[str, str]) -> "DataFrame":
+            buckets, bucket_order = self._build_buckets(agg_map.keys())
             out_cols: Dict[str, List[float]] = {c: [] for c in agg_map}
-            out_idx: List[_dt.datetime] = []
+            out_idx: List[Timestamp] = []
             for b in bucket_order:
                 col_lists = buckets[b]
                 out_idx.append(b)
@@ -509,6 +858,7 @@ except ImportError:
         def __init__(self, data=None, columns: Optional[Sequence[str]] = None, index=None):
             self._data: Dict[str, List[Any]] = {}
             self._columns: List[str] = []
+            self.attrs: Dict[str, Any] = {}
             n_rows = 0
 
             if isinstance(data, dict):
@@ -522,7 +872,10 @@ except ImportError:
                     elif isinstance(col_val, (list, tuple)):
                         self._data[c] = list(col_val)
                     else:
-                        self._data[c] = [col_val]
+                        if index is not None:
+                            self._data[c] = [col_val] * len(index)
+                        else:
+                            self._data[c] = [col_val]
                     n_rows = max(n_rows, len(self._data[c]))
             elif isinstance(data, list):
                 if len(data) > 0 and isinstance(data[0], dict):
@@ -542,7 +895,7 @@ except ImportError:
 
             if index is None:
                 self.index = list(range(n_rows))
-            elif isinstance(index, DatetimeIndex):
+            elif isinstance(index, DatetimeIndex) or (isinstance(index, list) and index and isinstance(index[0], (Timestamp, _dt.datetime))):
                 self.index = DatetimeIndex(index)
             else:
                 self.index = list(index)
@@ -569,6 +922,23 @@ except ImportError:
         def iloc(self) -> _DataFrameIloc:
             return _DataFrameIloc(self)
 
+        def copy(self) -> "DataFrame":
+            new_data = {c: list(self._data[c]) for c in self.columns}
+            new_idx = DatetimeIndex(self.index) if isinstance(self.index, DatetimeIndex) else list(self.index)
+            res = DataFrame(new_data, columns=list(self.columns), index=new_idx)
+            res.attrs = dict(self.attrs)
+            return res
+
+        def sort_index(self) -> "DataFrame":
+            pairs = sorted(enumerate(self.index), key=lambda p: p[1])
+            idxs = [p[0] for p in pairs]
+            new_data = {c: [self._data[c][i] for i in idxs] for c in self.columns}
+            new_idx_raw = [self.index[i] for i in idxs]
+            new_idx = DatetimeIndex(new_idx_raw) if isinstance(self.index, DatetimeIndex) else new_idx_raw
+            res = DataFrame(new_data, columns=list(self.columns), index=new_idx)
+            res.attrs = dict(self.attrs)
+            return res
+
         def __len__(self) -> int:
             return len(self.index)
 
@@ -591,23 +961,35 @@ except ImportError:
                     if isinstance(k, str) and k.lower() == low:
                         return Series(self._data[k], index=self.index)
                 raise KeyError(key)
-            if isinstance(key, list):
-                sub = {}
-                for k in key:
-                    if k in self._data:
-                        sub[k] = list(self._data[k])
-                    elif isinstance(k, str):
-                        low = k.lower()
-                        for orig_k in self._data:
-                            if isinstance(orig_k, str) and orig_k.lower() == low:
-                                sub[k] = list(self._data[orig_k])
-                                break
-                return DataFrame(sub, columns=key, index=self.index)
+            if isinstance(key, (Series, list, tuple)):
+                mask = key._values if isinstance(key, Series) else list(key)
+                if len(mask) == len(self.index) and all(isinstance(x, bool) for x in mask):
+                    keep_indices = [i for i, flag in enumerate(mask) if flag]
+                    new_data = {c: [self._data[c][i] for i in keep_indices] for c in self.columns}
+                    new_idx_raw = [self.index[i] for i in keep_indices]
+                    new_idx = DatetimeIndex(new_idx_raw) if isinstance(self.index, DatetimeIndex) else new_idx_raw
+                    res = DataFrame(new_data, columns=list(self.columns), index=new_idx)
+                    res.attrs = dict(self.attrs)
+                    return res
+                if isinstance(key, list):
+                    sub = {}
+                    for k in key:
+                        if k in self._data:
+                            sub[k] = list(self._data[k])
+                        elif isinstance(k, str):
+                            low = k.lower()
+                            for orig_k in self._data:
+                                if isinstance(orig_k, str) and orig_k.lower() == low:
+                                    sub[k] = list(self._data[orig_k])
+                                    break
+                    res = DataFrame(sub, columns=key, index=self.index)
+                    res.attrs = dict(self.attrs)
+                    return res
             raise KeyError(key)
 
         def __setitem__(self, key: str, value):
-            if isinstance(value, Series):
-                self._data[key] = list(value._values)
+            if isinstance(value, (Series, DatetimeIndex)):
+                self._data[key] = list(value._values if isinstance(value, Series) else value)
             elif isinstance(value, (list, tuple)):
                 self._data[key] = list(value)
             else:
@@ -617,14 +999,16 @@ except ImportError:
 
         def rename(self, columns: Optional[Dict[str, str]] = None) -> "DataFrame":
             if not columns:
-                return self
+                return self.copy()
             new_cols = [columns.get(c, c) for c in self.columns]
             new_data = {columns.get(c, c): list(self._data[c]) for c in self.columns}
-            return DataFrame(new_data, columns=new_cols, index=self.index)
+            res = DataFrame(new_data, columns=new_cols, index=self.index)
+            res.attrs = dict(self.attrs)
+            return res
 
         def set_index(self, col: str, inplace: bool = False):
             vals = self._data.get(col, [])
-            is_dt = len(vals) > 0 and isinstance(vals[0], _dt.datetime)
+            is_dt = len(vals) > 0 and isinstance(vals[0], (Timestamp, _dt.datetime))
             new_idx = DatetimeIndex(vals) if is_dt else list(vals)
             new_cols = [c for c in self.columns if c != col]
             new_data = {c: self._data[c] for c in new_cols}
@@ -633,14 +1017,18 @@ except ImportError:
                 self._data = new_data
                 self.index = new_idx
                 return None
-            return DataFrame(new_data, columns=new_cols, index=new_idx)
+            res = DataFrame(new_data, columns=new_cols, index=new_idx)
+            res.attrs = dict(self.attrs)
+            return res
 
         def astype(self, dtype) -> "DataFrame":
             new_data = {}
             for c in self.columns:
                 s = Series(self._data[c], index=self.index, dtype=dtype)
                 new_data[c] = list(s._values)
-            return DataFrame(new_data, columns=self.columns, index=self.index)
+            res = DataFrame(new_data, columns=self.columns, index=self.index)
+            res.attrs = dict(self.attrs)
+            return res
 
         def dropna(self, subset: Optional[Sequence[str]] = None) -> "DataFrame":
             check_cols = list(subset) if subset else self.columns
@@ -658,10 +1046,12 @@ except ImportError:
             new_idx = [self.index[i] for i in keep_indices]
             if isinstance(self.index, DatetimeIndex):
                 new_idx = DatetimeIndex(new_idx)
-            return DataFrame(new_data, columns=self.columns, index=new_idx)
+            res = DataFrame(new_data, columns=self.columns, index=new_idx)
+            res.attrs = dict(self.attrs)
+            return res
 
-        def resample(self, rule: str) -> _Resampler:
-            return _Resampler(self, rule)
+        def resample(self, rule: str, closed: str = "left", label: str = "left") -> _Resampler:
+            return _Resampler(self, rule, closed=closed, label=label)
 
         def tail(self, n: int = 5) -> "DataFrame":
             return self.iloc[-n:]
@@ -678,23 +1068,51 @@ except ImportError:
                 return Series(out, index=self.index, dtype=float)
             return Series([Series(self._data[c]).max() for c in self.columns], index=self.columns, dtype=float)
 
-    def _pd_concat(objs: Sequence[Series], axis: int = 0) -> DataFrame:
+    def _pd_concat(objs: Sequence[Any], axis: int = 0):
+        if not objs:
+            return DataFrame()
         if axis == 1:
-            data = {f"c{idx}": list(s._values) for idx, s in enumerate(objs)}
-            idx = objs[0].index if objs else []
+            data = {f"c{idx}": list(s._values if isinstance(s, Series) else s) for idx, s in enumerate(objs)}
+            idx = objs[0].index if hasattr(objs[0], "index") else []
             return DataFrame(data, index=idx)
+        if isinstance(objs[0], DataFrame):
+            cols = list(objs[0].columns)
+            merged_data: Dict[str, List[Any]] = {c: [] for c in cols}
+            merged_idx: List[Any] = []
+            for df in objs:
+                merged_idx.extend(df.index)
+                for c in cols:
+                    merged_data[c].extend(df._data.get(c, [None] * len(df.index)))
+            idx_out = DatetimeIndex(merged_idx) if isinstance(objs[0].index, DatetimeIndex) else merged_idx
+            return DataFrame(merged_data, columns=cols, index=idx_out)
         vals = []
         idx = []
         for s in objs:
             vals.extend(s._values)
             idx.extend(s.index)
-        return Series(vals, index=idx)  # type: ignore[return-value]
+        return Series(vals, index=idx)
 
-    def _pd_to_datetime(seq, unit: Optional[str] = None):
-        if isinstance(seq, (Series, list, tuple)):
+    def _pd_to_datetime(seq, unit: Optional[str] = None, utc: bool = False):
+        if isinstance(seq, (Series, DatetimeIndex, list, tuple)):
             vals = seq._values if isinstance(seq, Series) else seq
-            return DatetimeIndex(_parse_dt(x, unit=unit) for x in vals)
-        return _parse_dt(seq, unit=unit)
+            return DatetimeIndex(Timestamp(_parse_dt(x, unit=unit)) for x in vals)
+        return Timestamp(_parse_dt(seq, unit=unit))
+
+    def _pd_date_range(start: Any = None, end: Any = None, periods: int = 1, freq: str = "5min", tz: Any = None) -> DatetimeIndex:
+        f = str(freq).lower()
+        step_sec = (
+            60 if f in ("1m", "1min")
+            else (300 if "5" in f
+            else (900 if "15" in f
+            else (3600 if "1h" in f or "60" in f
+            else (14400 if "4h" in f or "240" in f
+            else 86400))))
+        )
+        if end is not None:
+            end_ts = Timestamp(end)
+            return DatetimeIndex([Timestamp(end_ts._dt - _dt.timedelta(seconds=step_sec * (periods - 1 - i))) for i in range(int(periods))])
+        start_ts = Timestamp(start) if start is not None else Timestamp.utcnow()
+        return DatetimeIndex([Timestamp(start_ts._dt + _dt.timedelta(seconds=step_sec * i)) for i in range(int(periods))])
 
     def _pd_read_csv(filepath: str) -> DataFrame:
         with open(filepath, "r", encoding="utf-8") as f:
@@ -713,13 +1131,31 @@ except ImportError:
                     data[c].append(v)
         return DataFrame(data, columns=cols)
 
+    class _PdApiTypes:
+        @staticmethod
+        def is_numeric_dtype(arr_or_dtype: Any) -> bool:
+            if arr_or_dtype in (int, float):
+                return True
+            vals = arr_or_dtype._values if isinstance(arr_or_dtype, Series) else (list(arr_or_dtype) if isinstance(arr_or_dtype, (list, tuple)) else [])
+            non_null = [v for v in vals if v is not None and not _is_nan(v)]
+            if not non_null:
+                return getattr(arr_or_dtype, "dtype", None) in (int, float)
+            return all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in non_null)
+
+    class _PdApi:
+        types = _PdApiTypes()
+
     pd_mod.Series = Series
     pd_mod.DataFrame = DataFrame
     pd_mod.DatetimeIndex = DatetimeIndex
+    pd_mod.Timestamp = Timestamp
+    pd_mod.Timedelta = Timedelta
+    pd_mod.api = _PdApi()
     pd_mod.isna = _is_nan
     pd_mod.notna = lambda v: not _is_nan(v)
     pd_mod.concat = _pd_concat
     pd_mod.to_datetime = _pd_to_datetime
+    pd_mod.date_range = _pd_date_range
     pd_mod.read_csv = _pd_read_csv
     sys.modules["pandas"] = pd_mod
 
@@ -824,10 +1260,12 @@ except ImportError:
     bin_exc_mod = types.ModuleType("binance.exceptions")
 
     class BinanceAPIException(Exception):
-        def __init__(self, response=None, status_code=400, text=""):
-            super().__init__(text)
-            self.code = -1000
-            self.message = text or str(response or "Binance API error")
+        def __init__(self, response=None, status_code=400, text="", code=-1000, message=""):
+            msg = message or text or str(response or "Binance API error")
+            super().__init__(msg)
+            self.code = code
+            self.status_code = status_code
+            self.message = msg
 
     class BinanceOrderException(Exception):
         def __init__(self, code=-1000, message="Binance order error"):

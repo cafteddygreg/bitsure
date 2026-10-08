@@ -465,6 +465,12 @@ class PaperTrader:
         Met a jour le prix courant et recalcule le PnL non realise
         pour toutes les positions ouvertes sur ce symbole.
         """
+        if isinstance(price, dict):
+            price = float(price.get("price") or price.get("close") or 0.0)
+        else:
+            price = float(price or 0.0)
+        if price <= 0:
+            return
         symbol = symbol.upper()
         for uid, plist in self.positions.items():
             for pos in plist:
