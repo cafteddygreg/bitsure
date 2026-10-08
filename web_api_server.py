@@ -486,13 +486,44 @@ def _analyze_symbol_complete(user_id: int, symbol: str, timeframe: str = "1h", s
     active_style = style or cfg.trading_style or "day"
     fetcher = DataFetcher.get_instance()
 
-    df = run_coro(fetcher.get_historical_data(norm_sym, timeframe))
+    tf_min_map = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+    base_min = tf_min_map.get(timeframe, 60)
+    htf_data: Dict[str, Any] = {}
+
+    df = None
     data_source = "live_api"
+    try:
+        if norm_sym in ("BTCUSDT", "ETHUSDT"):
+            df = get_klines_dataframe(norm_sym, timeframe, cfg.market_type, 500)
+            for htf, htf_min in (("1h", 60), ("4h", 240), ("1d", 1440)):
+                if htf_min >= base_min and base_min * 500 < htf_min * 55:
+                    htf_df = get_klines_dataframe(norm_sym, htf, cfg.market_type, 120)
+                    if htf_df is not None and not htf_df.empty:
+                        htf_data[htf] = htf_df
+    except Exception:
+        df = None
+
+    if df is None or df.empty:
+        df = run_coro(fetcher.get_historical_data(norm_sym, timeframe))
+        if df is not None and not df.empty:
+            for htf, htf_min in (("1h", 60), ("4h", 240), ("1d", 1440)):
+                if htf_min >= base_min and base_min * len(df) < htf_min * 55:
+                    htf_df = run_coro(fetcher.get_historical_data(norm_sym, htf))
+                    if htf_df is not None and not htf_df.empty:
+                        htf_data[htf] = htf_df
+
     if df is None or df.empty:
         df = _load_fallback_csv(norm_sym)
         data_source = "historical_csv_cache"
 
-    analysis = SignalEngine.analyze(df, lang=lang, symbol=norm_sym, style=active_style)
+    analysis = SignalEngine.analyze(
+        df,
+        lang=lang,
+        symbol=norm_sym,
+        style=active_style,
+        htf_data=htf_data or None,
+        timeframe_minutes=float(base_min),
+    )
     ind = analysis.get("indicators") or {}
     last_price = ind.get("price") or (float(df["Close"].iloc[-1]) if df is not None and not df.empty else 0.0)
 

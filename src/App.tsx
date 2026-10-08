@@ -949,11 +949,11 @@ export function App() {
             {paperStats && (
               <div className="hidden lg:flex items-center gap-4 font-mono-tabular bg-[#111827] border border-white/[0.07] px-3.5 py-1.5 rounded-lg">
                 <span className="text-[#94A3B8]">
-                  Équité Paper : <strong className="text-[#F1F5F9]">{paperStats.equity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</strong>
+                  Équité Paper : <strong className="text-[#F1F5F9]">{Number(paperStats.equity ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</strong>
                 </span>
-                <span className={paperStats.total_pnl >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
-                  PnL : {paperStats.total_pnl >= 0 ? '+' : ''}
-                  {paperStats.total_pnl.toFixed(2)} USDT
+                <span className={(paperStats.total_pnl ?? 0) >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                  PnL : {(paperStats.total_pnl ?? 0) >= 0 ? '+' : ''}
+                  {Number(paperStats.total_pnl ?? 0).toFixed(2)} USDT
                 </span>
               </div>
             )}
@@ -1217,7 +1217,7 @@ export function App() {
                         Exécution Rapide Paper Trading
                       </h3>
                       <span className="font-mono-tabular text-xs text-[#10B981]">
-                        Cap: {paperStats?.capital.toFixed(0)} USDT
+                        Cap: {Number(paperStats?.capital ?? 10000).toFixed(0)} USDT
                       </span>
                     </div>
 
@@ -1394,32 +1394,32 @@ export function App() {
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5">
                     <div className="text-xs text-[#94A3B8]">Capital Disponible</div>
                     <div className="font-mono-tabular text-2xl font-bold text-[#F1F5F9] mt-1">
-                      {paperStats.capital.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                      {Number(paperStats.capital ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
                     </div>
                   </div>
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5">
                     <div className="text-xs text-[#94A3B8]">Équité Totale (Marge + Latent)</div>
                     <div className="font-mono-tabular text-2xl font-bold text-[#10B981] mt-1">
-                      {paperStats.equity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                      {Number(paperStats.equity ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
                     </div>
                   </div>
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5">
                     <div className="text-xs text-[#94A3B8]">PnL Réalisé Cumulé</div>
                     <div
                       className={`font-mono-tabular text-2xl font-bold mt-1 ${
-                        paperStats.total_pnl >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                        (paperStats.total_pnl ?? 0) >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
                       }`}
                     >
-                      {paperStats.total_pnl >= 0 ? '+' : ''}
-                      {paperStats.total_pnl.toFixed(2)} USDT
+                      {(paperStats.total_pnl ?? 0) >= 0 ? '+' : ''}
+                      {Number(paperStats.total_pnl ?? 0).toFixed(2)} USDT
                     </div>
                   </div>
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5">
                     <div className="text-xs text-[#94A3B8]">Taux de Réussite (Win Rate)</div>
                     <div className="font-mono-tabular text-2xl font-bold text-[#F59E0B] mt-1">
-                      {paperStats.win_rate.toFixed(1)}%{' '}
+                      {Number(paperStats.win_rate ?? 0).toFixed(1)}%{' '}
                       <span className="text-xs font-normal text-[#64748B]">
-                        ({paperStats.wins}W / {paperStats.losses}L)
+                        ({paperStats.wins ?? 0}W / {paperStats.losses ?? 0}L)
                       </span>
                     </div>
                   </div>
@@ -1455,39 +1455,50 @@ export function App() {
                           </td>
                         </tr>
                       ) : (
-                        openPaper.map((pos) => (
-                          <tr key={pos.id} className="hover:bg-white/[0.02]">
-                            <td className="py-3.5 px-4 font-semibold text-[#F1F5F9]">{pos.symbol}</td>
-                            <td className="py-3.5 px-4">
-                              <span className={pos.side === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
-                                {pos.side} {pos.leverage}x
-                              </span>
-                            </td>
-                            <td className="py-3.5 px-4 text-right">{pos.entry.toLocaleString()}</td>
-                            <td className="py-3.5 px-4 text-right">{pos.current_price?.toLocaleString() || pos.entry.toLocaleString()}</td>
-                            <td className="py-3.5 px-4 text-right">
-                              <span className="text-[#F43F5E]">{pos.sl.toLocaleString()}</span> /{' '}
-                              <span className="text-[#10B981]">{pos.tp.toLocaleString()}</span>
-                            </td>
-                            <td className="py-3.5 px-4 text-right">{pos.margin_used.toFixed(2)} USDT</td>
-                            <td
-                              className={`py-3.5 px-4 text-right font-semibold ${
-                                (pos.unrealized_pnl || 0) >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
-                              }`}
-                            >
-                              {(pos.unrealized_pnl || 0) >= 0 ? '+' : ''}
-                              {(pos.unrealized_pnl || 0).toFixed(2)} USDT ({(pos.unrealized_pnl_pct || 0).toFixed(2)}%)
-                            </td>
-                            <td className="py-3.5 px-4 text-right">
-                              <button
-                                onClick={() => handleClosePaperPosition(pos.id)}
-                                className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px]"
+                        openPaper.map((pos) => {
+                          const entryVal = Number(pos.entry ?? pos.entry_price ?? 0);
+                          const currVal = Number(pos.current_price ?? entryVal);
+                          const slVal = Number(pos.sl ?? 0);
+                          const tpVal = Number(pos.tp ?? 0);
+                          const marginVal = Number(
+                            pos.margin_used ?? (entryVal * Number(pos.qty ?? 0)) / Math.max(1, Number(pos.leverage ?? 1))
+                          );
+                          const upnl = Number(pos.unrealized_pnl ?? pos.pnl_usdt ?? 0);
+                          const upnlPct = Number(pos.unrealized_pnl_pct ?? pos.pnl_pct ?? 0);
+                          return (
+                            <tr key={pos.id} className="hover:bg-white/[0.02]">
+                              <td className="py-3.5 px-4 font-semibold text-[#F1F5F9]">{pos.symbol}</td>
+                              <td className="py-3.5 px-4">
+                                <span className={pos.side === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                                  {pos.side} {pos.leverage}x
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-4 text-right">{entryVal.toLocaleString()}</td>
+                              <td className="py-3.5 px-4 text-right">{currVal.toLocaleString()}</td>
+                              <td className="py-3.5 px-4 text-right">
+                                <span className="text-[#F43F5E]">{slVal ? slVal.toLocaleString() : '—'}</span> /{' '}
+                                <span className="text-[#10B981]">{tpVal ? tpVal.toLocaleString() : '—'}</span>
+                              </td>
+                              <td className="py-3.5 px-4 text-right">{marginVal.toFixed(2)} USDT</td>
+                              <td
+                                className={`py-3.5 px-4 text-right font-semibold ${
+                                  upnl >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                                }`}
                               >
-                                Clôturer
-                              </button>
-                            </td>
-                          </tr>
-                        ))
+                                {upnl >= 0 ? '+' : ''}
+                                {upnl.toFixed(2)} USDT ({upnlPct.toFixed(2)}%)
+                              </td>
+                              <td className="py-3.5 px-4 text-right">
+                                <button
+                                  onClick={() => handleClosePaperPosition(pos.id)}
+                                  className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px]"
+                                >
+                                  Clôturer
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
@@ -1514,27 +1525,33 @@ export function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
-                      {closedPaper.slice(0, 20).map((pos) => (
-                        <tr key={pos.id} className="hover:bg-white/[0.02]">
-                          <td className="py-3 px-4 font-semibold text-[#F1F5F9]">{pos.symbol}</td>
-                          <td className="py-3 px-4">
-                            <span className={pos.side === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
-                              {pos.side} {pos.leverage}x
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-right">{pos.entry.toLocaleString()}</td>
-                          <td className="py-3 px-4 text-right">{pos.exit_price?.toLocaleString()}</td>
-                          <td className="py-3 px-4 text-[#94A3B8]">{pos.close_reason}</td>
-                          <td
-                            className={`py-3 px-4 text-right font-semibold ${
-                              (pos.pnl || 0) >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
-                            }`}
-                          >
-                            {(pos.pnl || 0) >= 0 ? '+' : ''}
-                            {(pos.pnl || 0).toFixed(2)} USDT ({(pos.pnl_pct || 0).toFixed(2)}%)
-                          </td>
-                        </tr>
-                      ))}
+                      {closedPaper.slice(0, 20).map((pos) => {
+                        const entryVal = Number(pos.entry ?? pos.entry_price ?? 0);
+                        const exitVal = Number(pos.exit_price ?? 0);
+                        const pnlVal = Number(pos.pnl ?? pos.pnl_usdt ?? 0);
+                        const pnlPctVal = Number(pos.pnl_pct ?? 0);
+                        return (
+                          <tr key={pos.id} className="hover:bg-white/[0.02]">
+                            <td className="py-3 px-4 font-semibold text-[#F1F5F9]">{pos.symbol}</td>
+                            <td className="py-3 px-4">
+                              <span className={pos.side === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                                {pos.side} {pos.leverage}x
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-right">{entryVal.toLocaleString()}</td>
+                            <td className="py-3 px-4 text-right">{exitVal ? exitVal.toLocaleString() : '—'}</td>
+                            <td className="py-3 px-4 text-[#94A3B8]">{pos.close_reason ?? pos.exit_reason ?? '—'}</td>
+                            <td
+                              className={`py-3 px-4 text-right font-semibold ${
+                                pnlVal >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                              }`}
+                            >
+                              {pnlVal >= 0 ? '+' : ''}
+                              {pnlVal.toFixed(2)} USDT ({pnlPctVal.toFixed(2)}%)
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1641,7 +1658,7 @@ export function App() {
                             {a.condition === 'above' ? '≥ HAUSSE' : '≤ BAISSE'}
                           </span>
                           <span className="font-mono-tabular text-sm font-semibold text-[#F1F5F9]">
-                            {a.price.toLocaleString()} USD
+                            {Number(a.price ?? 0).toLocaleString()} USD
                           </span>
                         </div>
                         <button

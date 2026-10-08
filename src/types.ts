@@ -107,21 +107,25 @@ export interface PaperPosition {
   symbol: string;
   side: 'BUY' | 'SELL';
   entry: number;
+  entry_price?: number;
   sl: number;
   tp: number;
   qty: number;
   leverage: number;
   margin_used: number;
-  open_fee: number;
-  opened_at: string;
+  open_fee?: number;
+  fees_total?: number;
+  opened_at: string | number;
   current_price?: number;
   unrealized_pnl?: number;
   unrealized_pnl_pct?: number;
+  pnl_usdt?: number;
   exit_price?: number;
   pnl?: number;
   pnl_pct?: number;
   close_reason?: string;
-  closed_at?: string;
+  exit_reason?: string;
+  closed_at?: string | number;
 }
 
 export interface PriceAlert {

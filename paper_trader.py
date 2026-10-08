@@ -92,28 +92,40 @@ class PaperTrader:
 
     def _row_to_dict(self, r) -> Dict:
         """Convertit une row psycopg2 en dict normalise."""
+        entry_val = float(r["entry_price"] or 0)
+        qty_val = float(r["qty"] or 0)
+        lev_val = float(r["leverage"]) if r["leverage"] else 1.0
+        pnl_u = float(r["pnl_usdt"] or 0)
+        pnl_p = float(r["pnl_pct"] or 0)
+        margin_val = (entry_val * qty_val) / max(lev_val, 1.0)
         return {
-            "id":             r["id"],
-            "symbol":         r["symbol"],
-            "side":           r["side"] if r["side"] else "BUY",
-            "entry_price":    float(r["entry_price"] or 0),
-            "exit_price":     float(r["exit_price"]) if r["exit_price"] else None,
-            "sl":             float(r["sl"]) if r["sl"] else None,
-            "tp":             float(r["tp"]) if r["tp"] else None,
-            "qty":            float(r["qty"] or 0),
-            "leverage":       float(r["leverage"]) if r["leverage"] else 1.0,
-            "fees_total":     float(r["fees_total"]) if r["fees_total"] else 0.0,
-            "slippage":       float(r["slippage"]) if r["slippage"] else 0.0,
-            "capital_before": float(r["capital_before"]) if r["capital_before"] else None,
-            "capital_after":  float(r["capital_after"]) if r["capital_after"] else None,
-            "current_price":  float(r["current_price"] or 0),
-            "pnl_usdt":       float(r["pnl_usdt"] or 0),
-            "pnl_pct":        float(r["pnl_pct"] or 0),
-            "status":         r["status"],
-            "exit_reason":    r["exit_reason"],
-            "opened_at":      r["opened_at"],
-            "closed_at":      r["closed_at"],
-            "peak_price":     float(r["peak_price"]) if r["peak_price"] else float(r["entry_price"] or 0),
+            "id":                 r["id"],
+            "symbol":             r["symbol"],
+            "side":               r["side"] if r["side"] else "BUY",
+            "entry_price":        entry_val,
+            "entry":              entry_val,
+            "exit_price":         float(r["exit_price"]) if r["exit_price"] else None,
+            "sl":                 float(r["sl"]) if r["sl"] else 0.0,
+            "tp":                 float(r["tp"]) if r["tp"] else 0.0,
+            "qty":                qty_val,
+            "leverage":           lev_val,
+            "margin_used":        margin_val,
+            "fees_total":         float(r["fees_total"]) if r["fees_total"] else 0.0,
+            "slippage":           float(r["slippage"]) if r["slippage"] else 0.0,
+            "capital_before":     float(r["capital_before"]) if r["capital_before"] else None,
+            "capital_after":      float(r["capital_after"]) if r["capital_after"] else None,
+            "current_price":      float(r["current_price"] or entry_val),
+            "pnl_usdt":           pnl_u,
+            "pnl":                pnl_u,
+            "unrealized_pnl":     pnl_u,
+            "pnl_pct":            pnl_p,
+            "unrealized_pnl_pct": pnl_p,
+            "status":             r["status"],
+            "exit_reason":        r["exit_reason"],
+            "close_reason":       r["exit_reason"],
+            "opened_at":          r["opened_at"],
+            "closed_at":          r["closed_at"],
+            "peak_price":         float(r["peak_price"]) if r["peak_price"] else entry_val,
         }
 
     def _save_position(self, uid: str, pos: Dict):
@@ -339,27 +351,33 @@ class PaperTrader:
 
         pos_id = str(int(time.time() * 1000))
         pos = {
-            "id":             pos_id,
-            "symbol":         symbol.upper(),
-            "side":           side,
-            "entry_price":    exec_price,
-            "exit_price":     None,
-            "sl":             sl,
-            "tp":             tp,
-            "qty":            qty,
-            "leverage":       leverage,
-            "fees_total":     fee_entry,
-            "slippage":       slip_amount,
-            "capital_before": capital_before,
-            "capital_after":  None,
-            "current_price":  exec_price,
-            "pnl_usdt":       0.0,
-            "pnl_pct":        0.0,
-            "status":         "open",
-            "exit_reason":    None,
-            "opened_at":      time.time(),
-            "closed_at":      None,
-            "peak_price":     exec_price,
+            "id":                 pos_id,
+            "symbol":             symbol.upper(),
+            "side":               side,
+            "entry_price":        exec_price,
+            "entry":              exec_price,
+            "exit_price":         None,
+            "sl":                 sl,
+            "tp":                 tp,
+            "qty":                qty,
+            "leverage":           leverage,
+            "margin_used":        margin,
+            "fees_total":         fee_entry,
+            "slippage":           slip_amount,
+            "capital_before":     capital_before,
+            "capital_after":      None,
+            "current_price":      exec_price,
+            "pnl_usdt":           0.0,
+            "pnl":                0.0,
+            "unrealized_pnl":     0.0,
+            "pnl_pct":            0.0,
+            "unrealized_pnl_pct": 0.0,
+            "status":             "open",
+            "exit_reason":        None,
+            "close_reason":       None,
+            "opened_at":          time.time(),
+            "closed_at":          None,
+            "peak_price":         exec_price,
         }
 
         self.positions[uid].append(pos)
@@ -431,15 +449,19 @@ class PaperTrader:
         capital_after = max(0.0, capital_now + margin + pnl_net)
 
         # Mise a jour de la position
-        pos["status"]        = "closed"
-        pos["exit_price"]    = exec_exit
-        pos["current_price"] = exec_exit
-        pos["exit_reason"]   = reason
-        pos["closed_at"]     = time.time()
-        pos["pnl_usdt"]      = pnl_usdt
-        pos["pnl_pct"]       = pnl_pct
-        pos["fees_total"]    = fees_total
-        pos["capital_after"] = capital_after
+        pos["status"]             = "closed"
+        pos["exit_price"]         = exec_exit
+        pos["current_price"]      = exec_exit
+        pos["exit_reason"]        = reason
+        pos["close_reason"]       = reason
+        pos["closed_at"]          = time.time()
+        pos["pnl_usdt"]           = pnl_usdt
+        pos["pnl"]                = pnl_usdt
+        pos["unrealized_pnl"]     = pnl_usdt
+        pos["pnl_pct"]            = pnl_pct
+        pos["unrealized_pnl_pct"] = pnl_pct
+        pos["fees_total"]         = fees_total
+        pos["capital_after"]      = capital_after
 
         # Mise a jour du capital
         self.capitals[uid] = capital_after
@@ -480,8 +502,11 @@ class PaperTrader:
                         pos["side"], pos["entry_price"], price,
                         pos["qty"], pos.get("leverage", 1.0)
                     )
-                    pos["pnl_usdt"] = pnl_usdt
-                    pos["pnl_pct"]  = pnl_pct
+                    pos["pnl_usdt"]           = pnl_usdt
+                    pos["pnl"]                = pnl_usdt
+                    pos["unrealized_pnl"]     = pnl_usdt
+                    pos["pnl_pct"]            = pnl_pct
+                    pos["unrealized_pnl_pct"] = pnl_pct
                     if pos["side"] == "BUY":
                         if price > pos.get("peak_price", 0):
                             pos["peak_price"] = price
