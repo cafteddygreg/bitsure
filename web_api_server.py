@@ -633,9 +633,9 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             dist_dir = os.path.join(base_dir, "dist")
             rel_path = path.lstrip("/") or "index.html"
             candidate = os.path.abspath(os.path.join(dist_dir, rel_path))
-            if not candidate.startswith(os.path.abspath(dist_dir)) or not os.path.isfile(candidate):
-                candidate = os.path.join(dist_dir, "index.html")
-            if os.path.isfile(candidate):
+
+            # Serve directly from disk ONLY if the exact requested file exists on disk
+            if candidate.startswith(os.path.abspath(dist_dir)) and os.path.isfile(candidate):
                 mime_type, _ = mimetypes.guess_type(candidate)
                 if candidate.endswith(".js") or candidate.endswith(".mjs"):
                     mime_type = "application/javascript; charset=utf-8"
@@ -654,7 +654,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 self.wfile.write(content)
                 return
 
-            # Fallback to embedded Python bundle when dist/ is not built (e.g., Python-only Railpack build on Railway)
+            # Fallback to embedded Python bundle (serves /assets/*.js, /assets/*.css, and SPA routes)
             try:
                 from web_frontend_bundle import get_embedded_asset
                 asset = get_embedded_asset(path)
@@ -668,6 +668,18 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     return
             except Exception as e:
                 logger.warning("Embedded bundle fallback error: %s", e)
+
+            # Final SPA fallback to dist/index.html if present
+            index_candidate = os.path.join(dist_dir, "index.html")
+            if not path.startswith("/assets/") and os.path.isfile(index_candidate):
+                with open(index_candidate, "rb") as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
 
         ensure_web_schema_initialized()
         query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
