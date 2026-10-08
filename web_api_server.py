@@ -654,6 +654,21 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 self.wfile.write(content)
                 return
 
+            # Fallback to embedded Python bundle when dist/ is not built (e.g., Python-only Railpack build on Railway)
+            try:
+                from web_frontend_bundle import get_embedded_asset
+                asset = get_embedded_asset(path)
+                if asset is not None:
+                    content, mime_type = asset
+                    self.send_response(200)
+                    self.send_header("Content-Type", mime_type)
+                    self.send_header("Content-Length", str(len(content)))
+                    self.end_headers()
+                    self.wfile.write(content)
+                    return
+            except Exception as e:
+                logger.warning("Embedded bundle fallback error: %s", e)
+
         ensure_web_schema_initialized()
         query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         user_id = _resolve_user_from_headers(self.headers)
