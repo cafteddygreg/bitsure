@@ -8,9 +8,7 @@ import os
 # - ADMIN_ID
 # - DATABASE_URL
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-if not TELEGRAM_TOKEN:
-    raise ValueError("❌ TELEGRAM_TOKEN manquant dans l'environnement")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 
 _raw_admin_id = os.environ.get("ADMIN_ID", "@btsrteddy").strip()
 try:

@@ -103,9 +103,9 @@ class SignalEngine:
 
     @staticmethod
     def _asset_profile(symbol: str) -> Tuple[str, Dict]:
-        symbol = (symbol or "").upper()
+        symbol_clean = (symbol or "").upper().replace(" ", "").replace("/", "").replace("-", "")
         for asset_class, rules in ASSET_CLASS_RULES.items():
-            if symbol in rules["symbols"]:
+            if symbol_clean in rules["symbols"] or (symbol or "").upper() in rules["symbols"]:
                 profile = DEFAULT_ASSET_RULE.copy()
                 profile.update({k: v for k, v in rules.items() if k != "symbols"})
                 return asset_class, profile
@@ -315,10 +315,15 @@ class SignalEngine:
         Returns:
             Dict contenant signal, SL, TP, teddy_score, indicators, score_detail, etc.
         """
-        symbol = symbol.upper()
+        raw_symbol = symbol.upper()
+        symbol_nospace = raw_symbol.replace(" ", "").replace("/", "").replace("-", "")
         from config import DOCUMENTED_SYMBOLS
-        if symbol and symbol not in DOCUMENTED_SYMBOLS:
-            return SignalEngine._wait(lang, f"Symbole non documenté ({symbol})")
+        if symbol_nospace in DOCUMENTED_SYMBOLS:
+            symbol = symbol_nospace
+        elif raw_symbol in DOCUMENTED_SYMBOLS:
+            symbol = raw_symbol
+        elif raw_symbol:
+            return SignalEngine._wait(lang, f"Symbole non documenté ({raw_symbol})")
         df = SignalEngine._normalize_df(df)
 
         if not SignalEngine._valid_df(df):
@@ -743,7 +748,7 @@ class SignalEngine:
         ext_atr = abs(price - close_vals[-6]) / atr_val if (len(close_vals) >= 6 and atr_val > 0) else 0.0
 
         cond_names = ["trend_sma", "rsi_window", "macd_momentum", "adx_min", "atr_max"]
-        active_conds = buy_cond if buy_count >= sell_cond else sell_cond
+        active_conds = buy_cond if buy_count >= sell_count else sell_cond
         raw_cond_map = {
             cond_names[idx]: bool(active_conds[idx])
             for idx in range(min(len(cond_names), len(active_conds)))

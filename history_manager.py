@@ -90,10 +90,15 @@ class HistoryManager:
 
         direction = (direction or "").upper()
         now = time.time()
-        symbol = symbol.upper()
+        symbol_raw = (symbol or "").upper()
+        symbol_clean = symbol_raw.replace(" ", "").replace("/", "").replace("-", "")
         from config import DOCUMENTED_SYMBOLS
-        if symbol not in DOCUMENTED_SYMBOLS:
-            logger.info("Signal hors symboles documentés ignoré: %s", symbol)
+        if symbol_clean in DOCUMENTED_SYMBOLS:
+            symbol = symbol_clean
+        elif symbol_raw in DOCUMENTED_SYMBOLS:
+            symbol = symbol_raw
+        else:
+            logger.info("Signal hors symboles documentés ignoré: %s", symbol_raw)
             return None
         duplicate_window = 900
         duplicate = self.conn.execute(

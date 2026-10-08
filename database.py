@@ -25,7 +25,7 @@ def _load_database_url():
 
     env_path = os.path.join(os.path.dirname(__file__), ".env")
     if not os.path.exists(env_path):
-        return None
+        return "sqlite:///bitsure_teddy.db"
 
     with open(env_path, "r", encoding="utf-8") as env_file:
         for line in env_file:
@@ -34,8 +34,10 @@ def _load_database_url():
                 continue
             key, value = line.split("=", 1)
             if key.strip() == "DATABASE_URL":
-                return value.strip().strip('"').strip("'")
-    return None
+                val = value.strip().strip('"').strip("'")
+                if val:
+                    return val
+    return "sqlite:///bitsure_teddy.db"
 
 
 def _get_pool() -> ThreadedConnectionPool:
