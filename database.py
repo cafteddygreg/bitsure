@@ -1,15 +1,33 @@
 import atexit
 import os
 import threading
+import time
 from contextlib import contextmanager
 
-import psycopg2
-from psycopg2.extras import DictCursor
-from psycopg2.pool import ThreadedConnectionPool
+try:
+    import psycopg2
+    from psycopg2.extras import DictCursor
+    from psycopg2.pool import ThreadedConnectionPool
+    try:
+        from psycopg2.pool import PoolError
+    except ImportError:
+        PoolError = Exception
+except ImportError:
+    import importlib.util as _ilu
+    _sc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sitecustomize.py")
+    if os.path.exists(_sc_path):
+        _spec = _ilu.spec_from_file_location("_bitsure_sitecustomize", _sc_path)
+        if _spec and _spec.loader:
+            _mod = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+    import psycopg2
+    from psycopg2.extras import DictCursor
+    from psycopg2.pool import ThreadedConnectionPool
+    PoolError = getattr(psycopg2.pool, "PoolError", Exception)
 
 _pool = None
 _pool_lock = threading.RLock()
-_thread_state = threading.local()
+_pool_cond = threading.Condition(_pool_lock)
 
 
 def _load_database_url():
@@ -48,17 +66,72 @@ def _get_pool() -> ThreadedConnectionPool:
             if not database_url:
                 raise RuntimeError("DATABASE_URL is required for PostgreSQL access")
             minconn = int(os.getenv("DB_POOL_MINCONN", "1"))
-            maxconn = int(os.getenv("DB_POOL_MAXCONN", "10"))
+            maxconn = int(os.getenv("DB_POOL_MAXCONN", "20"))
             _pool = ThreadedConnectionPool(minconn, maxconn, database_url, cursor_factory=DictCursor)
             with pooled_connection() as conn:
                 _ensure_schema(PostgresConnection(conn))
         return _pool
 
 
+def _acquire_conn(timeout: float = 10.0):
+    """Acquire a connection from the pool, waiting gracefully if all connections are briefly busy."""
+    deadline = time.monotonic() + timeout
+    pool = _get_pool()
+    while True:
+        with _pool_cond:
+            try:
+                conn = pool.getconn()
+                if getattr(conn, "closed", 0):
+                    try:
+                        pool.putconn(conn, close=True)
+                    except Exception:
+                        pass
+                    conn = pool.getconn()
+                return conn
+            except PoolError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                _pool_cond.wait(timeout=min(remaining, 0.15))
+
+    # Fallback: if pool is still full after waiting, open a direct short-lived connection
+    database_url = _load_database_url()
+    conn = psycopg2.connect(database_url, cursor_factory=DictCursor)
+    setattr(conn, "_is_direct_fallback", True)
+    return conn
+
+
+def _release_conn(conn, close: bool = False):
+    """Return a connection to the pool immediately and notify any waiting threads."""
+    if conn is None:
+        return
+    if getattr(conn, "_is_direct_fallback", False):
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return
+    with _pool_cond:
+        try:
+            if _pool is not None:
+                if not getattr(conn, "closed", 1) and not getattr(conn, "autocommit", False):
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        close = True
+                _pool.putconn(conn, close=close or bool(getattr(conn, "closed", 0)))
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        finally:
+            _pool_cond.notify_all()
+
+
 @contextmanager
 def pooled_connection():
-    pool = _pool
-    if pool is None:
+    if _pool is None:
         database_url = _load_database_url()
         if not database_url:
             raise RuntimeError("DATABASE_URL is required for PostgreSQL access")
@@ -70,87 +143,148 @@ def pooled_connection():
             conn.close()
         return
 
-    conn = pool.getconn()
+    conn = _acquire_conn()
     conn.autocommit = False
     try:
         yield conn
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         raise
     finally:
-        pool.putconn(conn)
+        _release_conn(conn)
+
+
+class _BufferedCursor:
+    """Lightweight cursor adapter that holds fetched rows after the underlying DB connection is returned to the pool."""
+
+    def __init__(self, rows, description, rowcount: int):
+        self._rows = list(rows) if rows is not None else []
+        self._idx = 0
+        self.description = description
+        self.rowcount = rowcount
+
+    def fetchone(self):
+        if self._idx >= len(self._rows):
+            return None
+        row = self._rows[self._idx]
+        self._idx += 1
+        return row
+
+    def fetchall(self):
+        if self._idx == 0:
+            self._idx = len(self._rows)
+            return list(self._rows)
+        rem = self._rows[self._idx:]
+        self._idx = len(self._rows)
+        return list(rem)
+
+    def fetchmany(self, size: int = 1):
+        rem = self._rows[self._idx : self._idx + size]
+        self._idx += len(rem)
+        return list(rem)
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+
+class _ManagedCursorContext:
+    """Context manager for `with db.cursor() as cur:` that automatically returns the connection on exit."""
+
+    def __init__(self):
+        self._conn = None
+        self._cur = None
+
+    def __enter__(self):
+        self._conn = _acquire_conn()
+        self._conn.autocommit = True
+        self._cur = self._conn.cursor()
+        return self._cur
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if self._cur is not None:
+                self._cur.close()
+        except Exception:
+            pass
+        _release_conn(self._conn, close=exc_type is not None)
+        self._conn = None
+        self._cur = None
 
 
 class PostgresConnection:
-    """Compatibility wrapper that never shares a psycopg2 connection across threads
-    and avoids stale REPEATABLE READ / READ COMMITTED idle-in-transaction snapshots."""
+    """Stateless connection proxy that borrows a pooled connection ONLY for the duration
+    of each query and returns it immediately, preventing thread-local connection leaks."""
 
     def __init__(self, conn=None):
         self._schema_conn = conn
 
-    def _conn(self):
+    def execute(self, sql, params=None):
         if self._schema_conn is not None:
-            return self._schema_conn
-        conn = getattr(_thread_state, "conn", None)
-        if conn is None or getattr(conn, "closed", True):
-            conn = _get_pool().getconn()
-            conn.autocommit = True
-            _thread_state.conn = conn
-        else:
+            cur = self._schema_conn.cursor()
             try:
-                if not conn.autocommit:
-                    conn.commit()
-                    conn.autocommit = True
+                cur.execute(sql, params or ())
+                if not getattr(self._schema_conn, "autocommit", False):
+                    self._schema_conn.commit()
+                desc = getattr(cur, "description", None)
+                rows = cur.fetchall() if desc is not None else []
+                return _BufferedCursor(rows, desc, getattr(cur, "rowcount", 0))
             except Exception:
                 try:
-                    _get_pool().putconn(conn, close=True)
+                    if not getattr(self._schema_conn, "autocommit", False):
+                        self._schema_conn.rollback()
                 except Exception:
                     pass
-                conn = _get_pool().getconn()
-                conn.autocommit = True
-                _thread_state.conn = conn
-        return conn
+                raise
+            finally:
+                cur.close()
 
-    def execute(self, sql, params=None):
-        conn = self._conn()
-        cursor = conn.cursor()
+        conn = _acquire_conn()
+        broken = False
         try:
-            cursor.execute(sql, params or ())
-            if not getattr(conn, "autocommit", False):
-                conn.commit()
-            return cursor
-        except Exception:
-            cursor.close()
-            try:
-                if not getattr(conn, "autocommit", False):
-                    conn.rollback()
-            except Exception:
-                pass
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(sql, params or ())
+                desc = getattr(cur, "description", None)
+                rows = cur.fetchall() if desc is not None else []
+                return _BufferedCursor(rows, desc, getattr(cur, "rowcount", 0))
+        except psycopg2.OperationalError:
+            broken = True
             raise
+        finally:
+            _release_conn(conn, close=broken)
 
     def cursor(self):
-        return self._conn().cursor()
+        if self._schema_conn is not None:
+            return self._schema_conn.cursor()
+        return _ManagedCursorContext()
 
     def commit(self):
-        conn = self._conn()
-        if not getattr(conn, "autocommit", False):
-            conn.commit()
+        if self._schema_conn is not None and not getattr(self._schema_conn, "autocommit", False):
+            self._schema_conn.commit()
 
     def rollback(self):
-        conn = self._conn()
-        if not getattr(conn, "autocommit", False):
-            conn.rollback()
+        if self._schema_conn is not None and not getattr(self._schema_conn, "autocommit", False):
+            self._schema_conn.rollback()
 
     def close(self):
-        conn = getattr(_thread_state, "conn", None)
-        if conn is not None:
-            _get_pool().putconn(conn)
-            _thread_state.conn = None
+        pass
 
 
 def get_connection():
     """Return a dedicated pooled connection for one operation/transaction."""
-    conn = _get_pool().getconn()
+    conn = _acquire_conn()
     conn.autocommit = False
     return _PooledRawConnection(conn)
 
@@ -162,28 +296,45 @@ class _PooledRawConnection:
     def __getattr__(self, name):
         return getattr(self._conn, name)
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None and self._conn is not None:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+        self.close()
+
     def close(self):
         if self._conn is not None:
-            _get_pool().putconn(self._conn)
-            self._conn = None
+            conn, self._conn = self._conn, None
+            _release_conn(conn)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def get_db():
-    """Return a thread-local PostgreSQL compatibility connection."""
+    """Return a stateless PostgreSQL compatibility connection that never leaks pool slots."""
     _get_pool()
     return PostgresConnection()
 
 
 def close_db():
     global _pool
-    with _pool_lock:
-        conn = getattr(_thread_state, "conn", None)
-        if conn is not None and _pool is not None:
-            _pool.putconn(conn)
-            _thread_state.conn = None
+    with _pool_cond:
         if _pool is not None:
-            _pool.closeall()
+            try:
+                _pool.closeall()
+            except Exception:
+                pass
             _pool = None
+        _pool_cond.notify_all()
 
 
 

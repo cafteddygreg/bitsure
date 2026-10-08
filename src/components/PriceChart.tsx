@@ -6,6 +6,7 @@ interface PriceChartProps {
   candles: CandlePoint[];
   symbol: string;
   timeframe: string;
+  livePrice?: number | null;
   sl?: number | null;
   tp1?: number | null;
   tp2?: number | null;
@@ -17,6 +18,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
   candles,
   symbol,
   timeframe,
+  livePrice,
   sl,
   tp1,
   tp2,
@@ -29,7 +31,17 @@ export const PriceChart: React.FC<PriceChartProps> = ({
   const [subChart, setSubChart] = useState<'rsi' | 'macd'>('rsi');
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
-  const visibleCandles = useMemo(() => candles.slice(-75), [candles]);
+  const visibleCandles = useMemo(() => {
+    const base = candles.slice(-75);
+    if (!base.length || !livePrice || livePrice <= 0) return base;
+    const copy = [...base];
+    const last = { ...copy[copy.length - 1] };
+    last.close = livePrice;
+    if (last.high === null || livePrice > last.high) last.high = livePrice;
+    if (last.low === null || livePrice < last.low) last.low = livePrice;
+    copy[copy.length - 1] = last;
+    return copy;
+  }, [candles, livePrice]);
 
   if (!visibleCandles.length) {
     return (
@@ -192,6 +204,38 @@ export const PriceChart: React.FC<PriceChartProps> = ({
             <g>
               <line x1={padLeft} y1={yForPrice(tp1)} x2={width - padRight} y2={yForPrice(tp1)} stroke="#10B981" strokeWidth="1.2" strokeDasharray="2 2" />
               <text x={width - padRight - 72} y={yForPrice(tp1) - 4} fill="#34D399" fontSize="9.5" fontFamily="JetBrains Mono, monospace">TP1 {formatNum(tp1)}</text>
+            </g>
+          )}
+          {livePrice && livePrice >= minPrice && livePrice <= maxPrice && (
+            <g>
+              <line
+                x1={padLeft}
+                y1={yForPrice(livePrice)}
+                x2={width - padRight}
+                y2={yForPrice(livePrice)}
+                stroke="#10B981"
+                strokeWidth="1"
+                strokeDasharray="2 2"
+                opacity="0.85"
+              />
+              <rect
+                x={width - padRight + 2}
+                y={yForPrice(livePrice) - 8}
+                width={padRight - 4}
+                height={16}
+                rx="3"
+                fill="#10B981"
+              />
+              <text
+                x={width - padRight + 6}
+                y={yForPrice(livePrice) + 3.5}
+                fill="#090D16"
+                fontSize="9.5"
+                fontWeight="bold"
+                fontFamily="JetBrains Mono, monospace"
+              >
+                {formatNum(livePrice)}
+              </text>
             </g>
           )}
 

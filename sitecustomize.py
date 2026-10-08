@@ -1699,6 +1699,10 @@ except ImportError:
             self._last_rows = None
             self.rowcount = 0
 
+        @property
+        def description(self):
+            return self._cur.description
+
         def execute(self, sql: str, params=None):
             translated_sql, translated_params = _translate_pg_to_sqlite(sql, params)
             try:
@@ -1786,10 +1790,14 @@ except ImportError:
     def _connect(dsn=None, **kwargs):
         return _SQLiteConnectionWrapper(_SQLITE_DB_PATH, default_dict_cursor=True)
 
+    class PoolError(Exception):
+        pass
+
     pg_mod.connect = _connect
     pg_mod.Error = Exception
     pg_mod.OperationalError = sqlite3.OperationalError
     pg_mod.IntegrityError = sqlite3.IntegrityError
+    pg_pool_mod.PoolError = PoolError
     pg_pool_mod.ThreadedConnectionPool = ThreadedConnectionPool
     pg_extras_mod.RealDictCursor = RealDictCursor
     pg_extras_mod.DictCursor = DictCursor

@@ -101,6 +101,26 @@ export function App() {
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [loadingScan, setLoadingScan] = useState(false);
 
+  // Real-Time Binance Stream & Live Tickers State
+  const [livePrices, setLivePrices] = useState<
+    Record<
+      string,
+      {
+        price: number;
+        prevPrice: number;
+        direction: 'up' | 'down' | 'neutral';
+        change24h?: number;
+        high24h?: number;
+        low24h?: number;
+        bid?: number;
+        ask?: number;
+        updatedAt: number;
+      }
+    >
+  >({});
+  const [priceFlash, setPriceFlash] = useState<Record<string, 'up' | 'down' | null>>({});
+  const [wsConnected, setWsConnected] = useState(false);
+
   // Paper Trading State
   const [paperStats, setPaperStats] = useState<PaperStats | null>(null);
   const [openPaper, setOpenPaper] = useState<PaperPosition[]>([]);
@@ -199,51 +219,99 @@ export function App() {
     }
   }, []);
 
+  const updateLiveTick = useCallback(
+    (
+      sym: string,
+      newPrice: number,
+      extra?: { change24h?: number; high24h?: number; low24h?: number; bid?: number; ask?: number }
+    ) => {
+      if (!newPrice || newPrice <= 0) return;
+      setLivePrices((prev) => {
+        const oldEntry = prev[sym];
+        const prevPrice = oldEntry?.price || newPrice;
+        const dir: 'up' | 'down' | 'neutral' =
+          newPrice > prevPrice ? 'up' : newPrice < prevPrice ? 'down' : oldEntry?.direction || 'neutral';
+        if (newPrice !== prevPrice) {
+          const flashDir = newPrice > prevPrice ? 'up' : 'down';
+          setPriceFlash((pf) => ({ ...pf, [sym]: flashDir }));
+          setTimeout(() => {
+            setPriceFlash((pf) => (pf[sym] === flashDir ? { ...pf, [sym]: null } : pf));
+          }, 450);
+        }
+        return {
+          ...prev,
+          [sym]: {
+            price: newPrice,
+            prevPrice,
+            direction: dir,
+            change24h: extra?.change24h ?? oldEntry?.change24h,
+            high24h: extra?.high24h ?? oldEntry?.high24h,
+            low24h: extra?.low24h ?? oldEntry?.low24h,
+            bid: extra?.bid ?? oldEntry?.bid,
+            ask: extra?.ask ?? oldEntry?.ask,
+            updatedAt: Date.now(),
+          },
+        };
+      });
+    },
+    []
+  );
+
   const runAnalysis = useCallback(
-    async (sym = selectedSymbol, tf = selectedTimeframe, st = selectedStyle) => {
-      setLoadingAnalysis(true);
+    async (sym = selectedSymbol, tf = selectedTimeframe, st = selectedStyle, silent = false) => {
+      if (!silent) setLoadingAnalysis(true);
       try {
         const res = await apiFetch(
           `/api/market/analyze?symbol=${encodeURIComponent(sym)}&timeframe=${encodeURIComponent(tf)}&style=${encodeURIComponent(st)}&lang=${user?.lang || 'fr'}`
         );
         const ana: MarketAnalysis = res.analysis;
         setAnalysis(ana);
-        if (ana.sizing_recommendation?.position_size > 0) {
-          setOrderQty(String(ana.sizing_recommendation.position_size));
+        if (ana.current_price > 0) {
+          updateLiveTick(ana.symbol || sym, ana.current_price);
         }
-        if (ana.sl) {
-          setOrderSL(String(ana.sl));
-        } else if (ana.current_price) {
-          setOrderSL((ana.current_price * 0.985).toFixed(2));
-        }
-        if (ana.tp1) {
-          setOrderTP(String(ana.tp1));
-        } else if (ana.current_price) {
-          setOrderTP((ana.current_price * 1.03).toFixed(2));
-        }
-        if (!newAlertPrice && ana.current_price) {
-          setNewAlertPrice((ana.current_price * 1.015).toFixed(2));
+        if (!silent) {
+          if (ana.sizing_recommendation?.position_size > 0) {
+            setOrderQty(String(ana.sizing_recommendation.position_size));
+          }
+          if (ana.sl) {
+            setOrderSL(String(ana.sl));
+          } else if (ana.current_price) {
+            setOrderSL((ana.current_price * 0.985).toFixed(2));
+          }
+          if (ana.tp1) {
+            setOrderTP(String(ana.tp1));
+          } else if (ana.current_price) {
+            setOrderTP((ana.current_price * 1.03).toFixed(2));
+          }
+          if (!newAlertPrice && ana.current_price) {
+            setNewAlertPrice((ana.current_price * 1.015).toFixed(2));
+          }
         }
       } catch (err: any) {
-        showToast(err.message, 'error');
+        if (!silent) showToast(err.message, 'error');
       } finally {
-        setLoadingAnalysis(false);
+        if (!silent) setLoadingAnalysis(false);
       }
     },
-    [selectedSymbol, selectedTimeframe, selectedStyle, user?.lang, newAlertPrice, showToast]
+    [selectedSymbol, selectedTimeframe, selectedStyle, user?.lang, newAlertPrice, showToast, updateLiveTick]
   );
 
   const runMultiScan = useCallback(
     async (tfOverride?: string, stOverride?: string, showFeedback = true) => {
       const tf = tfOverride || selectedTimeframe;
       const st = stOverride || selectedStyle;
-      setLoadingScan(true);
+      if (showFeedback) setLoadingScan(true);
       try {
         const res = await apiFetch(
           `/api/market/multi-scan?timeframe=${encodeURIComponent(tf)}&style=${encodeURIComponent(st)}&lang=${user?.lang || 'fr'}&record=1`
         );
         const scans: MarketAnalysis[] = res.scans || [];
         setMultiScans(scans);
+        scans.forEach((sc) => {
+          if (sc.current_price > 0) {
+            updateLiveTick(sc.symbol, sc.current_price);
+          }
+        });
         setLastScannedAt(res.scanned_at ? Number(res.scanned_at) * 1000 : Date.now());
         if (showFeedback) {
           const validCount = scans.filter((s) => s.signal === 'BUY' || s.signal === 'SELL').length;
@@ -253,12 +321,12 @@ export function App() {
           );
         }
       } catch (err: any) {
-        showToast(err.message, 'error');
+        if (showFeedback) showToast(err.message, 'error');
       } finally {
-        setLoadingScan(false);
+        if (showFeedback) setLoadingScan(false);
       }
     },
-    [selectedTimeframe, selectedStyle, user?.lang, showToast]
+    [selectedTimeframe, selectedStyle, user?.lang, showToast, updateLiveTick]
   );
 
   const loadHistoryAndJournal = useCallback(async () => {
@@ -312,20 +380,175 @@ export function App() {
     }
   }, []);
 
+  // 1. Direct Binance WebSocket real-time stream (BTCUSDT & ETHUSDT) + auto-reconnect
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let unmounted = false;
+
+    const endpoints = [
+      'wss://data-stream.binance.vision/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker/btcusdt@bookTicker/ethusdt@bookTicker',
+      'wss://stream.binance.com:9443/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker/btcusdt@bookTicker/ethusdt@bookTicker',
+    ];
+    let epIndex = 0;
+
+    const connectWs = () => {
+      if (unmounted) return;
+      try {
+        const url = endpoints[epIndex % endpoints.length];
+        ws = new WebSocket(url);
+
+        ws.onopen = () => {
+          if (!unmounted) setWsConnected(true);
+        };
+
+        ws.onmessage = (evt) => {
+          if (unmounted) return;
+          try {
+            const msg = JSON.parse(evt.data);
+            const d = msg?.data || msg;
+            if (!d || !d.s) return;
+            const sym = String(d.s).toUpperCase();
+            if (d.e === '24hrMiniTicker' || d.c) {
+              const closeP = parseFloat(d.c);
+              const openP = parseFloat(d.o);
+              const highP = parseFloat(d.h);
+              const lowP = parseFloat(d.l);
+              const pct24 = openP > 0 ? ((closeP - openP) / openP) * 100 : undefined;
+              if (closeP > 0) {
+                updateLiveTick(sym, closeP, {
+                  change24h: pct24,
+                  high24h: highP > 0 ? highP : undefined,
+                  low24h: lowP > 0 ? lowP : undefined,
+                });
+              }
+            } else if (d.b && d.a) {
+              const bid = parseFloat(d.b);
+              const ask = parseFloat(d.a);
+              const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : bid || ask;
+              if (mid > 0) {
+                updateLiveTick(sym, mid, { bid, ask });
+              }
+            }
+          } catch {
+            // ignore malformed frame
+          }
+        };
+
+        ws.onerror = () => {
+          if (!unmounted) setWsConnected(false);
+        };
+
+        ws.onclose = () => {
+          if (unmounted) return;
+          setWsConnected(false);
+          epIndex += 1;
+          reconnectTimer = setTimeout(connectWs, 2000);
+        };
+      } catch {
+        setWsConnected(false);
+        epIndex += 1;
+        reconnectTimer = setTimeout(connectWs, 3000);
+      }
+    };
+
+    connectWs();
+
+    return () => {
+      unmounted = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) {
+        try {
+          ws.close();
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, [updateLiveTick]);
+
+  // 2. Initial bootstrap + continuous live synchronization (Tickers 2.5s, Positions 5s, Candle/Indicators 8s, Multi-Scan 15s)
   useEffect(() => {
     loadUserAndCoreData();
-    runAnalysis('BTCUSDT', '1h', 'day');
+    runAnalysis('BTCUSDT', '1h', 'day', false);
     runMultiScan('1h', 'day', false);
-    const intervalId = setInterval(() => {
+
+    // Fetch backend tickers (covers XAUUSD + fallback for BTCUSDT/ETHUSDT) every 2.5s
+    const fetchBackendTickers = () => {
+      apiFetch('/api/market/tickers')
+        .then((res) => {
+          if (Array.isArray(res.tickers)) {
+            res.tickers.forEach((t: any) => {
+              const p = Number(t.price || 0);
+              if (p > 0) {
+                updateLiveTick(t.symbol, p, {
+                  bid: t.price_detail?.bid ? Number(t.price_detail.bid) : undefined,
+                  ask: t.price_detail?.ask ? Number(t.price_detail.ask) : undefined,
+                });
+              }
+            });
+          }
+        })
+        .catch(() => {});
+    };
+    fetchBackendTickers();
+    const tickerInterval = setInterval(fetchBackendTickers, 2500);
+
+    // Sync Paper & Live positions + config every 5s
+    const syncPositionsInterval = setInterval(() => {
+      apiFetch('/api/paper/overview')
+        .then((paperRes) => {
+          setPaperStats(paperRes.stats);
+          setOpenPaper(paperRes.open_positions || []);
+          setClosedPaper(paperRes.closed_positions || []);
+        })
+        .catch(() => {});
+
       apiFetch('/api/trading/config')
         .then((res) => {
           setTradingCfg(res.config);
           setLiveTrades(res.live_trades || { open: [], closed: [] });
         })
         .catch(() => {});
+    }, 5000);
+
+    return () => {
+      clearInterval(tickerInterval);
+      clearInterval(syncPositionsInterval);
+    };
+  }, [loadUserAndCoreData, updateLiveTick]);
+
+  // 3. Continuous silent refresh of active symbol analysis (every 8s) and global multi-scan (every 15s)
+  useEffect(() => {
+    const analysisTimer = setInterval(() => {
+      runAnalysis(selectedSymbol, selectedTimeframe, selectedStyle, true);
+    }, 8000);
+
+    const scanTimer = setInterval(() => {
+      runMultiScan(selectedTimeframe, selectedStyle, false);
     }, 15000);
-    return () => clearInterval(intervalId);
-  }, []);
+
+    return () => {
+      clearInterval(analysisTimer);
+      clearInterval(scanTimer);
+    };
+  }, [selectedSymbol, selectedTimeframe, selectedStyle, runAnalysis, runMultiScan]);
+
+  // 4. Keep Live Binance Account & Open Orders refreshed every 6s when on Safety tab
+  useEffect(() => {
+    if (activeTab !== 'safety') return;
+    const accTimer = setInterval(() => {
+      apiFetch('/api/trading/account')
+        .then((accRes) => {
+          if (accRes.connected && accRes.account) {
+            setLiveAccount(accRes.account);
+          }
+          setLiveOpenOrders(accRes.open_orders || []);
+        })
+        .catch(() => {});
+    }, 6000);
+    return () => clearInterval(accTimer);
+  }, [activeTab]);
 
   useEffect(() => {
     if (activeTab === 'admin' && user && !user.is_admin && user.role !== 'admin') {
@@ -836,12 +1059,18 @@ export function App() {
 
           {/* Watchlist Quick Selector */}
           <div className="px-4 pt-4 pb-2">
-            <div className="text-[11px] font-mono-tabular uppercase tracking-wider text-[#64748B] mb-2">
-              Marchés Documentés
+            <div className="flex items-center justify-between text-[11px] font-mono-tabular uppercase tracking-wider text-[#64748B] mb-2">
+              <span>Marchés Documentés</span>
+              <span className="inline-flex items-center gap-1 text-[9px] text-[#10B981]">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-ping" />
+                LIVE
+              </span>
             </div>
             <div className="space-y-1">
               {SYMBOLS.map((s) => {
                 const isSelected = selectedSymbol === s.id;
+                const tick = livePrices[s.id];
+                const flash = priceFlash[s.id];
                 return (
                   <button
                     key={s.id}
@@ -857,8 +1086,29 @@ export function App() {
                         : 'text-[#94A3B8] hover:bg-white/[0.03] hover:text-[#F1F5F9]'
                     }`}
                   >
-                    <span className="font-mono-tabular">{s.label}</span>
-                    <ChevronRight className="w-3.5 h-3.5 text-[#64748B]" />
+                    <span className="font-mono-tabular">{s.id}</span>
+                    {tick?.price ? (
+                      <span
+                        className={`font-mono-tabular text-[11px] font-semibold transition-colors ${
+                          flash === 'up'
+                            ? 'text-[#10B981]'
+                            : flash === 'down'
+                            ? 'text-[#F43F5E]'
+                            : tick.direction === 'up'
+                            ? 'text-[#34D399]'
+                            : tick.direction === 'down'
+                            ? 'text-[#FB7185]'
+                            : 'text-[#F1F5F9]'
+                        }`}
+                      >
+                        {tick.price.toLocaleString('en-US', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </span>
+                    ) : (
+                      <ChevronRight className="w-3.5 h-3.5 text-[#64748B]" />
+                    )}
                   </button>
                 );
               })}
@@ -974,7 +1224,67 @@ export function App() {
             </button>
           </div>
 
-          <div className="flex items-center gap-4 text-xs">
+          <div className="flex items-center gap-3 text-xs flex-wrap">
+            {/* Live Binance Ticker Strip */}
+            <div className="hidden xl:flex items-center gap-2 bg-[#111827] border border-white/[0.08] px-3 py-1 rounded-lg font-mono-tabular">
+              <span
+                className="inline-flex items-center gap-1.5 pr-2 border-r border-white/10 text-[10px] font-bold text-[#10B981]"
+                title={wsConnected ? 'Flux WebSocket Binance temps réel connecté' : 'Synchronisation temps réel active'}
+              >
+                <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse" />
+                DIRECT
+              </span>
+              {SYMBOLS.map((symObj) => {
+                const t = livePrices[symObj.id];
+                const fl = priceFlash[symObj.id];
+                return (
+                  <button
+                    key={symObj.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedSymbol(symObj.id);
+                      runAnalysis(symObj.id, selectedTimeframe, selectedStyle);
+                    }}
+                    className={`px-2 py-0.5 rounded flex items-center gap-1.5 transition-colors ${
+                      fl === 'up'
+                        ? 'bg-[#10B981]/20 text-[#10B981]'
+                        : fl === 'down'
+                        ? 'bg-[#F43F5E]/20 text-[#F43F5E]'
+                        : 'hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    <span className="text-[#94A3B8] font-semibold">{symObj.id}</span>
+                    <span
+                      className={`font-bold ${
+                        t?.direction === 'up'
+                          ? 'text-[#10B981]'
+                          : t?.direction === 'down'
+                          ? 'text-[#F43F5E]'
+                          : 'text-[#F1F5F9]'
+                      }`}
+                    >
+                      {t?.price
+                        ? t.price.toLocaleString('en-US', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })
+                        : '—'}
+                    </span>
+                    {t?.change24h !== undefined && (
+                      <span
+                        className={`text-[10px] ${
+                          t.change24h >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                        }`}
+                      >
+                        {t.change24h >= 0 ? '+' : ''}
+                        {t.change24h.toFixed(2)}%
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
             {paperStats && (
               <div className="hidden lg:flex items-center gap-4 font-mono-tabular bg-[#111827] border border-white/[0.07] px-3.5 py-1.5 rounded-lg">
                 <span className="text-[#94A3B8]">
@@ -1033,26 +1343,78 @@ export function App() {
               {/* Top 4 KPI Cards (Max 3 data points per card, 24px gap) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                 {/* KPI 1: Live Price & Market Status */}
-                <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-2">
-                  <div className="flex items-center justify-between text-xs text-[#94A3B8]">
-                    <span>Cours Temps Réel ({analysis?.symbol || selectedSymbol})</span>
-                    <span className="font-mono-tabular text-[#10B981]">
-                      {analysis?.market_status?.is_open ? '● OUVERT' : '○ FERMÉ'}
-                    </span>
-                  </div>
-                  <div className="font-mono-tabular text-2xl font-bold text-[#F1F5F9]">
-                    {analysis?.current_price
-                      ? analysis.current_price.toLocaleString('en-US', {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })
-                      : '—'}{' '}
-                    <span className="text-xs font-normal text-[#64748B]">USD</span>
-                  </div>
-                  <div className="text-xs text-[#64748B] font-mono-tabular">
-                    ATR(14) : {ind.atr ? ind.atr.toFixed(2) : '—'} • Classe : {(analysis?.asset_class || 'crypto').toUpperCase()}
-                  </div>
-                </div>
+                {(() => {
+                  const symKey = analysis?.symbol || selectedSymbol;
+                  const liveTick = livePrices[symKey];
+                  const flash = priceFlash[symKey];
+                  const displayPrice = liveTick?.price || analysis?.current_price || 0;
+                  return (
+                    <div
+                      className={`bg-[#111827] border rounded-xl p-5 space-y-2 transition-colors duration-300 ${
+                        flash === 'up'
+                          ? 'border-[#10B981]/60 bg-[#10B981]/[0.05]'
+                          : flash === 'down'
+                          ? 'border-[#F43F5E]/60 bg-[#F43F5E]/[0.05]'
+                          : 'border-white/[0.07]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-xs text-[#94A3B8]">
+                        <span className="flex items-center gap-1.5">
+                          <span>Cours Temps Réel ({symKey})</span>
+                          <span className="w-2 h-2 rounded-full bg-[#10B981] animate-ping" title="Flux en direct" />
+                        </span>
+                        <span className="font-mono-tabular text-[#10B981]">
+                          {analysis?.market_status?.is_open ? '● LIVE 24/7' : '○ FERMÉ'}
+                        </span>
+                      </div>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <div
+                          className={`font-mono-tabular text-2xl font-bold transition-colors ${
+                            flash === 'up'
+                              ? 'text-[#10B981]'
+                              : flash === 'down'
+                              ? 'text-[#F43F5E]'
+                              : liveTick?.direction === 'up'
+                              ? 'text-[#34D399]'
+                              : liveTick?.direction === 'down'
+                              ? 'text-[#FB7185]'
+                              : 'text-[#F1F5F9]'
+                          }`}
+                        >
+                          {displayPrice
+                            ? displayPrice.toLocaleString('en-US', {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })
+                            : '—'}{' '}
+                          <span className="text-xs font-normal text-[#64748B]">USD</span>
+                        </div>
+                        {liveTick?.change24h !== undefined && (
+                          <span
+                            className={`font-mono-tabular text-xs font-semibold px-1.5 py-0.5 rounded ${
+                              liveTick.change24h >= 0
+                                ? 'bg-[#10B981]/15 text-[#10B981]'
+                                : 'bg-[#F43F5E]/15 text-[#F43F5E]'
+                            }`}
+                          >
+                            {liveTick.change24h >= 0 ? '+' : ''}
+                            {liveTick.change24h.toFixed(2)}%
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-[#64748B] font-mono-tabular flex items-center justify-between">
+                        <span>
+                          ATR(14) : {ind.atr ? ind.atr.toFixed(2) : '—'} • {(analysis?.asset_class || 'crypto').toUpperCase()}
+                        </span>
+                        {liveTick?.bid && liveTick?.ask && (
+                          <span className="text-[10px] text-[#94A3B8]">
+                            B:{liveTick.bid.toFixed(1)} / A:{liveTick.ask.toFixed(1)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* KPI 2: Signal & Teddy Score */}
                 <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-2">
@@ -1141,6 +1503,7 @@ export function App() {
                     candles={analysis?.candles || []}
                     symbol={analysis?.symbol || selectedSymbol}
                     timeframe={selectedTimeframe}
+                    livePrice={livePrices[analysis?.symbol || selectedSymbol]?.price || analysis?.current_price}
                     sl={analysis?.sl}
                     tp1={analysis?.tp1}
                     tp2={analysis?.tp2}
@@ -1381,6 +1744,9 @@ export function App() {
                     {multiScans.map((sc) => {
                       const scInd = sc.indicators || {};
                       const scTrends = scInd.timeframe_trends || {};
+                      const scTick = livePrices[sc.symbol];
+                      const scFlash = priceFlash[sc.symbol];
+                      const scLivePrice = scTick?.price || sc.current_price || 0;
                       return (
                         <div
                           key={sc.symbol}
@@ -1416,8 +1782,20 @@ export function App() {
                           </div>
 
                           <div className="flex items-baseline justify-between">
-                            <div className="font-mono-tabular text-lg font-bold text-[#F1F5F9]">
-                              {Number(sc.current_price ?? 0).toLocaleString('en-US', {
+                            <div
+                              className={`font-mono-tabular text-lg font-bold transition-colors ${
+                                scFlash === 'up'
+                                  ? 'text-[#10B981]'
+                                  : scFlash === 'down'
+                                  ? 'text-[#F43F5E]'
+                                  : scTick?.direction === 'up'
+                                  ? 'text-[#34D399]'
+                                  : scTick?.direction === 'down'
+                                  ? 'text-[#FB7185]'
+                                  : 'text-[#F1F5F9]'
+                              }`}
+                            >
+                              {Number(scLivePrice).toLocaleString('en-US', {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2,
                               })}{' '}
@@ -1559,14 +1937,22 @@ export function App() {
                       ) : (
                         openPaper.map((pos) => {
                           const entryVal = Number(pos.entry ?? pos.entry_price ?? 0);
-                          const currVal = Number(pos.current_price ?? entryVal);
+                          const liveSymPrice = livePrices[pos.symbol]?.price;
+                          const currVal = Number(liveSymPrice ?? pos.current_price ?? entryVal);
                           const slVal = Number(pos.sl ?? 0);
                           const tpVal = Number(pos.tp ?? 0);
-                          const marginVal = Number(
-                            pos.margin_used ?? (entryVal * Number(pos.qty ?? 0)) / Math.max(1, Number(pos.leverage ?? 1))
-                          );
-                          const upnl = Number(pos.unrealized_pnl ?? pos.pnl_usdt ?? 0);
-                          const upnlPct = Number(pos.unrealized_pnl_pct ?? pos.pnl_pct ?? 0);
+                          const qtyVal = Number(pos.qty ?? 0);
+                          const levVal = Math.max(1, Number(pos.leverage ?? 1));
+                          const marginVal = Number(pos.margin_used ?? (entryVal * qtyVal) / levVal);
+                          const rawDiff = pos.side === 'BUY' ? currVal - entryVal : entryVal - currVal;
+                          const computedUpnl =
+                            liveSymPrice && entryVal > 0 && qtyVal > 0
+                              ? rawDiff * qtyVal
+                              : Number(pos.unrealized_pnl ?? pos.pnl_usdt ?? 0);
+                          const computedUpnlPct =
+                            marginVal > 0
+                              ? (computedUpnl / marginVal) * 100
+                              : Number(pos.unrealized_pnl_pct ?? pos.pnl_pct ?? 0);
                           return (
                             <tr key={pos.id} className="hover:bg-white/[0.02]">
                               <td className="py-3.5 px-4 font-semibold text-[#F1F5F9]">{pos.symbol}</td>
@@ -1576,7 +1962,12 @@ export function App() {
                                 </span>
                               </td>
                               <td className="py-3.5 px-4 text-right">{entryVal.toLocaleString()}</td>
-                              <td className="py-3.5 px-4 text-right">{currVal.toLocaleString()}</td>
+                              <td className="py-3.5 px-4 text-right font-semibold text-[#F1F5F9]">
+                                {currVal.toLocaleString('en-US', {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </td>
                               <td className="py-3.5 px-4 text-right">
                                 <span className="text-[#F43F5E]">{slVal ? slVal.toLocaleString() : '—'}</span> /{' '}
                                 <span className="text-[#10B981]">{tpVal ? tpVal.toLocaleString() : '—'}</span>
@@ -1584,11 +1975,11 @@ export function App() {
                               <td className="py-3.5 px-4 text-right">{marginVal.toFixed(2)} USDT</td>
                               <td
                                 className={`py-3.5 px-4 text-right font-semibold ${
-                                  upnl >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                                  computedUpnl >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
                                 }`}
                               >
-                                {upnl >= 0 ? '+' : ''}
-                                {upnl.toFixed(2)} USDT ({upnlPct.toFixed(2)}%)
+                                {computedUpnl >= 0 ? '+' : ''}
+                                {computedUpnl.toFixed(2)} USDT ({computedUpnlPct.toFixed(2)}%)
                               </td>
                               <td className="py-3.5 px-4 text-right">
                                 <button

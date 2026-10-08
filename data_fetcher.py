@@ -120,7 +120,8 @@ class DataFetcher:
         if symbol.endswith("USDT"):
             return None
         if symbol in self.price_cache:
-            if time.time() - self.price_cache[symbol]["timestamp"] < PRICE_CACHE_TTL:
+            ttl = min(PRICE_CACHE_TTL, 4) if symbol == "XAUUSD" else PRICE_CACHE_TTL
+            if time.time() - self.price_cache[symbol]["timestamp"] < ttl:
                 return self.price_cache[symbol]
         return None
 
