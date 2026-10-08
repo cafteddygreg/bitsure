@@ -3,7 +3,6 @@ import './index.css';
 import { apiFetch, setStoredSession } from './api';
 import {
   UserProfile,
-  DemoAccount,
   MarketAnalysis,
   PaperStats,
   PaperPosition,
@@ -51,6 +50,8 @@ import {
   Users,
   Wallet,
   XCircle,
+  Menu,
+  X,
 } from 'lucide-react';
 
 type ActiveTab =
@@ -80,10 +81,10 @@ const STYLES = [
 export function App() {
   const [viewMode, setViewMode] = useState<'landing' | 'workspace'>('workspace');
   const [activeTab, setActiveTab] = useState<ActiveTab>('intelligence');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Auth & User State
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [demoAccounts, setDemoAccounts] = useState<DemoAccount[]>([]);
   const [authModal, setAuthModal] = useState<'login' | 'register' | null>(null);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -96,6 +97,7 @@ export function App() {
   const [selectedStyle, setSelectedStyle] = useState('day');
   const [analysis, setAnalysis] = useState<MarketAnalysis | null>(null);
   const [multiScans, setMultiScans] = useState<MarketAnalysis[]>([]);
+  const [lastScannedAt, setLastScannedAt] = useState<number | null>(null);
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [loadingScan, setLoadingScan] = useState(false);
 
@@ -176,7 +178,6 @@ export function App() {
     try {
       const meRes = await apiFetch('/api/auth/me');
       setUser(meRes.user);
-      setDemoAccounts(meRes.demo_accounts || []);
 
       const [paperRes, alertsRes, cfgRes, notifRes] = await Promise.all([
         apiFetch('/api/paper/overview'),
@@ -232,19 +233,33 @@ export function App() {
     [selectedSymbol, selectedTimeframe, selectedStyle, user?.lang, newAlertPrice, showToast]
   );
 
-  const runMultiScan = useCallback(async () => {
-    setLoadingScan(true);
-    try {
-      const res = await apiFetch(
-        `/api/market/multi-scan?timeframe=${encodeURIComponent(selectedTimeframe)}&style=${encodeURIComponent(selectedStyle)}&lang=${user?.lang || 'fr'}`
-      );
-      setMultiScans(res.scans || []);
-    } catch (err: any) {
-      showToast(err.message, 'error');
-    } finally {
-      setLoadingScan(false);
-    }
-  }, [selectedTimeframe, selectedStyle, user?.lang, showToast]);
+  const runMultiScan = useCallback(
+    async (tfOverride?: string, stOverride?: string, showFeedback = true) => {
+      const tf = tfOverride || selectedTimeframe;
+      const st = stOverride || selectedStyle;
+      setLoadingScan(true);
+      try {
+        const res = await apiFetch(
+          `/api/market/multi-scan?timeframe=${encodeURIComponent(tf)}&style=${encodeURIComponent(st)}&lang=${user?.lang || 'fr'}&record=1`
+        );
+        const scans: MarketAnalysis[] = res.scans || [];
+        setMultiScans(scans);
+        setLastScannedAt(res.scanned_at ? Number(res.scanned_at) * 1000 : Date.now());
+        if (showFeedback) {
+          const validCount = scans.filter((s) => s.signal === 'BUY' || s.signal === 'SELL').length;
+          showToast(
+            `Scan global terminé (${tf.toUpperCase()}) : ${scans.length} marchés analysés, ${validCount} signal(s) actif(s).`,
+            validCount > 0 ? 'success' : 'info'
+          );
+        }
+      } catch (err: any) {
+        showToast(err.message, 'error');
+      } finally {
+        setLoadingScan(false);
+      }
+    },
+    [selectedTimeframe, selectedStyle, user?.lang, showToast]
+  );
 
   const loadHistoryAndJournal = useCallback(async () => {
     try {
@@ -300,6 +315,7 @@ export function App() {
   useEffect(() => {
     loadUserAndCoreData();
     runAnalysis('BTCUSDT', '1h', 'day');
+    runMultiScan('1h', 'day', false);
     const intervalId = setInterval(() => {
       apiFetch('/api/trading/config')
         .then((res) => {
@@ -312,32 +328,20 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (activeTab === 'admin' && user && !user.is_admin && user.role !== 'admin') {
+      setActiveTab('intelligence');
+      return;
+    }
     if (activeTab === 'safety') loadLiveAccountAndOrders();
     if (activeTab === 'history') loadHistoryAndJournal();
     if (activeTab === 'account') loadTickets();
-    if (activeTab === 'admin') {
+    if (activeTab === 'admin' && (user?.is_admin || user?.role === 'admin')) {
       loadAdminOverview();
       loadTickets();
     }
-  }, [activeTab, loadLiveAccountAndOrders, loadHistoryAndJournal, loadTickets, loadAdminOverview]);
+  }, [activeTab, user, loadLiveAccountAndOrders, loadHistoryAndJournal, loadTickets, loadAdminOverview]);
 
   // Handlers
-  const handleQuickSwitch = async (targetUid: number) => {
-    try {
-      const res = await apiFetch('/api/auth/quick-switch', {
-        method: 'POST',
-        body: JSON.stringify({ user_id: targetUid }),
-      });
-      setStoredSession(res.token, res.user.user_id);
-      setUser(res.user);
-      setViewMode('workspace');
-      await loadUserAndCoreData();
-      showToast(`Connecté en tant que ${res.user.display_name} (${res.user.role.toUpperCase()})`, 'success');
-    } catch (err: any) {
-      showToast(err.message, 'error');
-    }
-  };
-
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -636,9 +640,7 @@ export function App() {
       <>
         <LandingPage
           onEnterWorkspace={() => setViewMode('workspace')}
-          onQuickLogin={handleQuickSwitch}
           onOpenAuthModal={(m) => setAuthModal(m)}
-          demoAccounts={demoAccounts}
         />
         {authModal && (
           <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
@@ -717,15 +719,47 @@ export function App() {
   const tfTrends = ind.timeframe_trends || {};
   const tfAlign = ind.tf_alignment || {};
 
+  const isAdminUser = Boolean(user?.is_admin || user?.role === 'admin');
+  const navItems = [
+    { id: 'intelligence', label: 'Market Intelligence', icon: Activity },
+    { id: 'paper', label: 'Paper Trading', icon: Layers, count: openPaper.length },
+    { id: 'alerts', label: 'Alertes & Watchlist', icon: Bell, count: alerts.length },
+    {
+      id: 'safety',
+      label: 'Auto-Trade & Safety',
+      icon: ShieldCheck,
+      warn: tradingCfg?.safety_lock || tradingCfg?.safety_warn,
+      apiConnected: Boolean(tradingCfg?.credentials_valid),
+    },
+    { id: 'history', label: 'Historique & Journal', icon: BookOpen },
+    { id: 'account', label: 'Compte, Plans & PIN', icon: CreditCard },
+    ...(isAdminUser ? [{ id: 'admin', label: 'Admin & Log Doctor', icon: Terminal }] : []),
+  ];
+
   return (
-    <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex">
-      {/* Left Single Navigation Sidebar */}
-      <aside className="w-64 shrink-0 border-r border-white/[0.07] bg-[#0B101B] flex flex-col justify-between">
+    <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex flex-col md:flex-row">
+      {/* Mobile Overlay Backdrop */}
+      {mobileMenuOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/70 backdrop-blur-xs md:hidden"
+          onClick={() => setMobileMenuOpen(false)}
+        />
+      )}
+
+      {/* Left Single Navigation Sidebar (Drawer on mobile, fixed sidebar on desktop) */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 w-64 shrink-0 border-r border-white/[0.07] bg-[#0B101B] flex flex-col justify-between transition-transform duration-200 md:static md:translate-x-0 ${
+          mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
         <div>
           {/* Brand Logo */}
           <div className="h-16 px-5 border-b border-white/[0.07] flex items-center justify-between">
             <button
-              onClick={() => setViewMode('landing')}
+              onClick={() => {
+                setViewMode('landing');
+                setMobileMenuOpen(false);
+              }}
               className="flex items-center gap-2.5 text-left group"
             >
               <div className="w-8 h-8 rounded-lg bg-[#10B981]/15 border border-[#10B981]/40 flex items-center justify-center text-[#10B981] font-display font-bold">
@@ -738,31 +772,26 @@ export function App() {
                 <div className="text-[10px] font-mono-tabular text-[#64748B]">QUANT ENGINE v2.0</div>
               </div>
             </button>
+            <button
+              onClick={() => setMobileMenuOpen(false)}
+              className="md:hidden p-1.5 text-[#94A3B8] hover:text-[#F1F5F9]"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
 
           {/* Primary Navigation Items */}
           <nav className="p-3 space-y-1">
-            {[
-              { id: 'intelligence', label: 'Market Intelligence', icon: Activity },
-              { id: 'paper', label: 'Paper Trading', icon: Layers, count: openPaper.length },
-              { id: 'alerts', label: 'Alertes & Watchlist', icon: Bell, count: alerts.length },
-              {
-                id: 'safety',
-                label: 'Auto-Trade & Safety',
-                icon: ShieldCheck,
-                warn: tradingCfg?.safety_lock || tradingCfg?.safety_warn,
-                apiConnected: Boolean(tradingCfg?.credentials_valid),
-              },
-              { id: 'history', label: 'Historique & Journal', icon: BookOpen },
-              { id: 'account', label: 'Compte, Plans & PIN', icon: CreditCard },
-              { id: 'admin', label: 'Admin & Log Doctor', icon: Terminal },
-            ].map((item) => {
+            {navItems.map((item) => {
               const Icon = item.icon;
               const active = activeTab === item.id;
               return (
                 <button
                   key={item.id}
-                  onClick={() => setActiveTab(item.id as ActiveTab)}
+                  onClick={() => {
+                    setActiveTab(item.id as ActiveTab);
+                    setMobileMenuOpen(false);
+                  }}
                   className={`w-full px-3 py-2.5 rounded-lg text-xs font-medium flex items-center justify-between transition-colors ${
                     active
                       ? 'bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30'
@@ -819,6 +848,7 @@ export function App() {
                     onClick={() => {
                       setSelectedSymbol(s.id);
                       setActiveTab('intelligence');
+                      setMobileMenuOpen(false);
                       runAnalysis(s.id, selectedTimeframe, selectedStyle);
                     }}
                     className={`w-full px-2.5 py-1.5 rounded text-xs flex items-center justify-between transition-colors ${
@@ -836,7 +866,7 @@ export function App() {
           </div>
         </div>
 
-        {/* Bottom User Profile & Quick Role Switcher */}
+        {/* Bottom User Profile */}
         <div className="p-3.5 border-t border-white/[0.07] bg-[#090D16]/60 space-y-3">
           {user && (
             <div className="space-y-1">
@@ -855,25 +885,11 @@ export function App() {
             </div>
           )}
 
-          <div>
-            <label className="block text-[10px] uppercase tracking-wider text-[#64748B] mb-1">
-              Changer de profil (Démo)
-            </label>
-            <select
-              value={user?.user_id || 100201}
-              onChange={(e) => handleQuickSwitch(Number(e.target.value))}
-              className="w-full px-2.5 py-1.5 text-xs bg-[#111827] border border-white/10 rounded text-[#F1F5F9] font-mono-tabular"
-            >
-              {demoAccounts.map((d) => (
-                <option key={d.user_id} value={d.user_id}>
-                  {d.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
           <button
-            onClick={() => setViewMode('landing')}
+            onClick={() => {
+              setViewMode('landing');
+              setMobileMenuOpen(false);
+            }}
             className="w-full py-1.5 text-xs text-[#94A3B8] hover:text-[#F1F5F9] border border-white/10 rounded hover:bg-white/[0.04] transition-colors"
           >
             Présentation & Tarifs
@@ -882,17 +898,25 @@ export function App() {
       </aside>
 
       {/* Main Workspace Area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 pb-16 md:pb-0">
         {/* Top Utility & Market Bar */}
-        <header className="h-16 px-6 border-b border-white/[0.07] bg-[#0B101B]/90 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 flex-wrap">
+        <header className="min-h-16 py-2.5 px-3 sm:px-6 border-b border-white/[0.07] bg-[#0B101B]/90 flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+            <button
+              onClick={() => setMobileMenuOpen(true)}
+              className="md:hidden p-2 bg-[#111827] border border-white/10 rounded-lg text-[#F1F5F9]"
+              aria-label="Ouvrir le menu"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
+
             <select
               value={selectedSymbol}
               onChange={(e) => {
                 setSelectedSymbol(e.target.value);
                 runAnalysis(e.target.value, selectedTimeframe, selectedStyle);
               }}
-              className="px-3 py-1.5 bg-[#111827] border border-white/15 rounded-lg text-xs font-mono-tabular font-semibold text-[#F1F5F9]"
+              className="px-2.5 sm:px-3 py-1.5 bg-[#111827] border border-white/15 rounded-lg text-xs font-mono-tabular font-semibold text-[#F1F5F9]"
             >
               {SYMBOLS.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -901,15 +925,16 @@ export function App() {
               ))}
             </select>
 
-            <div className="flex items-center bg-[#111827] border border-white/10 rounded-lg p-0.5">
+            <div className="flex items-center bg-[#111827] border border-white/10 rounded-lg p-0.5 overflow-x-auto max-w-full">
               {TIMEFRAMES.map((tf) => (
                 <button
                   key={tf}
                   onClick={() => {
                     setSelectedTimeframe(tf);
                     runAnalysis(selectedSymbol, tf, selectedStyle);
+                    runMultiScan(tf, selectedStyle, false);
                   }}
-                  className={`px-2.5 py-1 rounded-md text-xs font-mono-tabular transition-colors ${
+                  className={`px-2 sm:px-2.5 py-1 rounded-md text-xs font-mono-tabular transition-colors ${
                     selectedTimeframe === tf
                       ? 'bg-[#10B981] text-[#090D16] font-semibold'
                       : 'text-[#94A3B8] hover:text-[#F1F5F9]'
@@ -925,8 +950,9 @@ export function App() {
               onChange={(e) => {
                 setSelectedStyle(e.target.value);
                 runAnalysis(selectedSymbol, selectedTimeframe, e.target.value);
+                runMultiScan(selectedTimeframe, e.target.value, false);
               }}
-              className="px-3 py-1.5 bg-[#111827] border border-white/10 rounded-lg text-xs text-[#F1F5F9]"
+              className="px-2.5 sm:px-3 py-1.5 bg-[#111827] border border-white/10 rounded-lg text-xs text-[#F1F5F9]"
             >
               {STYLES.map((st) => (
                 <option key={st.id} value={st.id}>
@@ -936,12 +962,15 @@ export function App() {
             </select>
 
             <button
-              onClick={() => runAnalysis(selectedSymbol, selectedTimeframe, selectedStyle)}
+              onClick={() => {
+                runAnalysis(selectedSymbol, selectedTimeframe, selectedStyle);
+                runMultiScan(selectedTimeframe, selectedStyle, false);
+              }}
               disabled={loadingAnalysis}
-              className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] flex items-center gap-1.5 transition-colors"
+              className="px-2.5 sm:px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] flex items-center gap-1.5 transition-colors"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loadingAnalysis ? 'animate-spin text-[#10B981]' : ''}`} />
-              <span>Actualiser</span>
+              <span className="hidden sm:inline">Actualiser</span>
             </button>
           </div>
 
@@ -995,7 +1024,7 @@ export function App() {
         )}
 
         {/* Main Scrollable Content */}
-        <main className="p-6 space-y-6 max-w-[1600px] w-full mx-auto">
+        <main className="p-3 sm:p-6 space-y-6 max-w-[1600px] w-full mx-auto">
           {/* =========================================================
               TAB 1: MARKET INTELLIGENCE & TEDDY SCORE WORKSPACE
              ========================================================= */}
@@ -1310,57 +1339,130 @@ export function App() {
               </div>
 
               {/* Multi-Symbol Scanner Section */}
-              <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+              <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-4 sm:p-5 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                      Scanner Multi-Marchés (BTCUSDT • ETHUSDT • XAUUSD)
-                    </h3>
-                    <p className="text-xs text-[#64748B]">
-                      Analyse simultanée de la confluence technique sur les actifs documentés.
+                    <div className="flex items-center gap-2.5">
+                      <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                        Scanner Multi-Marchés (BTCUSDT • ETHUSDT • XAUUSD)
+                      </h3>
+                      {lastScannedAt && (
+                        <span className="text-[11px] font-mono-tabular text-[#10B981] bg-[#10B981]/10 border border-[#10B981]/30 px-2 py-0.5 rounded">
+                          Mis à jour à {new Date(lastScannedAt).toLocaleTimeString()}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-[#64748B] mt-0.5">
+                      Analyse simultanée en temps réel sur bougies clôturées ({selectedTimeframe.toUpperCase()} • Style {selectedStyle}). Cliquez sur une carte pour charger son graphique détaillé.
                     </p>
                   </div>
                   <button
-                    onClick={runMultiScan}
+                    onClick={() => runMultiScan(selectedTimeframe, selectedStyle, true)}
                     disabled={loadingScan}
-                    className="px-4 py-2 bg-[#10B981]/15 hover:bg-[#10B981]/25 border border-[#10B981]/40 text-[#10B981] rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors"
+                    className="w-full sm:w-auto justify-center px-4 py-2 bg-[#10B981] hover:bg-[#059669] text-[#090D16] rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors shadow-lg shadow-[#10B981]/15"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${loadingScan ? 'animate-spin' : ''}`} />
-                    <span>Lancer le Scan Global ({selectedTimeframe.toUpperCase()})</span>
+                    <span>{loadingScan ? 'Scan en cours...' : `Lancer le Scan Global (${selectedTimeframe.toUpperCase()})`}</span>
                   </button>
                 </div>
 
-                {multiScans.length > 0 && (
+                {loadingScan && multiScans.length === 0 ? (
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-                    {multiScans.map((sc) => (
-                      <div
-                        key={sc.symbol}
-                        onClick={() => {
-                          setSelectedSymbol(sc.symbol);
-                          runAnalysis(sc.symbol, selectedTimeframe, selectedStyle);
-                        }}
-                        className="p-4 rounded-lg bg-[#090D16] border border-white/[0.07] hover:border-[#10B981]/40 cursor-pointer transition-colors space-y-2"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-mono-tabular font-bold text-sm text-[#F1F5F9]">{sc.symbol}</span>
-                          <span
-                            className={`font-mono-tabular text-xs font-semibold ${
-                              sc.signal === 'BUY'
-                                ? 'text-[#10B981]'
-                                : sc.signal === 'SELL'
-                                ? 'text-[#F43F5E]'
-                                : 'text-[#F59E0B]'
-                            }`}
-                          >
-                            {sc.signal} • Score {sc.teddy_score}/100
-                          </span>
-                        </div>
-                        <div className="font-mono-tabular text-lg font-bold text-[#F1F5F9]">
-                          {sc.current_price?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
-                        </div>
-                        <div className="text-xs text-[#94A3B8] line-clamp-2">{sc.reason}</div>
+                    {[1, 2, 3].map((n) => (
+                      <div key={n} className="p-4 rounded-lg bg-[#090D16] border border-white/[0.07] animate-pulse space-y-3">
+                        <div className="h-4 bg-white/10 rounded w-1/2" />
+                        <div className="h-6 bg-white/10 rounded w-2/3" />
+                        <div className="h-3 bg-white/10 rounded w-full" />
                       </div>
                     ))}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                    {multiScans.map((sc) => {
+                      const scInd = sc.indicators || {};
+                      const scTrends = scInd.timeframe_trends || {};
+                      return (
+                        <div
+                          key={sc.symbol}
+                          onClick={() => {
+                            setSelectedSymbol(sc.symbol);
+                            setAnalysis(sc);
+                            runAnalysis(sc.symbol, selectedTimeframe, selectedStyle);
+                          }}
+                          className={`p-4 rounded-lg bg-[#090D16] border cursor-pointer transition-all space-y-2.5 ${
+                            selectedSymbol === sc.symbol
+                              ? 'border-[#10B981]/60 ring-1 ring-[#10B981]/30'
+                              : 'border-white/[0.07] hover:border-[#10B981]/40'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono-tabular font-bold text-sm text-[#F1F5F9]">{sc.symbol}</span>
+                              <span className="text-[10px] font-mono-tabular px-1.5 py-0.5 rounded bg-white/[0.05] text-[#94A3B8]">
+                                {sc.timeframe.toUpperCase()}
+                              </span>
+                            </div>
+                            <span
+                              className={`font-mono-tabular text-xs font-bold px-2 py-0.5 rounded ${
+                                sc.signal === 'BUY'
+                                  ? 'bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30'
+                                  : sc.signal === 'SELL'
+                                  ? 'bg-[#F43F5E]/15 text-[#F43F5E] border border-[#F43F5E]/30'
+                                  : 'bg-[#F59E0B]/15 text-[#F59E0B] border border-[#F59E0B]/30'
+                              }`}
+                            >
+                              {sc.signal} • {sc.teddy_score}/100
+                            </span>
+                          </div>
+
+                          <div className="flex items-baseline justify-between">
+                            <div className="font-mono-tabular text-lg font-bold text-[#F1F5F9]">
+                              {Number(sc.current_price ?? 0).toLocaleString('en-US', {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })}{' '}
+                              <span className="text-xs font-normal text-[#64748B]">USD</span>
+                            </div>
+                            <div className="text-[11px] font-mono-tabular text-[#64748B]">
+                              RSI: {scInd.rsi ? Number(scInd.rsi).toFixed(1) : '—'} • ADX:{' '}
+                              {scInd.adx ? Number(scInd.adx).toFixed(1) : '—'}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono-tabular">
+                            {(['1h', '4h', '1d'] as const).map((tfKey) => {
+                              const tr = scTrends[tfKey] || 'NEUTRE';
+                              return (
+                                <div key={tfKey} className="bg-[#111827] px-2 py-1 rounded text-center">
+                                  <span className="text-[#64748B] uppercase mr-1">{tfKey}:</span>
+                                  <span
+                                    className={
+                                      tr === 'HAUSSIER'
+                                        ? 'text-[#10B981] font-semibold'
+                                        : tr === 'BAISSIER'
+                                        ? 'text-[#F43F5E] font-semibold'
+                                        : 'text-[#94A3B8]'
+                                    }
+                                  >
+                                    {tr}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {(sc.sl || sc.tp1) && (
+                            <div className="flex items-center justify-between text-[11px] font-mono-tabular pt-1 border-t border-white/[0.05]">
+                              <span className="text-[#F43F5E]">SL: {sc.sl ? Number(sc.sl).toLocaleString() : '—'}</span>
+                              <span className="text-[#10B981]">TP1: {sc.tp1 ? Number(sc.tp1).toLocaleString() : '—'}</span>
+                              <span className="text-[#F59E0B]">R:R {sc.rr_ratio ? `1:${Number(sc.rr_ratio).toFixed(2)}` : '—'}</span>
+                            </div>
+                          )}
+
+                          <div className="text-xs text-[#94A3B8] line-clamp-2">{sc.reason}</div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -1938,11 +2040,8 @@ export function App() {
                         onClick={() => {
                           setSelectedTimeframe(tradingCfg.analysis_timeframe);
                           setSelectedStyle(tradingCfg.trading_style);
-                          runMultiScan();
-                          showToast(
-                            `Scan périodique immédiat lancé (${tradingCfg.analysis_timeframe.toUpperCase()} • ${tradingCfg.trading_style})`,
-                            'info'
-                          );
+                          runMultiScan(tradingCfg.analysis_timeframe, tradingCfg.trading_style, true);
+                          setActiveTab('intelligence');
                         }}
                         className="px-3 py-1.5 bg-[#10B981]/15 hover:bg-[#10B981]/25 border border-[#10B981]/40 text-[#10B981] rounded-md font-semibold flex items-center gap-1.5"
                       >
@@ -3173,9 +3272,9 @@ export function App() {
           )}
 
           {/* =========================================================
-              TAB 7: ADMIN CONSOLE & LOG DOCTOR DIAGNOSTICS
+              TAB 7: ADMIN CONSOLE & LOG DOCTOR DIAGNOSTICS (ADMIN ONLY)
              ========================================================= */}
-          {activeTab === 'admin' && (
+          {activeTab === 'admin' && isAdminUser && (
             <div className="space-y-6">
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* User Management Table */}
@@ -3325,6 +3424,33 @@ export function App() {
             </div>
           )}
         </main>
+
+        {/* Mobile Bottom Quick Navigation Bar */}
+        <nav className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-[#0B101B]/95 backdrop-blur-md border-t border-white/[0.08] flex items-center justify-around py-1.5 px-1">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id as ActiveTab)}
+                className={`flex flex-col items-center justify-center py-1 px-2 rounded-lg text-[10px] font-medium relative ${
+                  active ? 'text-[#10B981]' : 'text-[#94A3B8]'
+                }`}
+              >
+                <Icon className="w-4 h-4 mb-0.5" />
+                <span className="truncate max-w-[60px]">{item.label.split(' ')[0]}</span>
+                {item.id === 'safety' && (
+                  <span
+                    className={`absolute top-1 right-2 w-2 h-2 rounded-full ${
+                      item.apiConnected ? 'bg-[#10B981]' : 'bg-[#F43F5E]'
+                    }`}
+                  />
+                )}
+              </button>
+            );
+          })}
+        </nav>
       </div>
     </div>
   );

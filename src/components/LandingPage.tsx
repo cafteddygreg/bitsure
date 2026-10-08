@@ -1,30 +1,20 @@
 import React from 'react';
 import {
   ShieldCheck,
-  TrendingUp,
   Layers,
-  Activity,
-  Lock,
   ArrowRight,
   CheckCircle2,
   BarChart3,
-  Cpu,
-  Globe,
 } from 'lucide-react';
-import { DemoAccount } from '../types';
 
 interface LandingPageProps {
   onEnterWorkspace: () => void;
-  onQuickLogin: (userId: number) => void;
   onOpenAuthModal: (mode: 'login' | 'register') => void;
-  demoAccounts: DemoAccount[];
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({
   onEnterWorkspace,
-  onQuickLogin,
   onOpenAuthModal,
-  demoAccounts,
 }) => {
   return (
     <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex flex-col">
@@ -101,30 +91,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   onClick={() => onOpenAuthModal('register')}
                   className="px-5 py-3.5 bg-[#111827] hover:bg-[#1E293B] text-[#F1F5F9] border border-white/10 font-medium text-sm rounded-lg transition-colors"
                 >
-                  Créer un compte Essai (14 jours)
+                  Créer un compte
                 </button>
               </div>
-
-              {/* Instant Role Switcher Bar for Immediate Evaluation */}
-              {demoAccounts.length > 0 && (
-                <div className="pt-4 border-t border-white/[0.07]">
-                  <div className="text-xs text-[#64748B] mb-2.5">
-                    Accès rapide aux profils pré-configurés (Paper Trading, Alertes & Console Admin) :
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {demoAccounts.map((acc) => (
-                      <button
-                        key={acc.user_id}
-                        onClick={() => onQuickLogin(acc.user_id)}
-                        className="px-3 py-1.5 text-xs bg-[#111827] hover:bg-[#1E293B] border border-white/10 hover:border-[#10B981]/40 rounded-md text-[#F1F5F9] transition-colors flex items-center gap-2"
-                      >
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#10B981]" />
-                        <span>{acc.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* Right Visual Architectural Card */}
@@ -249,16 +218,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 Paiement instantané via Binance Pay (USDT), Telegram Stars ou code promotionnel.
               </p>
             </div>
-            <div className="text-xs font-mono-tabular text-[#94A3B8] bg-[#111827] border border-white/10 px-3.5 py-2 rounded-lg">
-              Codes Promo Démo : <strong className="text-[#10B981]">TEDDYPRO</strong> • <strong className="text-[#F59E0B]">TEDDYVIP</strong>
-            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {/* Tester / Free Tier */}
+            {/* Standard / Free Tier */}
             <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-6 flex flex-col justify-between">
               <div className="space-y-4">
-                <div className="text-xs font-mono-tabular uppercase text-[#94A3B8]">Découverte / Essai</div>
+                <div className="text-xs font-mono-tabular uppercase text-[#94A3B8]">Accès Standard</div>
                 <div className="font-display text-3xl font-bold text-[#F1F5F9]">
                   Gratuit <span className="text-sm font-normal text-[#64748B]">/ 14 jours</span>
                 </div>
@@ -273,7 +239,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 onClick={() => onOpenAuthModal('register')}
                 className="mt-6 w-full py-2.5 text-xs font-semibold border border-white/15 rounded-lg hover:bg-white/[0.05] text-[#F1F5F9] transition-colors"
               >
-                Démarrer l'essai gratuit
+                Créer un compte
               </button>
             </div>
 
@@ -295,10 +261,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 </ul>
               </div>
               <button
-                onClick={() => onQuickLogin(100201)}
+                onClick={onEnterWorkspace}
                 className="mt-6 w-full py-2.5 text-xs font-semibold bg-[#10B981] hover:bg-[#059669] text-[#090D16] rounded-lg transition-colors"
               >
-                Tester avec le compte PRO
+                Accéder à Bitsure PRO
               </button>
             </div>
 
@@ -320,10 +286,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 </ul>
               </div>
               <button
-                onClick={() => onQuickLogin(100202)}
+                onClick={onEnterWorkspace}
                 className="mt-6 w-full py-2.5 text-xs font-semibold bg-[#F59E0B]/15 hover:bg-[#F59E0B]/25 border border-[#F59E0B]/40 text-[#FBBF24] rounded-lg transition-colors"
               >
-                Tester avec le compte VIP
+                Accéder à Bitsure VIP
               </button>
             </div>
           </div>

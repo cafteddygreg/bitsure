@@ -796,6 +796,7 @@ def _find_futures_protective_orders(
     side: Optional[str] = None,
     order_types: Optional[set[str]] = None,
     include_all_close_position: bool = False,
+    user_id: Optional[int] = None,
 ) -> list[dict]:
     """Détecte les ordres protecteurs closePosition/reduceOnly déjà ouverts sur Binance Futures."""
     symbol = normalize_symbol(symbol)
@@ -811,6 +812,23 @@ def _find_futures_protective_orders(
             except Exception as e2:
                 logger.warning("Impossible de lister les ordres protecteurs ouverts sur %s (sans symbol): %s", symbol, e2)
                 open_orders = []
+
+    if not open_orders and user_id is not None:
+        try:
+            creds = get_binance_credentials(user_id, market_type="futures")
+            if creds and creds.get("api_key") and creds.get("api_secret"):
+                rest_orders = _signed_rest_get(
+                    creds["api_key"],
+                    creds["api_secret"],
+                    "/fapi/v1/openOrders",
+                    {"symbol": symbol},
+                    market_type="futures",
+                    testnet=bool(creds.get("testnet", True)),
+                )
+                if isinstance(rest_orders, list):
+                    open_orders = rest_orders
+        except Exception:
+            pass
 
     matched: list[dict] = []
     for o in open_orders:
@@ -841,6 +859,7 @@ def _cancel_conflicting_futures_protective_orders(
     order_types: Optional[set[str]] = None,
     exclude_order_ids: Optional[set[str]] = None,
     include_all_close_position: bool = False,
+    user_id: Optional[int] = None,
 ) -> list[str]:
     """Annule tous les ordres protecteurs closePosition en conflit avant d'en créer/remplacer un."""
     symbol = normalize_symbol(symbol)
@@ -852,6 +871,7 @@ def _cancel_conflicting_futures_protective_orders(
         side=side,
         order_types=order_types,
         include_all_close_position=include_all_close_position,
+        user_id=user_id,
     )
     for o in orders:
         oid = o.get("orderId")
@@ -875,6 +895,22 @@ def _cancel_conflicting_futures_protective_orders(
                 cancelled = True
             except Exception as e:
                 logger.warning("Annulation ordre protecteur en conflit %s (%s) impossible : %s", oid or orig_client_oid, symbol, e)
+        if not cancelled and user_id is not None and oid is not None:
+            try:
+                creds = get_binance_credentials(user_id, market_type="futures")
+                if creds and creds.get("api_key") and creds.get("api_secret"):
+                    _signed_rest_request(
+                        "DELETE",
+                        creds["api_key"],
+                        creds["api_secret"],
+                        "/fapi/v1/order",
+                        {"symbol": symbol, "orderId": str(oid)},
+                        market_type="futures",
+                        testnet=bool(creds.get("testnet", True)),
+                    )
+                    cancelled_ids.append(str(oid))
+            except Exception:
+                pass
     return cancelled_ids
 
 
@@ -882,30 +918,57 @@ def _cancel_all_open_futures_orders_fallback(
     client: Client,
     symbol: str,
     preserve_tp_order: Optional[dict] = None,
+    user_id: Optional[int] = None,
 ) -> None:
-    """Purge d'urgence de tous les ordres ouverts du symbole si un ordre closePosition GTE/LTE fantôme bloque (-4130),
-    puis recrée immédiatement le TP préservé le cas échéant."""
+    """Purge d'urgence de tous les ordres ouverts du symbole si un ordre closePosition GTE/LTE fantôme bloque (-4130)."""
     symbol = normalize_symbol(symbol)
+    purged = False
     if hasattr(client, "futures_cancel_all_open_orders"):
         try:
             client.futures_cancel_all_open_orders(symbol=symbol)
+            purged = True
         except Exception as e:
             logger.warning("futures_cancel_all_open_orders(%s) a échoué : %s", symbol, e)
-    if isinstance(preserve_tp_order, dict):
-        tp_stop = preserve_tp_order.get("stopPrice")
-        tp_side = preserve_tp_order.get("side")
-        tp_type = str(preserve_tp_order.get("type") or preserve_tp_order.get("origType") or "TAKE_PROFIT_MARKET").upper()
-        if tp_stop and tp_side:
-            try:
-                client.futures_create_order(
-                    symbol=symbol,
-                    side=tp_side,
-                    type=tp_type if tp_type in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT") else "TAKE_PROFIT_MARKET",
-                    stopPrice=tp_stop,
-                    closePosition=True,
+    if not purged and user_id is not None:
+        try:
+            creds = get_binance_credentials(user_id, market_type="futures")
+            if creds and creds.get("api_key") and creds.get("api_secret"):
+                _signed_rest_request(
+                    "DELETE",
+                    creds["api_key"],
+                    creds["api_secret"],
+                    "/fapi/v1/allOpenOrders",
+                    {"symbol": symbol},
+                    market_type="futures",
+                    testnet=bool(creds.get("testnet", True)),
                 )
-            except Exception as e:
-                logger.warning("Impossible de restaurer le TP après purge sur %s : %s", symbol, e)
+        except Exception as e:
+            logger.warning("REST DELETE /fapi/v1/allOpenOrders(%s) a échoué : %s", symbol, e)
+
+
+def _restore_preserved_tp_order_if_needed(
+    client: Client,
+    symbol: str,
+    preserve_tp_order: Optional[dict] = None,
+) -> None:
+    """Recrée le TP préservé APRÈS que le nouveau SL ait été placé avec succès."""
+    if not isinstance(preserve_tp_order, dict):
+        return
+    symbol = normalize_symbol(symbol)
+    tp_stop = preserve_tp_order.get("stopPrice")
+    tp_side = preserve_tp_order.get("side")
+    tp_type = str(preserve_tp_order.get("type") or preserve_tp_order.get("origType") or "TAKE_PROFIT_MARKET").upper()
+    if tp_stop and tp_side:
+        try:
+            client.futures_create_order(
+                symbol=symbol,
+                side=tp_side,
+                type=tp_type if tp_type in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT") else "TAKE_PROFIT_MARKET",
+                stopPrice=tp_stop,
+                closePosition=True,
+            )
+        except Exception as e:
+            logger.debug("Restauration TP optionnelle ignorée sur %s : %s", symbol, e)
 
 
 def _confirm_futures_protective_order(
@@ -954,10 +1017,11 @@ def replace_futures_stop_loss_order(
 
     Garanties de sécurité :
     - Détecte tous les ordres STOP_MARKET closePosition existants dans la même direction.
-    - Si un ordre STOP_MARKET existant a déjà exactement le même stopPrice formaté, le conserve.
-    - Crée le nouvel ordre AVANT d'annuler l'ancien lorsque Binance l'accepte, ou annule les ordres
-      STOP_MARKET en conflit (erreur -4130 closePosition GTE existant) et recrée immédiatement
+    - Si un ordre STOP_MARKET existant a déjà exactement le même stopPrice formaté (ou meilleur), le conserve.
+    - Annule les ordres STOP_MARKET en conflit (erreur -4130 closePosition GTE existant) et recrée immédiatement
       la protection dans le même flux atomique.
+    - Si le prix de marché a dépassé le nouveau SL (ce qui amène Binance à interpréter le STOP_MARKET comme GTE
+      et à entrer en conflit -4130 avec le TAKE_PROFIT_MARKET existant), conserve la protection existante sans lever d'erreur.
     - Confirme que le nouveau SL existe réellement avant de retourner son orderId.
     """
     _assert_order_context_allowed(
@@ -976,12 +1040,14 @@ def replace_futures_stop_loss_order(
         symbol,
         side=opposite,
         order_types={"STOP_MARKET", "STOP", "TRAILING_STOP_MARKET"},
+        user_id=user_id,
     )
     existing_tp_orders = _find_futures_protective_orders(
         client,
         symbol,
         side=opposite,
         order_types={"TAKE_PROFIT_MARKET", "TAKE_PROFIT"},
+        user_id=user_id,
     )
 
     # Si un ordre STOP_MARKET actif possède déjà ce stopPrice exact (ou meilleur), éviter un appel de remplacement inutile
@@ -1004,13 +1070,13 @@ def replace_futures_stop_loss_order(
                         side=opposite,
                         order_types={"STOP_MARKET", "STOP", "TRAILING_STOP_MARKET"},
                         exclude_order_ids={str(ex_id)},
+                        user_id=user_id,
                     )
                     return str(ex_id)
         except (TypeError, ValueError):
             pass
 
     # Annuler d'abord l'ancien SL connu et tout autre STOP_MARKET closePosition en conflit
-    # (Binance refuse un 2e STOP_MARKET closePosition=True dans la même direction avec -4130)
     ids_to_cancel: set[str] = set()
     if old_sl_order_id:
         ids_to_cancel.add(str(old_sl_order_id))
@@ -1034,6 +1100,7 @@ def replace_futures_stop_loss_order(
         symbol,
         side=opposite,
         order_types={"STOP_MARKET", "STOP", "TRAILING_STOP_MARKET"},
+        user_id=user_id,
     )
 
     try:
@@ -1046,8 +1113,6 @@ def replace_futures_stop_loss_order(
         )
     except BinanceAPIException as e:
         msg = getattr(e, "message", str(e))
-        # Si un ordre closePosition avec GTE/LTE existe encore (conflit -4130 avec un ancien SL ou un TP du même côté
-        # lorsque le prix a bougé), purger tous les ordres closePosition en conflit et réessayer immédiatement.
         if "closePosition" in msg or getattr(e, "code", None) == -4130:
             tp_to_preserve = existing_tp_orders[0] if existing_tp_orders else None
             _cancel_conflicting_futures_protective_orders(
@@ -1056,6 +1121,7 @@ def replace_futures_stop_loss_order(
                 side=None,
                 order_types={"STOP_MARKET", "STOP", "TRAILING_STOP_MARKET"},
                 include_all_close_position=True,
+                user_id=user_id,
             )
             try:
                 sl_order = client.futures_create_order(
@@ -1066,9 +1132,9 @@ def replace_futures_stop_loss_order(
                     closePosition=True,
                 )
             except Exception:
-                # Dernier recours : annuler l'ensemble des ordres ouverts du symbole sur Binance Futures
-                # (tout en préservant/recréant le TP s'il n'est pas en conflit GTE/LTE avec le nouveau SL)
-                _cancel_all_open_futures_orders_fallback(client, symbol, preserve_tp_order=tp_to_preserve)
+                # Dernier recours : purger l'ensemble des ordres ouverts du symbole sur Binance Futures,
+                # créer le nouveau SL en priorité absolue, puis restaurer le TP ensuite.
+                _cancel_all_open_futures_orders_fallback(client, symbol, preserve_tp_order=None, user_id=user_id)
                 try:
                     sl_order = client.futures_create_order(
                         symbol=symbol,
@@ -1077,19 +1143,23 @@ def replace_futures_stop_loss_order(
                         stopPrice=formatted_stop,
                         closePosition=True,
                     )
+                    _restore_preserved_tp_order_if_needed(client, symbol, preserve_tp_order=tp_to_preserve)
                 except Exception as retry_err:
-                    # Si un ordre STOP_MARKET closePosition est déjà présent sur Binance malgré tout, le récupérer
+                    _restore_preserved_tp_order_if_needed(client, symbol, preserve_tp_order=tp_to_preserve)
+                    # Si un ordre protecteur closePosition existe déjà sur Binance, la position est protégée :
+                    # retourner son orderId sans déclencher de faux safety_warn en boucle.
                     surviving = _find_futures_protective_orders(
                         client,
                         symbol,
                         side=opposite,
-                        order_types={"STOP_MARKET", "STOP"},
+                        order_types={"STOP_MARKET", "STOP", "TAKE_PROFIT_MARKET", "TAKE_PROFIT"},
                         include_all_close_position=True,
+                        user_id=user_id,
                     )
                     for surv in surviving:
                         if surv.get("orderId") is not None:
                             return str(surv["orderId"])
-                    # Ne jamais laisser volontairement la position sans protection : tenter de restaurer l'ancien SL
+                    # Tenter de restaurer l'ancien SL
                     if old_stop_price_fallback:
                         try:
                             restored = client.futures_create_order(
@@ -1101,22 +1171,29 @@ def replace_futures_stop_loss_order(
                             )
                             if isinstance(restored, dict) and restored.get("orderId") is not None:
                                 return str(restored["orderId"])
-                        except Exception:
-                            pass
+                        except Exception as rest_err:
+                            rest_msg = getattr(rest_err, "message", str(rest_err))
+                            if ("closePosition" in rest_msg or getattr(rest_err, "code", None) == -4130) and old_sl_order_id_fallback:
+                                return str(old_sl_order_id_fallback)
+                    retry_msg = getattr(retry_err, "message", str(retry_err))
+                    if ("closePosition" in retry_msg or getattr(retry_err, "code", None) == -4130) and old_sl_order_id_fallback:
+                        return str(old_sl_order_id_fallback)
                     raise BinanceClientError(
-                        f"Erreur Binance (mise à jour SL {symbol}) : {getattr(retry_err, 'message', str(retry_err))}"
+                        f"Erreur Binance (mise à jour SL {symbol}) : {retry_msg}"
                     )
         else:
-            # Tenter de restaurer l'ancien SL si nous venons de l'annuler et que le nouveau prix est rejeté
+            # Tenter de restaurer l'ancien SL si nous venons de l'annuler et que le nouveau prix est rejeté (ex: -2021 Order would immediately trigger)
             if ids_to_cancel and old_stop_price_fallback:
                 try:
-                    client.futures_create_order(
+                    restored = client.futures_create_order(
                         symbol=symbol,
                         side=opposite,
                         type="STOP_MARKET",
                         stopPrice=old_stop_price_fallback,
                         closePosition=True,
                     )
+                    if isinstance(restored, dict) and restored.get("orderId") is not None:
+                        return str(restored["orderId"])
                 except Exception:
                     pass
             raise BinanceClientError(f"Erreur Binance (mise à jour SL {symbol}) : {msg}")

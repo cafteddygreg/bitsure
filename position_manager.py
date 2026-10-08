@@ -9,7 +9,11 @@ trailing stop dynamique basé sur l'ATR (Average True Range), rapprochement d'é
 import time
 from typing import Optional, Dict, Any, List, Tuple
 
-from telegram.ext import ContextTypes
+try:
+    from telegram.ext import ContextTypes
+except ImportError:
+    class ContextTypes:  # type: ignore
+        DEFAULT_TYPE = Any
 
 from config import ATR_MULTIPLIER_SL
 from database import get_connection
@@ -216,17 +220,25 @@ def update_trailing_stop(
     trail_distance = max(trail_distance, min_dist)
 
     current_sl = float(trade["sl_price"]) if trade.get("sl_price") is not None else None
+    tp_price = float(trade["tp_price"]) if trade.get("tp_price") is not None else None
     direction = (trade.get("direction") or "BUY").upper()
     symbol = normalize_symbol(str(trade.get("symbol") or ""))
     # Pas minimum de déplacement pour éviter de remplacer un SL identique au tick près toutes les 10s
-    min_step = 0.10 if symbol.startswith("BTC") else max(current_price * 0.0001, EPSILON)
+    min_step = 1.0 if symbol.startswith("BTC") else max(current_price * 0.0005, EPSILON)
+    # Tampon de sécurité par rapport au prix courant pour éviter que le prix du marché ne franchisse
+    # new_sl pendant l'appel réseau (ce qui transformerait le STOP_MARKET en GTE et déclencherait -4130 face au TP)
+    safety_buffer = max(current_price * 0.001, min_step)
 
     if direction == "BUY":
-        new_sl = current_price - trail_distance
+        new_sl = min(current_price - trail_distance, current_price - safety_buffer)
+        if tp_price is not None and new_sl >= tp_price - safety_buffer:
+            return None
         if new_sl > EPSILON and (current_sl is None or new_sl >= current_sl + min_step):
             return new_sl
     else:
-        new_sl = current_price + trail_distance
+        new_sl = max(current_price + trail_distance, current_price + safety_buffer)
+        if tp_price is not None and new_sl <= tp_price + safety_buffer:
+            return None
         if current_sl is None or new_sl <= current_sl - min_step:
             return new_sl
     return None
@@ -532,7 +544,17 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
                         trade["sl_price"] = new_sl
                         trade["sl_order_id"] = str(new_sl_oid)
                     except Exception as sl_err:
-                        trailing_failed = True
+                        err_str = str(sl_err)
+                        if "closePosition in the direction is existing" in err_str or "-4130" in err_str:
+                            # Un ordre protecteur closePosition existe déjà sur Binance : la position est protégée
+                            logger.info(
+                                "Ordre protecteur closePosition déjà actif sur Binance pour %s (user=%s) — aucun safety_warn requis.",
+                                trade["symbol"],
+                                trade["user_id"],
+                            )
+                            if config.safety_warn:
+                                clear_safety_warn(trade["user_id"])
+                            continue
                         log_error(
                             logger,
                             trade["user_id"],

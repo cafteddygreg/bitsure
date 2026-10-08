@@ -135,175 +135,39 @@ def _init_web_schema_and_seed():
 
     um = UserManager.get_instance()
     pt = PaperTrader()
-    am = AlertManager.get_instance()
-    hm = HistoryManager.get_instance()
 
-    # Seed default accounts if web_accounts is empty
-    existing = db.execute("SELECT COUNT(*) AS cnt FROM web_accounts").fetchone()
-    cnt = existing["cnt"] if existing and "cnt" in existing else (existing[0] if existing else 0)
-    if not cnt:
-        now = time.time()
-        demo_accounts = [
-            {
-                "email": "pro@bitsure.io",
-                "password": "teddy2026",
-                "user_id": 100201,
-                "display_name": "Alex Laurent (PRO Trader)",
-                "telegram_handle": "@alex_quant",
-                "role": "pro",
-                "lang": "fr",
-                "timeframe": "1h",
-                "risk": "medium",
-            },
-            {
-                "email": "vip@bitsure.io",
-                "password": "teddy2026",
-                "user_id": 100202,
-                "display_name": "Elena Rostova (VIP Institutional)",
-                "telegram_handle": "@elena_vip",
-                "role": "vip",
-                "lang": "en",
-                "timeframe": "4h",
-                "risk": "low",
-            },
-            {
-                "email": "admin@bitsure.io",
-                "password": "teddy2026",
-                "user_id": ADMIN_ID or 8176298717,
-                "display_name": "Greg Teddy (Bitsure Admin)",
-                "telegram_handle": "@cafteddygreg",
-                "role": "admin",
-                "lang": "fr",
-                "timeframe": "1h",
-                "risk": "medium",
-            },
-            {
-                "email": "tester@bitsure.io",
-                "password": "teddy2026",
-                "user_id": 100203,
-                "display_name": "Marc Dubois (Trial Analyst)",
-                "telegram_handle": "@marc_trial",
-                "role": "tester",
-                "lang": "fr",
-                "timeframe": "15m",
-                "risk": "medium",
-            },
-        ]
+    # Clean up any legacy seeded accounts (100201, 100202, 100203) if present
+    try:
+        db.execute("DELETE FROM web_accounts WHERE user_id IN (100201, 100202, 100203)")
+        db.execute("DELETE FROM users WHERE user_id IN (100201, 100202, 100203)")
+        db.execute("DELETE FROM signals WHERE user_id IN (100201, 100202, 100203)")
+        db.execute("DELETE FROM paper_positions WHERE user_id IN (100201, 100202, 100203)")
+        db.execute("DELETE FROM alerts WHERE user_id IN (100201, 100202, 100203)")
+        db.execute("DELETE FROM support_tickets WHERE user_id IN (100201, 100202, 100203)")
+        db.execute("DELETE FROM web_notifications WHERE user_id IN (100201, 100202, 100203)")
+    except Exception:
+        pass
 
-        for acc in demo_accounts:
-            uid = int(acc["user_id"])
-            u = um.get_user(uid, username=acc["telegram_handle"])
-            um.accept_terms(uid)
-            um.approve_user(uid, acc["role"])
-            um.set_role(uid, acc["role"])
-            db.execute(
-                "UPDATE users SET lang = %s, timeframe = %s, risk = %s, username = %s WHERE user_id = %s",
-                (acc["lang"], acc["timeframe"], acc["risk"], acc["telegram_handle"].lstrip("@"), uid),
-            )
-            pw_hash = hashlib.sha256(acc["password"].encode("utf-8")).hexdigest()
-            db.execute(
-                """
-                INSERT INTO web_accounts (email, user_id, password_hash, display_name, telegram_handle, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                (acc["email"], uid, pw_hash, acc["display_name"], acc["telegram_handle"], now),
-            )
-            pt.init_capital(uid, PAPER_DEFAULT_CAPITAL)
-            trading_config.ensure_config_row(uid)
-
-            # Default watchlist
-            for sym in ("BTCUSDT", "ETHUSDT", "XAUUSD"):
-                um.add_to_watchlist(uid, sym)
-
-        # Seed realistic paper positions, alerts, and historical signals for demo Pro account (100201) only
-        for seed_uid in (100201,):
-            pt.open_position(seed_uid, "BTCUSDT", 82950.0, 81600.0, 85800.0, 0.04, side="BUY", leverage=2)
-            pt.open_position(seed_uid, "ETHUSDT", 2545.0, 2480.0, 2690.0, 0.65, side="BUY", leverage=2)
-            # One closed winning trade for stats
-            pos_closed, _ = pt.open_position(seed_uid, "BTCUSDT", 81200.0, 80100.0, 83500.0, 0.05, side="BUY", leverage=2)
-            if pos_closed:
-                pt.close_position(seed_uid, pos_closed["id"], 83150.0, reason="TP")
-
-            am.add_alert(seed_uid, "BTCUSDT", "above", 85000.0)
-            am.add_alert(seed_uid, "ETHUSDT", "below", 2490.0)
-            am.add_alert(seed_uid, "XAUUSD", "above", 4180.0)
-
-            hm.add_signal(
-                symbol="BTCUSDT",
-                direction="BUY",
-                price=82950.0,
-                timeframe="1h",
-                signal_type="analyse",
-                score=76,
-                sl=81600.0,
-                tp=85800.0,
-                user_id=seed_uid,
-                validation_status="VALIDATED",
-                validation_reason="Alignement multi-timeframes TOTAL + ADX en hausse + Pullback SMA20 optimal",
-                rr_ratio=2.11,
-                asset_class="crypto",
-            )
-            hm.add_signal(
-                symbol="ETHUSDT",
-                direction="BUY",
-                price=2545.0,
-                timeframe="1h",
-                signal_type="auto_scan",
-                score=71,
-                sl=2480.0,
-                tp=2690.0,
-                user_id=seed_uid,
-                validation_status="VALIDATED",
-                validation_reason="Structure haussière SMA20 > SMA50 + Momentum MACD positif",
-                rr_ratio=2.23,
-                asset_class="crypto",
-            )
-            sid_win = hm.add_signal(
-                symbol="XAUUSD",
-                direction="BUY",
-                price=4092.0,
-                timeframe="4h",
-                signal_type="analyse",
-                score=82,
-                sl=4065.0,
-                tp=4155.0,
-                user_id=seed_uid,
-                validation_status="VALIDATED",
-                validation_reason="Breakout institutionnel Or Spot + Confluence Support majeur",
-                rr_ratio=2.33,
-                asset_class="metal",
-            )
-            if sid_win:
-                hm.update_signal_status(sid_win, "win", 1.54, result_price=4155.0, pnl=154.0)
-
-            db.execute(
-                """
-                INSERT INTO web_notifications (user_id, category, title, body, is_read, created_at)
-                VALUES (%s, %s, %s, %s, 0, %s)
-                """,
-                (
-                    seed_uid,
-                    "signal",
-                    "Signal Quantitatif Validé — BTC/USDT (1H)",
-                    "Teddy Score 76/100 (ÉLEVÉE) • Direction BUY @ 82,950.00 • R:R 1:2.11",
-                    now - 1200,
-                ),
-            )
-
+    # Ensure primary admin/bot account is initialized
+    admin_uid = int(ADMIN_ID or 8176298717)
+    um.get_user(admin_uid, username="cafteddygreg")
+    um.accept_terms(admin_uid)
+    um.approve_user(admin_uid, "admin")
+    um.set_role(admin_uid, "admin")
+    pt.init_capital(admin_uid, PAPER_DEFAULT_CAPITAL)
+    trading_config.ensure_config_row(admin_uid)
+    for sym in ("BTCUSDT", "ETHUSDT", "XAUUSD"):
+        um.add_to_watchlist(admin_uid, sym)
+    existing_admin = db.execute("SELECT user_id FROM web_accounts WHERE user_id = %s", (admin_uid,)).fetchone()
+    if not existing_admin:
+        pw_hash = hashlib.sha256("teddy2026".encode("utf-8")).hexdigest()
         db.execute(
             """
-            INSERT INTO support_tickets (user_id, username, subject, message, status, created_at)
-            VALUES (%s, %s, %s, %s, 'open', %s)
+            INSERT INTO web_accounts (email, user_id, password_hash, display_name, telegram_handle, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
-            (
-                100201,
-                "alex_quant",
-                "Configuration Auto-Trade Binance Futures Testnet",
-                "Bonjour l'équipe Bitsure, j'ai activé mes clés API Testnet avec un levier 2x. Pouvez-vous confirmer que le verrouillage Safety Lock se désactive bien via le PIN ?",
-                now - 3600,
-            ),
+            ("admin@bitsure.io", admin_uid, pw_hash, "Greg Teddy (Bitsure Admin)", "@cafteddygreg", time.time()),
         )
-        logger.info("Seeded default Bitsure Teddy web accounts, paper positions, alerts, and signals.")
 
 
 _init_web_schema_and_seed()
@@ -345,12 +209,11 @@ def _get_primary_bot_user_id() -> int:
     Resolve the primary real Telegram bot user ID so the web platform automatically
     displays the exact same signals, Auto-Trade configuration, and positions as the bot.
     """
-    demo_ids = (100201, 100202, 100203)
     db = get_db()
     try:
         # 1. User with configured Binance credentials
         row = db.execute(
-            "SELECT user_id FROM binance_credentials WHERE user_id NOT IN (100201, 100202, 100203) ORDER BY is_valid DESC, updated_at DESC LIMIT 1"
+            "SELECT user_id FROM binance_credentials ORDER BY is_valid DESC, updated_at DESC LIMIT 1"
         ).fetchone()
         if row and row["user_id"]:
             return int(row["user_id"])
@@ -359,18 +222,18 @@ def _get_primary_bot_user_id() -> int:
     try:
         # 2. User with active Auto-Trade or Periodic Analysis in trading_config
         row = db.execute(
-            "SELECT user_id FROM trading_config WHERE user_id NOT IN (100201, 100202, 100203) AND (auto_trade = TRUE OR periodic_analysis_enabled = TRUE) ORDER BY updated_at DESC LIMIT 1"
+            "SELECT user_id FROM trading_config WHERE (auto_trade = TRUE OR periodic_analysis_enabled = TRUE) ORDER BY updated_at DESC LIMIT 1"
         ).fetchone()
         if row and row["user_id"]:
             return int(row["user_id"])
     except Exception:
         pass
-    if ADMIN_ID and int(ADMIN_ID) not in demo_ids:
+    if ADMIN_ID:
         return int(ADMIN_ID)
     try:
         # 3. Any real Telegram user in users table
         row = db.execute(
-            "SELECT user_id FROM users WHERE user_id NOT IN (100201, 100202, 100203) ORDER BY created_at DESC LIMIT 1"
+            "SELECT user_id FROM users ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
         if row and row["user_id"]:
             return int(row["user_id"])
@@ -757,35 +620,9 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/auth/me":
-                primary_uid = _get_primary_bot_user_id()
-                accounts_list = [
-                    {"email": "admin@bitsure.io", "role": "admin", "label": f"Greg Teddy (BOT / ADMIN #{primary_uid})", "user_id": primary_uid},
-                    {"email": "pro@bitsure.io", "role": "pro", "label": "Alex Laurent (PRO)", "user_id": 100201},
-                    {"email": "vip@bitsure.io", "role": "vip", "label": "Elena Rostova (VIP)", "user_id": 100202},
-                    {"email": "tester@bitsure.io", "role": "tester", "label": "Marc Dubois (TRIAL)", "user_id": 100203},
-                ]
-                try:
-                    db = get_db()
-                    real_rows = db.execute(
-                        "SELECT user_id, role, username FROM users WHERE user_id NOT IN (100201, 100202, 100203, %s) ORDER BY created_at DESC LIMIT 5",
-                        (primary_uid,),
-                    ).fetchall()
-                    for rr in real_rows:
-                        ruid = int(rr["user_id"])
-                        uname = rr["username"] or f"tg_{ruid}"
-                        rrole = rr["role"] or "pro"
-                        accounts_list.insert(1, {
-                            "email": f"{uname}@telegram.bot",
-                            "role": rrole,
-                            "label": f"@{uname} (Telegram #{ruid})",
-                            "user_id": ruid,
-                        })
-                except Exception:
-                    pass
                 self._send_json(200, {
                     "ok": True,
                     "user": _build_user_profile(user_id),
-                    "demo_accounts": accounts_list,
                 })
                 return
 
@@ -825,13 +662,27 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 timeframe = query.get("timeframe", "1h")
                 style = query.get("style")
                 lang = query.get("lang", "fr")
+                record_flag = query.get("record", "1") == "1"
                 results = []
-                for sym in ("BTCUSDT", "ETHUSDT", "XAUUSD"):
-                    res = _analyze_symbol_complete(user_id, sym, timeframe=timeframe, style=style, lang=lang, record_history=False)
+                for sym in DOCUMENTED_SYMBOLS:
+                    res = _analyze_symbol_complete(
+                        user_id,
+                        sym,
+                        timeframe=timeframe,
+                        style=style,
+                        lang=lang,
+                        record_history=record_flag,
+                    )
                     # Strip full 120 candles on multi-scan summary to keep response fast, keep last 30 for sparkline
                     res["candles"] = res.get("candles", [])[-30:]
                     results.append(res)
-                self._send_json(200, {"ok": True, "scans": results})
+                self._send_json(200, {
+                    "ok": True,
+                    "scans": results,
+                    "scanned_at": time.time(),
+                    "timeframe": timeframe,
+                    "style": style or trading_config.get_config(user_id).trading_style or "day",
+                })
                 return
 
             if path == "/api/signals/history":
@@ -847,9 +698,6 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     signals = []
                     for s in (user_sigs + recent_sigs):
                         sid = s.get("id")
-                        # Exclude seeded demo signals if viewing a real bot user
-                        if user_id not in (100201, 100202, 100203) and s.get("user_id") in (100201, 100202, 100203):
-                            continue
                         if sid not in seen_ids:
                             seen_ids.add(sid)
                             signals.append(s)
@@ -1036,6 +884,10 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             if path == "/api/admin/overview":
                 um = UserManager.get_instance()
+                u_row = um.get_user(user_id)
+                if not um.is_admin(user_id, u_row.get("username") if u_row else None):
+                    self._send_json(403, {"ok": False, "error": "Accès refusé : réservé strictement à l'administrateur."})
+                    return
                 db = get_db()
                 users_rows = db.execute(
                     "SELECT user_id, role, lang, timeframe, risk, terms_accepted, trial_start, created_at, approved, memo, username FROM users ORDER BY created_at DESC"
@@ -1171,19 +1023,6 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "token": token,
                     "user": _build_user_profile(uid),
-                })
-                return
-
-            if path == "/api/auth/quick-switch":
-                target_uid = int(body.get("user_id", 100201))
-                db = get_db()
-                row = db.execute("SELECT email FROM web_accounts WHERE user_id = %s", (target_uid,)).fetchone()
-                email = row["email"] if row else f"user_{target_uid}@bitsure.io"
-                token = _create_session(target_uid, email)
-                self._send_json(200, {
-                    "ok": True,
-                    "token": token,
-                    "user": _build_user_profile(target_uid),
                 })
                 return
 
@@ -1597,6 +1436,13 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             # 7. Admin Operations
+            if path in ("/api/admin/user-role", "/api/admin/broadcast", "/api/admin/log-doctor"):
+                um_check = UserManager.get_instance()
+                u_check = um_check.get_user(user_id)
+                if not um_check.is_admin(user_id, u_check.get("username") if u_check else None):
+                    self._send_json(403, {"ok": False, "error": "Accès refusé : opération réservée à l'administrateur."})
+                    return
+
             if path == "/api/admin/user-role":
                 target_uid = int(body.get("target_user_id", 0))
                 role = (body.get("role") or "pro").lower()

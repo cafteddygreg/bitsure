@@ -23,13 +23,6 @@ export interface UserProfile {
   trading_style: string;
 }
 
-export interface DemoAccount {
-  email: string;
-  role: string;
-  label: string;
-  user_id: number;
-}
-
 export interface CandlePoint {
   index: number;
   timestamp: string;
