@@ -1185,8 +1185,22 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             try:
-                from web_frontend_bundle import get_embedded_asset
-                asset = get_embedded_asset(path)
+                import web_frontend_bundle
+                asset = None
+                if hasattr(web_frontend_bundle, "get_embedded_asset"):
+                    asset = web_frontend_bundle.get_embedded_asset(path)
+                elif hasattr(web_frontend_bundle, "EMBEDDED_FRONTEND"):
+                    import base64
+                    ef = web_frontend_bundle.EMBEDDED_FRONTEND
+                    clean_p = "/index.html" if path in ("", "/") else path
+                    b64 = ef.get(clean_p) or (ef.get("/index.html") if not clean_p.startswith("/assets/") else None)
+                    if b64:
+                        m_type = "text/html; charset=utf-8"
+                        if clean_p.endswith(".js"):
+                            m_type = "application/javascript; charset=utf-8"
+                        elif clean_p.endswith(".css"):
+                            m_type = "text/css; charset=utf-8"
+                        asset = (base64.b64decode(b64), m_type)
                 if asset is not None:
                     content, mime_type = asset
                     self.send_response(200)
@@ -1208,6 +1222,9 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(content)
                 return
+
+            self._send_html(404, "<html><body>404 Not Found</body></html>")
+            return
 
         ensure_web_schema_initialized()
 

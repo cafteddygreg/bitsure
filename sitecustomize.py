@@ -1705,16 +1705,22 @@ except ImportError:
 
         def execute(self, sql: str, params=None):
             translated_sql, translated_params = _translate_pg_to_sqlite(sql, params)
-            try:
-                with _sqlite_lock:
-                    self._cur.execute(translated_sql, translated_params)
-                    self.rowcount = self._cur.rowcount
-            except sqlite3.OperationalError as e:
-                msg = str(e).lower()
-                if "duplicate column name" in msg or "already exists" in msg:
-                    self.rowcount = 0
+            for attempt in range(4):
+                try:
+                    with _sqlite_lock:
+                        self._cur.execute(translated_sql, translated_params)
+                        self.rowcount = self._cur.rowcount
                     return
-                raise
+                except sqlite3.OperationalError as e:
+                    msg = str(e).lower()
+                    if "duplicate column name" in msg or "already exists" in msg:
+                        self.rowcount = 0
+                        return
+                    if "locked" in msg and attempt < 3:
+                        import time as _t
+                        _t.sleep(0.25 * (attempt + 1))
+                        continue
+                    raise
 
         def fetchone(self):
             row = self._cur.fetchone()
@@ -1746,14 +1752,18 @@ except ImportError:
 
     class _SQLiteConnectionWrapper:
         def __init__(self, db_path: str, default_dict_cursor: bool = True):
-            self._raw = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
-            self._raw.execute("PRAGMA journal_mode=WAL")
-            self._raw.execute("PRAGMA synchronous=NORMAL")
-            self._raw.execute("PRAGMA foreign_keys=OFF")
+            self._raw = sqlite3.connect(db_path, check_same_thread=False, timeout=60.0, isolation_level=None)
+            self._raw.execute("PRAGMA busy_timeout=60000")
+            try:
+                self._raw.execute("PRAGMA journal_mode=WAL")
+                self._raw.execute("PRAGMA synchronous=NORMAL")
+                self._raw.execute("PRAGMA foreign_keys=OFF")
+            except sqlite3.OperationalError:
+                pass
             self._raw.create_function("LEAST", -1, lambda *args: min(x for x in args if x is not None) if any(x is not None for x in args) else None)
             self._raw.create_function("GREATEST", -1, lambda *args: max(x for x in args if x is not None) if any(x is not None for x in args) else None)
             self._default_dict = default_dict_cursor
-            self.autocommit = False
+            self.autocommit = True
             self.closed = False
 
         def cursor(self, cursor_factory=None):

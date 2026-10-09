@@ -615,13 +615,22 @@ def _ensure_schema(conn):
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             preset_id INTEGER,
+            parent_run_id INTEGER,
+            market_type TEXT DEFAULT 'futures',
             symbol TEXT NOT NULL,
             timeframe TEXT NOT NULL,
             trading_style TEXT NOT NULL,
+            period_split TEXT DEFAULT 'full',
             start_date TEXT NOT NULL,
             end_date TEXT NOT NULL,
             data_source TEXT NOT NULL,
             candles_count INTEGER DEFAULT 0,
+            engine_version TEXT DEFAULT '2.1.0',
+            strategy_version TEXT DEFAULT 'teddy_v2',
+            status TEXT DEFAULT 'COMPLETED',
+            is_candidate INTEGER DEFAULT 0,
+            data_quality_json TEXT DEFAULT '{}',
+            steps_json TEXT DEFAULT '[]',
             params_json TEXT NOT NULL,
             metrics_json TEXT NOT NULL,
             trades_json TEXT NOT NULL,
@@ -633,6 +642,27 @@ def _ensure_schema(conn):
             created_by BIGINT,
             created_at DOUBLE PRECISION NOT NULL
         )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS strategy_lab_ohlcv (
+            market_type TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            open_time_ms BIGINT NOT NULL,
+            close_time_ms BIGINT NOT NULL,
+            open DOUBLE PRECISION NOT NULL,
+            high DOUBLE PRECISION NOT NULL,
+            low DOUBLE PRECISION NOT NULL,
+            close DOUBLE PRECISION NOT NULL,
+            volume DOUBLE PRECISION NOT NULL,
+            source TEXT NOT NULL,
+            fetched_at DOUBLE PRECISION NOT NULL,
+            PRIMARY KEY (market_type, symbol, timeframe, open_time_ms)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_strategy_lab_ohlcv_lookup
+        ON strategy_lab_ohlcv(market_type, symbol, timeframe, open_time_ms)
         """,
         """
         CREATE TABLE IF NOT EXISTS strategy_lab_candles_cache (
@@ -650,6 +680,22 @@ def _ensure_schema(conn):
     for statement in statements:
         conn.execute(statement)
     conn.commit()
+    for col_def in (
+        "parent_run_id INTEGER",
+        "market_type TEXT DEFAULT 'futures'",
+        "period_split TEXT DEFAULT 'full'",
+        "engine_version TEXT DEFAULT '2.1.0'",
+        "strategy_version TEXT DEFAULT 'teddy_v2'",
+        "status TEXT DEFAULT 'COMPLETED'",
+        "is_candidate INTEGER DEFAULT 0",
+        "data_quality_json TEXT DEFAULT '{}'",
+        "steps_json TEXT DEFAULT '[]'",
+    ):
+        try:
+            conn.execute(f"ALTER TABLE strategy_lab_runs ADD COLUMN {col_def}")
+            conn.commit()
+        except Exception:
+            conn.rollback()
     try:
         # Synchronisation automatique : tout utilisateur PRO / payant ou déjà approuvé
         # (sauf s'il est explicitement REJECTED ou SUSPENDED) a approved = 1, terms_accepted = 1 et account_status = 'APPROVED'.

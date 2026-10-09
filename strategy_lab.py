@@ -6,8 +6,9 @@ STRICT ISOLATION GUARANTEE:
   PaperTrader balances, and user auto-trading loops.
 - It NEVER imports `live_trader`, `position_manager`, or any order placement function
   from `binance_manager`.
-- All calculations run exclusively in-memory on historical OHLCV DataFrames and store
-  results only in the dedicated `strategy_lab_*` database tables.
+- All historical candles are persisted per-candle in `strategy_lab_ohlcv` keyed by
+  (market_type, symbol, timeframe, open_time_ms) to avoid redundant downloads.
+- All experiments are stored in `strategy_lab_runs` with full reproducibility metadata.
 """
 
 import os
@@ -22,13 +23,16 @@ import numpy as np
 import pandas as pd
 
 from database import get_db
-from indicators import macd, adx, bollinger_bands
+from indicators import macd, adx, bollinger_bands, rsi as calc_rsi, atr as calc_atr
 from data_fetcher import normalize_symbol
 
 logger = logging.getLogger("strategy_lab")
 
-# Safety Assertion: Ensure no live order modules are ever imported here
+ENGINE_VERSION = "2.1.0"
+STRATEGY_VERSION = "teddy_confluence_v2"
 FORBIDDEN_LIVE_MODULES = ("live_trader", "position_manager")
+
+SUPPORTED_LAB_MARKETS = ["futures", "spot"]
 
 SUPPORTED_LAB_SYMBOLS = [
     "BTCUSDT",
@@ -301,138 +305,362 @@ def _parse_date_to_ms(date_str: Optional[str], default_ms: int) -> int:
         return default_ms
 
 
+def validate_and_clean_ohlcv(
+    df: pd.DataFrame,
+    timeframe: str,
+    now_ms: Optional[int] = None,
+    cached_candles_count: int = 0,
+    fetched_candles_count: int = 0,
+    data_source: str = "Binance Historical",
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """
+    Validates historical OHLCV candles before backtesting:
+    1. Checks required columns (Open, High, Low, Close, Volume).
+    2. Filters out invalid prices (<= 0) or negative volumes.
+    3. Verifies OHLC coherence (High >= max(Open, Close) and Low <= min(Open, Close)).
+    4. Sorts chronologically and removes duplicate timestamps.
+    5. Excludes any unclosed/incomplete current candle (`close_time_ms > now_ms`).
+    6. Detects missing intervals (gaps) and computes an integrity status ('VALID', 'WARNING', 'UNRELIABLE').
+    Never fabricates or interpolates missing prices.
+    """
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    tf_ms = TIMEFRAME_SECONDS.get(timeframe, 900) * 1000
+
+    raw_count = len(df) if df is not None else 0
+    if df is None or df.empty:
+        return pd.DataFrame(), {
+            "status": "UNRELIABLE",
+            "raw_candles": 0,
+            "valid_closed_candles": 0,
+            "cached_reused_candles": cached_candles_count,
+            "newly_fetched_candles": fetched_candles_count,
+            "duplicates_removed": 0,
+            "unclosed_excluded": 0,
+            "invalid_ohlc_removed": 0,
+            "missing_intervals_count": 0,
+            "gap_ratio_pct": 100.0,
+            "gaps_sample": [],
+            "data_source": data_source,
+            "warnings": ["Aucune bougie historique disponible pour cette sélection."],
+        }
+
+    work = df.copy()
+    if hasattr(pd, "to_numeric"):
+        for col in ("Open", "High", "Low", "Close", "Volume"):
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+    if hasattr(work, "dropna"):
+        try:
+            work.dropna(subset=["Open", "High", "Low", "Close"], inplace=True)
+        except TypeError:
+            pass
+
+    # Sort & deduplicate
+    before_dedup = len(work)
+    if hasattr(work.index, "duplicated"):
+        work = work[~work.index.duplicated(keep="last")].sort_index()
+    elif hasattr(work, "sort_index"):
+        work = work.sort_index()
+    duplicates_removed = max(0, before_dedup - len(work))
+
+    # Filter out unclosed candle (if open_time + tf_ms > now_ms)
+    unclosed_excluded = 0
+    valid_indices = []
+    invalid_ohlc_removed = 0
+
+    ts_list = list(work.index)
+    for idx_pos, ts in enumerate(ts_list):
+        row = work.iloc[idx_pos]
+        o = float(row["Open"])
+        h = float(row["High"])
+        l = float(row["Low"])
+        c = float(row["Close"])
+        v = float(row["Volume"]) if not pd.isna(row["Volume"]) else 0.0
+
+        # Check timestamp ms
+        if hasattr(ts, "timestamp"):
+            open_ms = int(ts.timestamp() * 1000)
+        else:
+            open_ms = _parse_date_to_ms(str(ts), 0)
+
+        if open_ms > 0 and (open_ms + tf_ms) > now_ms:
+            unclosed_excluded += 1
+            continue
+
+        # OHLC & price validity check
+        if o <= 0 or h <= 0 or l <= 0 or c <= 0 or v < 0:
+            invalid_ohlc_removed += 1
+            continue
+        if h < max(o, c) - 1e-8 or l > min(o, c) + 1e-8 or h < l:
+            invalid_ohlc_removed += 1
+            continue
+
+        valid_indices.append(idx_pos)
+
+    cleaned = work.iloc[valid_indices].copy() if len(valid_indices) < len(work) else work
+
+    # Detect gaps (missing intervals) without interpolating
+    missing_intervals = 0
+    gaps_sample: List[Dict[str, Any]] = []
+    clean_ts = list(cleaned.index)
+    for k in range(1, len(clean_ts)):
+        t_prev = clean_ts[k - 1]
+        t_cur = clean_ts[k]
+        ms_prev = int(t_prev.timestamp() * 1000) if hasattr(t_prev, "timestamp") else _parse_date_to_ms(str(t_prev), 0)
+        ms_cur = int(t_cur.timestamp() * 1000) if hasattr(t_cur, "timestamp") else _parse_date_to_ms(str(t_cur), 0)
+        diff_ms = ms_cur - ms_prev
+        if diff_ms > int(tf_ms * 1.5):
+            missed = max(1, int(round(diff_ms / tf_ms)) - 1)
+            missing_intervals += missed
+            if len(gaps_sample) < 10:
+                gaps_sample.append({
+                    "from": t_prev.isoformat() if hasattr(t_prev, "isoformat") else str(t_prev),
+                    "to": t_cur.isoformat() if hasattr(t_cur, "isoformat") else str(t_cur),
+                    "missing_candles": missed,
+                })
+
+    total_expected = len(cleaned) + missing_intervals
+    gap_ratio_pct = round((missing_intervals / total_expected * 100.0), 2) if total_expected > 0 else 0.0
+
+    warnings: List[str] = []
+    if unclosed_excluded > 0:
+        warnings.append(f"{unclosed_excluded} chandelier(s) en cours de formation exclu(s) pour éviter le repainting.")
+    if duplicates_removed > 0:
+        warnings.append(f"{duplicates_removed} doublon(s) horodaté(s) éliminé(s).")
+    if invalid_ohlc_removed > 0:
+        warnings.append(f"{invalid_ohlc_removed} chandelier(s) incohérent(s) (High < Low ou prix <= 0) écarté(s).")
+    if missing_intervals > 0:
+        warnings.append(
+            f"{missing_intervals} intervalle(s) manquant(s) détecté(s) ({gap_ratio_pct}% de la période). Aucune donnée fictive n'a été interpolée."
+        )
+
+    status = "VALID"
+    if len(cleaned) < 50 or gap_ratio_pct > 20.0:
+        status = "UNRELIABLE"
+    elif missing_intervals > 0 or invalid_ohlc_removed > 0:
+        status = "WARNING"
+
+    quality_report = {
+        "status": status,
+        "raw_candles": raw_count,
+        "valid_closed_candles": len(cleaned),
+        "cached_reused_candles": cached_candles_count,
+        "newly_fetched_candles": fetched_candles_count,
+        "duplicates_removed": duplicates_removed,
+        "unclosed_excluded": unclosed_excluded,
+        "invalid_ohlc_removed": invalid_ohlc_removed,
+        "missing_intervals_count": missing_intervals,
+        "gap_ratio_pct": gap_ratio_pct,
+        "gaps_sample": gaps_sample,
+        "data_source": data_source,
+        "first_candle_utc": clean_ts[0].isoformat() if clean_ts and hasattr(clean_ts[0], "isoformat") else "",
+        "last_candle_utc": clean_ts[-1].isoformat() if clean_ts and hasattr(clean_ts[-1], "isoformat") else "",
+        "warnings": warnings,
+    }
+    return cleaned, quality_report
+
+
 def load_historical_candles(
     symbol: str,
     timeframe: str = "15m",
+    market_type: str = "futures",
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    max_candles: int = 1200,
-) -> Tuple[pd.DataFrame, str]:
+    max_candles: int = 1000,
+) -> Tuple[pd.DataFrame, str, Dict[str, int]]:
     """
-    Loads real historical OHLCV candles for the Strategy Lab:
-    1. Checks DB cache (`strategy_lab_candles_cache`) if exact range was recently fetched.
-    2. Queries public Binance Klines API (`/api/v3/klines` or `/fapi/v1/klines`) via requests (read-only).
-    3. Falls back to local `/scratch/btc_15m.csv` or `DataFetcher` if network is restricted.
-    Returns (DataFrame, data_source_label).
+    Loads real historical OHLCV candles for the Strategy Lab with incremental PostgreSQL caching:
+    1. Queries `strategy_lab_ohlcv` for already stored candles matching (market_type, symbol, timeframe) in [start_ms, end_ms].
+    2. Identifies missing time ranges and fetches ONLY missing candles from official Binance Spot (`/api/v3/klines`)
+       or USD-M Futures (`/fapi/v1/klines`) endpoints with pagination and deduplication.
+    3. Persists newly fetched closed candles into `strategy_lab_ohlcv` (`ON CONFLICT DO NOTHING`).
+    4. Falls back to local CSV archive (`/scratch/btc_15m.csv`) only if network is unreachable in sandbox.
+    Returns (DataFrame, data_source_label, stats_dict).
     """
     symbol = normalize_symbol(symbol or "BTCUSDT")
+    market_type = "spot" if str(market_type).lower() == "spot" else "futures"
     if timeframe not in SUPPORTED_LAB_TIMEFRAMES:
         timeframe = "15m"
-    max_candles = max(120, min(2500, int(max_candles or 1000)))
+    max_candles = max(80, min(2500, int(max_candles or 800)))
 
     now_ms = int(time.time() * 1000)
     tf_ms = TIMEFRAME_SECONDS.get(timeframe, 900) * 1000
-    end_ms = _parse_date_to_ms(end_date, now_ms)
+    # Align end_ms to last closed candle boundary
+    aligned_now_ms = (now_ms // tf_ms) * tf_ms
+    end_ms = min(_parse_date_to_ms(end_date, aligned_now_ms), aligned_now_ms)
     default_start_ms = end_ms - (max_candles * tf_ms)
     start_ms = _parse_date_to_ms(start_date, default_start_ms)
     if start_ms >= end_ms:
         start_ms = end_ms - (300 * tf_ms)
 
-    cache_key = f"{symbol}_{timeframe}_{start_ms // 60000}_{end_ms // 60000}_{max_candles}"
     db = get_db()
-
-    # 1. Check DB Cache
+    cached_rows = []
     try:
-        row = db.execute(
-            "SELECT candles_json, data_source FROM strategy_lab_candles_cache WHERE cache_key = %s",
-            (cache_key,),
-        ).fetchone()
-        if row and row.get("candles_json"):
-            records = json.loads(row["candles_json"])
-            if len(records) >= 60:
-                df = pd.DataFrame(records)
-                df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-                df.set_index("timestamp", inplace=True)
-                for col in ("Open", "High", "Low", "Close", "Volume"):
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-                df.dropna(subset=["Open", "High", "Low", "Close"], inplace=True)
-                return df, f"{row.get('data_source', 'Binance Historical')} (Cache)"
+        cached_rows = db.execute(
+            """
+            SELECT open_time_ms, close_time_ms, open, high, low, close, volume, source
+            FROM strategy_lab_ohlcv
+            WHERE market_type = %s AND symbol = %s AND timeframe = %s
+              AND open_time_ms >= %s AND open_time_ms <= %s
+            ORDER BY open_time_ms ASC
+            """,
+            (market_type, symbol, timeframe, start_ms, end_ms),
+        ).fetchall()
     except Exception as e:
-        logger.debug("Strategy Lab cache read skipped: %s", e)
+        logger.debug("strategy_lab_ohlcv read skipped: %s", e)
 
-    # 2. Fetch from Public Read-Only Binance Klines Endpoints (Spot / Futures mirrors)
-    import requests
-    klines_collected: List[Any] = []
-    source_used = ""
-    endpoints = [
-        ("https://api.binance.com/api/v3/klines", "Binance Spot Historical"),
-        ("https://data-api.binance.vision/api/v3/klines", "Binance Vision Archive"),
-        ("https://fapi.binance.com/fapi/v1/klines", "Binance Futures Historical"),
-    ]
+    cached_by_open_ms: Dict[int, Dict[str, Any]] = {}
+    for r in cached_rows:
+        oms = int(r["open_time_ms"])
+        cached_by_open_ms[oms] = {
+            "open_time_ms": oms,
+            "close_time_ms": int(r["close_time_ms"]),
+            "Open": float(r["open"]),
+            "High": float(r["high"]),
+            "Low": float(r["low"]),
+            "Close": float(r["close"]),
+            "Volume": float(r["volume"]),
+            "source": r.get("source") or f"Binance {market_type.capitalize()}",
+        }
 
-    for url, label in endpoints:
-        try:
-            cursor_ms = start_ms
-            batches = []
-            while cursor_ms < end_ms and sum(len(b) for b in batches) < max_candles:
-                needed = min(1000, max_candles - sum(len(b) for b in batches))
-                resp = requests.get(
-                    url,
-                    params={
-                        "symbol": symbol,
-                        "interval": timeframe,
-                        "startTime": cursor_ms,
-                        "endTime": end_ms,
-                        "limit": needed,
-                    },
-                    timeout=6,
-                )
-                if resp.status_code != 200:
+    cached_count = len(cached_by_open_ms)
+    expected_candles = max(1, min(max_candles, int((end_ms - start_ms) // tf_ms)))
+
+    # Determine if we need to fetch missing ranges from Binance
+    newly_fetched_count = 0
+    source_used = f"PostgreSQL Cache ({market_type.upper()})"
+
+    if cached_count < int(expected_candles * 0.92):
+        # Determine missing window [fetch_start_ms, end_ms]
+        if cached_by_open_ms:
+            max_cached_ms = max(cached_by_open_ms.keys())
+            min_cached_ms = min(cached_by_open_ms.keys())
+            # If we are missing recent candles after max_cached_ms, fetch only from max_cached_ms + tf_ms
+            if min_cached_ms <= start_ms + tf_ms * 2 and max_cached_ms < end_ms - tf_ms:
+                fetch_start_ms = max_cached_ms + tf_ms
+            else:
+                fetch_start_ms = start_ms
+        else:
+            fetch_start_ms = start_ms
+
+        import requests
+        if market_type == "futures":
+            endpoints = [
+                ("https://fapi.binance.com/fapi/v1/klines", "Binance USD-M Futures API"),
+                ("https://api.binance.com/api/v3/klines", "Binance Spot API (Fallback)"),
+                ("https://data-api.binance.vision/api/v3/klines", "Binance Vision Archive"),
+            ]
+        else:
+            endpoints = [
+                ("https://api.binance.com/api/v3/klines", "Binance Spot API"),
+                ("https://data-api.binance.vision/api/v3/klines", "Binance Vision Archive"),
+                ("https://fapi.binance.com/fapi/v1/klines", "Binance USD-M Futures API (Fallback)"),
+            ]
+
+        for url, label in endpoints:
+            try:
+                cursor_ms = fetch_start_ms
+                fetched_batches = []
+                while cursor_ms < end_ms and sum(len(b) for b in fetched_batches) < max_candles:
+                    needed = min(1000, max_candles - sum(len(b) for b in fetched_batches))
+                    resp = requests.get(
+                        url,
+                        params={
+                            "symbol": symbol,
+                            "interval": timeframe,
+                            "startTime": cursor_ms,
+                            "endTime": end_ms,
+                            "limit": needed,
+                        },
+                        timeout=6,
+                    )
+                    if resp.status_code == 429:
+                        logger.warning("Binance rate limit 429 hit on %s, backing off", url)
+                        break
+                    if resp.status_code != 200:
+                        break
+                    batch = resp.json()
+                    if not isinstance(batch, list) or not batch:
+                        break
+                    fetched_batches.append(batch)
+                    last_open = int(batch[-1][0])
+                    if last_open <= cursor_ms or len(batch) < needed:
+                        break
+                    cursor_ms = last_open + tf_ms
+
+                flat = [item for sub in fetched_batches for item in sub]
+                if flat:
+                    source_used = label if cached_count == 0 else f"{label} + Cache PostgreSQL"
+                    now_ts = time.time()
+                    for k in flat:
+                        oms = int(k[0])
+                        cms = int(k[6]) if len(k) > 6 else (oms + tf_ms - 1)
+                        # Only persist closed candles
+                        if cms > now_ms:
+                            continue
+                        if oms not in cached_by_open_ms:
+                            newly_fetched_count += 1
+                        cached_by_open_ms[oms] = {
+                            "open_time_ms": oms,
+                            "close_time_ms": cms,
+                            "Open": float(k[1]),
+                            "High": float(k[2]),
+                            "Low": float(k[3]),
+                            "Close": float(k[4]),
+                            "Volume": float(k[5]),
+                            "source": label,
+                        }
+                        try:
+                            db.execute(
+                                """
+                                INSERT INTO strategy_lab_ohlcv
+                                (market_type, symbol, timeframe, open_time_ms, close_time_ms, open, high, low, close, volume, source, fetched_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (market_type, symbol, timeframe, open_time_ms) DO NOTHING
+                                """,
+                                (
+                                    market_type,
+                                    symbol,
+                                    timeframe,
+                                    oms,
+                                    cms,
+                                    float(k[1]),
+                                    float(k[2]),
+                                    float(k[3]),
+                                    float(k[4]),
+                                    float(k[5]),
+                                    label,
+                                    now_ts,
+                                ),
+                            )
+                        except Exception:
+                            pass
                     break
-                data = resp.json()
-                if not isinstance(data, list) or not data:
-                    break
-                batches.append(data)
-                last_open_time = int(data[-1][0])
-                if last_open_time <= cursor_ms or len(data) < needed:
-                    break
-                cursor_ms = last_open_time + tf_ms
+            except Exception as e:
+                logger.debug("Endpoint %s failed: %s", url, e)
 
-            flat = [item for sub in batches for item in sub]
-            if len(flat) >= 60:
-                klines_collected = flat
-                source_used = label
-                break
-        except Exception as e:
-            logger.debug("Public klines endpoint %s failed: %s", url, e)
-
-    if klines_collected:
+    if cached_by_open_ms:
+        sorted_oms = sorted(cached_by_open_ms.keys())[-max_candles:]
         rows = []
-        for k in klines_collected[-max_candles:]:
-            ts_iso = datetime.fromtimestamp(int(k[0]) / 1000.0, tz=timezone.utc).isoformat()
+        for oms in sorted_oms:
+            item = cached_by_open_ms[oms]
+            ts_iso = datetime.fromtimestamp(oms / 1000.0, tz=timezone.utc).isoformat()
             rows.append(
                 {
                     "timestamp": ts_iso,
-                    "Open": float(k[1]),
-                    "High": float(k[2]),
-                    "Low": float(k[3]),
-                    "Close": float(k[4]),
-                    "Volume": float(k[5]),
+                    "Open": item["Open"],
+                    "High": item["High"],
+                    "Low": item["Low"],
+                    "Close": item["Close"],
+                    "Volume": item["Volume"],
                 }
             )
         df = pd.DataFrame(rows)
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         df.set_index("timestamp", inplace=True)
-        df = df[~df.index.duplicated(keep="last")].sort_index()
+        return df, source_used, {"cached": cached_count, "fetched": newly_fetched_count}
 
-        # Store in DB cache
-        try:
-            db.execute(
-                """
-                INSERT INTO strategy_lab_candles_cache (cache_key, symbol, timeframe, start_ts, end_ts, data_source, candles_json, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (cache_key) DO UPDATE SET
-                    candles_json = EXCLUDED.candles_json,
-                    updated_at = EXCLUDED.updated_at
-                """,
-                (cache_key, symbol, timeframe, start_ms, end_ms, source_used, json.dumps(rows), time.time()),
-            )
-        except Exception as e:
-            logger.debug("Strategy Lab cache write skipped: %s", e)
-
-        return df, source_used
-
-    # 3. Fallback to local CSV archive (/scratch/btc_15m.csv) or DataFetcher
+    # Fallback to local CSV archive (/scratch/btc_15m.csv)
     candidate_csvs = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "scratch", "btc_15m.csv"),
         "/scratch/btc_15m.csv",
@@ -448,12 +676,12 @@ def load_historical_candles(
                 for col in ("Open", "High", "Low", "Close", "Volume"):
                     df[col] = pd.to_numeric(df[col], errors="coerce")
                 df.dropna(subset=["Open", "High", "Low", "Close"], inplace=True)
-                if len(df) >= 60:
-                    return df, "Archive Locale Bitsure (btc_15m.csv)"
+                if len(df) >= 50:
+                    return df, "Archive Locale Bitsure (btc_15m.csv)", {"cached": len(df), "fetched": 0}
             except Exception as e:
                 logger.warning("Fallback CSV read error: %s", e)
 
-    # 4. Final fallback via DataFetcher
+    # Final fallback via DataFetcher
     from data_fetcher import DataFetcher
     import asyncio
     try:
@@ -463,18 +691,17 @@ def load_historical_candles(
         )
         loop.close()
         if df is not None and not df.empty:
-            if df.index.tz is None:
+            if getattr(df.index, "tz", None) is None and hasattr(df.index, "tz_localize"):
                 df.index = df.index.tz_localize("UTC")
-            return df.tail(max_candles), f"{src} (Fallback)"
+            return df.tail(max_candles), f"{src} ({market_type.upper()})", {"cached": 0, "fetched": len(df)}
     except Exception as e:
         logger.error("DataFetcher fallback failed in Strategy Lab: %s", e)
 
-    raise ValueError(f"Impossible de charger les bougies historiques pour {symbol} ({timeframe}).")
+    raise ValueError(f"Données historiques indisponibles pour {symbol} ({market_type.upper()} • {timeframe}).")
 
 
 def _compute_lab_indicators(df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
     """Computes parameterized technical indicators on the OHLCV DataFrame without look-ahead bias."""
-    from indicators import rsi as calc_rsi, atr as calc_atr
     data = df.copy()
 
     ema_fast_p = int(params.get("ema_fast", 20))
@@ -530,10 +757,10 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
     ema_trend = float(row["LAB_EMA_TREND"])
     rsi = float(row["LAB_RSI"])
     prev_rsi = float(prev_row["LAB_RSI"])
-    adx = float(row.get("ADX", 20.0) if not pd.isna(row.get("ADX")) else 20.0)
+    adx_val = float(row.get("ADX", 20.0) if not pd.isna(row.get("ADX")) else 20.0)
     macd_hist = float(row.get("MACD_Hist", 0.0) if not pd.isna(row.get("MACD_Hist")) else 0.0)
     prev_macd_hist = float(prev_row.get("MACD_Hist", 0.0) if not pd.isna(prev_row.get("MACD_Hist")) else 0.0)
-    atr = float(row["LAB_ATR"])
+    atr_val = float(row["LAB_ATR"])
     atr_pct = float(row["LAB_ATR_PCT"])
     vol_ratio = float(row["LAB_VOL_RATIO"])
     bb_lower = float(row.get("BB_Lower", close * 0.98) if not pd.isna(row.get("BB_Lower")) else close * 0.98)
@@ -592,7 +819,7 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
         bear_points += 10.0
 
     # 4. ADX Trend Strength + Bollinger Position + Volume (up to 25 pts)
-    if adx >= float(params["adx_min"]):
+    if adx_val >= float(params["adx_min"]):
         if bull_points >= bear_points:
             bull_points += 12.0
         else:
@@ -616,7 +843,7 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
     raw_score = int(round(min(100.0, max(bull_points, bear_points))))
     primary_reasons = reasons_bull if raw_direction == "BUY" else reasons_bear
 
-    # Filter Pipeline (tracks exact rejection causes for admin diagnostics)
+    # Filter Pipeline
     min_score = int(params["min_teddy_score"])
     if raw_score < min_score:
         return {
@@ -657,13 +884,13 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
             "reasons": primary_reasons,
         }
 
-    if adx < float(params["adx_min"]):
+    if adx_val < float(params["adx_min"]):
         return {
             "signal": "WAIT",
             "candidate_direction": raw_direction,
             "teddy_score": raw_score,
             "rejected_by": "weak_adx_regime",
-            "rejection_reason": f"Marché sans tendance claire (ADX {adx:.1f} < {params['adx_min']})",
+            "rejection_reason": f"Marché sans tendance claire (ADX {adx_val:.1f} < {params['adx_min']})",
             "reasons": primary_reasons,
         }
 
@@ -737,14 +964,14 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
                 "reasons": primary_reasons,
             }
 
-    if bool(params.get("block_against_strong_trend", True)) and adx >= 30.0:
+    if bool(params.get("block_against_strong_trend", True)) and adx_val >= 30.0:
         if raw_direction == "BUY" and close < ema_slow and ema_fast < ema_slow:
             return {
                 "signal": "WAIT",
                 "candidate_direction": raw_direction,
                 "teddy_score": raw_score,
                 "rejected_by": "counter_strong_trend",
-                "rejection_reason": f"Signal BUY contre une tendance baissière forte (ADX {adx:.1f})",
+                "rejection_reason": f"Signal BUY contre une tendance baissière forte (ADX {adx_val:.1f})",
                 "reasons": primary_reasons,
             }
         if raw_direction == "SELL" and close > ema_slow and ema_fast > ema_slow:
@@ -753,7 +980,7 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
                 "candidate_direction": raw_direction,
                 "teddy_score": raw_score,
                 "rejected_by": "counter_strong_trend",
-                "rejection_reason": f"Signal SELL contre une tendance haussière forte (ADX {adx:.1f})",
+                "rejection_reason": f"Signal SELL contre une tendance haussière forte (ADX {adx_val:.1f})",
                 "reasons": primary_reasons,
             }
 
@@ -761,13 +988,13 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
     if params.get("sl_mode") == "fixed_pct":
         sl_dist = close * (float(params["sl_fixed_pct"]) / 100.0)
     else:
-        sl_dist = max(atr * float(params["sl_atr_mult"]), close * 0.0025)
+        sl_dist = max(atr_val * float(params["sl_atr_mult"]), close * 0.0025)
 
     tp_mode = params.get("tp_mode", "rr")
     if tp_mode == "fixed_pct":
         tp_dist = close * (float(params["tp_fixed_pct"]) / 100.0)
     elif tp_mode == "atr":
-        tp_dist = max(atr * float(params["tp_atr_mult"]), sl_dist * 1.1)
+        tp_dist = max(atr_val * float(params["tp_atr_mult"]), sl_dist * 1.1)
     else:
         tp_dist = sl_dist * float(params["min_rr_ratio"])
 
@@ -804,37 +1031,127 @@ def run_backtest_experiment(
     symbol: str,
     timeframe: str = "15m",
     trading_style: str = "day",
+    market_type: str = "futures",
+    period_split: str = "full",
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     raw_params: Optional[Dict[str, Any]] = None,
     max_candles: int = 1000,
+    allow_unreliable_data: bool = False,
     preloaded_df: Optional[Tuple[pd.DataFrame, str]] = None,
 ) -> Dict[str, Any]:
     """
     Runs a complete, deterministic candle-by-candle backtest simulation with zero look-ahead bias.
-    Calculates all institutional KPIs, candle overlays, signal markers, rejection breakdown,
-    and automatic diagnosis of strategy weaknesses.
+    Tracks real execution steps, data quality validation, conservative intra-candle SL/TP conflict resolution,
+    and supports Dev / Validation / Test sample splitting to prevent overfitting.
     """
     t0 = time.time()
-    symbol = normalize_symbol(symbol or "BTCUSDT")
-    params = normalize_lab_params(raw_params, style=trading_style)
+    execution_steps: List[Dict[str, Any]] = []
 
+    def add_step(step_num: int, label: str, detail: str, status: str = "done") -> None:
+        execution_steps.append({
+            "step": step_num,
+            "label": label,
+            "detail": detail,
+            "status": status,
+            "elapsed_ms": int((time.time() - t0) * 1000),
+        })
+
+    # Step 1: Configuration verification
+    symbol = normalize_symbol(symbol or "BTCUSDT")
+    market_type = "spot" if str(market_type).lower() == "spot" else "futures"
+    params = normalize_lab_params(raw_params, style=trading_style)
+    if market_type == "spot":
+        # Spot market cannot use leverage > 1
+        params["leverage"] = 1.0
+    add_step(
+        1,
+        "Vérification de la configuration",
+        f"Actif {symbol} ({market_type.upper()} • {timeframe}) | Style {trading_style.upper()} | Score>={params['min_teddy_score']}",
+    )
+
+    # Step 2 & 3: Search local storage & fetch missing candles
     if preloaded_df is not None:
         raw_df, data_source = preloaded_df
+        cache_stats = {"cached": len(raw_df), "fetched": 0}
+        add_step(2, "Recherche des données locales", f"{len(raw_df)} chandeliers préchargés en mémoire.")
+        add_step(3, "Récupération des données manquantes", "Aucun téléchargement externe requis (0 chandelier manquant).")
     else:
-        raw_df, data_source = load_historical_candles(
+        raw_df, data_source, cache_stats = load_historical_candles(
             symbol=symbol,
             timeframe=timeframe,
+            market_type=market_type,
             start_date=start_date,
             end_date=end_date,
             max_candles=max_candles,
         )
+        add_step(
+            2,
+            "Recherche des données déjà disponibles",
+            f"{cache_stats.get('cached', 0)} chandeliers trouvés dans le stockage PostgreSQL local.",
+        )
+        add_step(
+            3,
+            "Récupération des données manquantes",
+            f"{cache_stats.get('fetched', 0)} nouveaux chandeliers téléchargés depuis {data_source}.",
+        )
 
-    df = _compute_lab_indicators(raw_df, params)
-    warmup = max(35, min(120, int(params["ema_slow"]) + 5))
+    # Step 4: Validate candles & data quality
+    cleaned_df, data_quality = validate_and_clean_ohlcv(
+        raw_df,
+        timeframe=timeframe,
+        cached_candles_count=cache_stats.get("cached", 0),
+        fetched_candles_count=cache_stats.get("fetched", 0),
+        data_source=data_source,
+    )
+    add_step(
+        4,
+        "Validation des chandeliers OHLCV",
+        f"{data_quality['valid_closed_candles']} chandeliers clôturés validés (statut : {data_quality['status']}, lacunes : {data_quality['missing_intervals_count']}).",
+        status="warning" if data_quality["status"] != "VALID" else "done",
+    )
+
+    if data_quality["status"] == "UNRELIABLE" and not allow_unreliable_data and preloaded_df is None:
+        raise ValueError(
+            f"Qualité des données insuffisante ({data_quality['valid_closed_candles']} bougies, {data_quality['gap_ratio_pct']}% de lacunes). "
+            "Cochez « Forcer malgré les lacunes » si vous souhaitez tout de même exécuter ce test."
+        )
+
+    # Step 5: Anti-overfitting sample split (Full / Dev 60% / Validation 20% / Test 20%)
+    total_n = len(cleaned_df)
+    period_split = (period_split or "full").lower()
+    if period_split == "dev" and total_n >= 100:
+        df_slice = cleaned_df.iloc[: int(total_n * 0.60)].copy()
+        split_label = "Développement In-Sample (60%)"
+    elif period_split == "validation" and total_n >= 100:
+        df_slice = cleaned_df.iloc[int(total_n * 0.60) : int(total_n * 0.80)].copy()
+        split_label = "Validation Out-of-Sample (20%)"
+    elif period_split == "test" and total_n >= 100:
+        df_slice = cleaned_df.iloc[int(total_n * 0.80) :].copy()
+        split_label = "Test Final Out-of-Sample (20%)"
+    else:
+        df_slice = cleaned_df
+        period_split = "full"
+        split_label = "Période Complète (100%)"
+
+    add_step(
+        5,
+        "Préparation de l'échantillon",
+        f"Segment sélectionné : {split_label} ({len(df_slice)} chandeliers).",
+    )
+
+    # Step 6: Indicator calculation
+    df = _compute_lab_indicators(df_slice, params)
+    warmup = max(25, min(80, int(params["ema_slow"]) + 2))
     if len(df) <= warmup + 10:
-        warmup = max(15, len(df) // 5)
+        warmup = max(10, len(df) // 5)
+    add_step(
+        6,
+        "Calcul des indicateurs techniques",
+        f"EMA({params['ema_fast']}/{params['ema_slow']}/{params['ema_trend']}), RSI({params['rsi_period']}), ADX({params['adx_period']}), ATR({params['atr_period']}), MACD, Bollinger calculés sans biais.",
+    )
 
+    # Step 7: Chronological Trade Simulation
     initial_capital = float(params["initial_capital"])
     balance = initial_capital
     peak_equity = initial_capital
@@ -862,6 +1179,7 @@ def run_backtest_experiment(
     }
     rejected_signals_sample: List[Dict[str, Any]] = []
     valid_signals_count = 0
+    ambiguous_sl_tp_candles = 0
 
     cooldown_until_idx = -1
     consecutive_losses = 0
@@ -883,7 +1201,7 @@ def run_backtest_experiment(
         low = float(row["Low"])
         close = float(row["Close"])
         open_p = float(row["Open"])
-        atr = float(row["LAB_ATR"])
+        atr_val = float(row["LAB_ATR"])
 
         candle_marker: Optional[Dict[str, Any]] = None
 
@@ -894,7 +1212,6 @@ def run_backtest_experiment(
             entry_p = open_pos["entry_price"]
             init_sl_dist = open_pos["initial_sl_dist"]
 
-            # Track MFE (Max Favorable Excursion) & MAE (Max Adverse Excursion)
             if side == "BUY":
                 fav_pct = ((high - entry_p) / entry_p) * 100.0
                 adv_pct = ((low - entry_p) / entry_p) * 100.0
@@ -907,85 +1224,93 @@ def run_backtest_experiment(
             open_pos["mfe_pct"] = max(open_pos["mfe_pct"], fav_pct)
             open_pos["mae_pct"] = min(open_pos["mae_pct"], adv_pct)
 
-            # A. Partial Take Profit Check
-            if (
-                bool(params.get("partial_tp_enabled", True))
-                and not open_pos["partial_taken"]
-                and current_r >= float(params.get("partial_tp_rr", 1.2))
-            ):
-                partial_pct = float(params.get("partial_tp_close_pct", 50.0)) / 100.0
-                partial_price = (
-                    entry_p + init_sl_dist * float(params.get("partial_tp_rr", 1.2))
-                    if side == "BUY"
-                    else entry_p - init_sl_dist * float(params.get("partial_tp_rr", 1.2))
-                )
-                qty_closed = open_pos["qty_remaining"] * partial_pct
-                raw_partial_pnl = (
-                    (partial_price - entry_p) * qty_closed
-                    if side == "BUY"
-                    else (entry_p - partial_price) * qty_closed
-                )
-                partial_fee = partial_price * qty_closed * fee_rate
-                open_pos["realized_partial_pnl"] += raw_partial_pnl - partial_fee
-                open_pos["fees_paid"] += partial_fee
-                open_pos["qty_remaining"] -= qty_closed
-                open_pos["partial_taken"] = True
-                balance += raw_partial_pnl - partial_fee
-
-            # B. Break-Even Stop Adjustment
-            if (
-                bool(params.get("breakeven_enabled", True))
-                and not open_pos["be_activated"]
-                and current_r >= float(params.get("breakeven_trigger_rr", 1.0))
-            ):
-                be_buffer = entry_p * (fee_rate * 2.2)
-                if side == "BUY":
-                    open_pos["sl_price"] = max(open_pos["sl_price"], entry_p + be_buffer)
-                else:
-                    open_pos["sl_price"] = min(open_pos["sl_price"], entry_p - be_buffer)
-                open_pos["be_activated"] = True
-
-            # C. Dynamic Trailing Stop Adjustment
-            if (
-                bool(params.get("trailing_stop_enabled", True))
-                and current_r >= float(params.get("trailing_activation_rr", 1.3))
-            ):
-                trail_dist = max(atr * float(params.get("trailing_distance_atr", 1.1)), entry_p * 0.002)
-                if side == "BUY":
-                    new_sl = high - trail_dist
-                    if new_sl > open_pos["sl_price"]:
-                        open_pos["sl_price"] = new_sl
-                        open_pos["trailing_activated"] = True
-                else:
-                    new_sl = low + trail_dist
-                    if new_sl < open_pos["sl_price"]:
-                        open_pos["sl_price"] = new_sl
-                        open_pos["trailing_activated"] = True
-
-            # D. Check Stop Loss / Take Profit / Max Bars Exit
+            # CONSERVATIVE INTRA-CANDLE RULE:
+            # Check Stop Loss & Take Profit BEFORE assuming favorable intra-candle trailing/partial TP
+            # If both SL and TP are touched within the exact same candle, apply the documented conservative rule:
+            # Stop Loss is assumed hit first (worst-case execution) so backtest never overstates returns.
             exit_reason = None
             raw_exit_price = None
 
             if side == "BUY":
-                if low <= open_pos["sl_price"]:
-                    raw_exit_price = open_pos["sl_price"]
-                    exit_reason = "TRAILING_SL" if open_pos["trailing_activated"] else ("BREAKEVEN_SL" if open_pos["be_activated"] else "STOP_LOSS")
-                elif high >= open_pos["tp_price"]:
-                    raw_exit_price = open_pos["tp_price"]
-                    exit_reason = "TAKE_PROFIT"
+                sl_hit = low <= open_pos["sl_price"]
+                tp_hit = high >= open_pos["tp_price"]
             else:
-                if high >= open_pos["sl_price"]:
-                    raw_exit_price = open_pos["sl_price"]
-                    exit_reason = "TRAILING_SL" if open_pos["trailing_activated"] else ("BREAKEVEN_SL" if open_pos["be_activated"] else "STOP_LOSS")
-                elif low <= open_pos["tp_price"]:
-                    raw_exit_price = open_pos["tp_price"]
-                    exit_reason = "TAKE_PROFIT"
+                sl_hit = high >= open_pos["sl_price"]
+                tp_hit = low <= open_pos["tp_price"]
+
+            if sl_hit and tp_hit:
+                ambiguous_sl_tp_candles += 1
+                raw_exit_price = open_pos["sl_price"]
+                exit_reason = "STOP_LOSS_AMBIGUOUS_BAR"
+            elif sl_hit:
+                raw_exit_price = open_pos["sl_price"]
+                exit_reason = (
+                    "TRAILING_SL"
+                    if open_pos["trailing_activated"]
+                    else ("BREAKEVEN_SL" if open_pos["be_activated"] else "STOP_LOSS")
+                )
+            elif tp_hit:
+                raw_exit_price = open_pos["tp_price"]
+                exit_reason = "TAKE_PROFIT"
+
+            # If position survived this candle's extremes, apply Partial TP, Break-Even & Trailing for subsequent candles
+            if exit_reason is None:
+                if (
+                    bool(params.get("partial_tp_enabled", True))
+                    and not open_pos["partial_taken"]
+                    and current_r >= float(params.get("partial_tp_rr", 1.2))
+                ):
+                    partial_pct = float(params.get("partial_tp_close_pct", 50.0)) / 100.0
+                    partial_price = (
+                        entry_p + init_sl_dist * float(params.get("partial_tp_rr", 1.2))
+                        if side == "BUY"
+                        else entry_p - init_sl_dist * float(params.get("partial_tp_rr", 1.2))
+                    )
+                    qty_closed = open_pos["qty_remaining"] * partial_pct
+                    raw_partial_pnl = (
+                        (partial_price - entry_p) * qty_closed
+                        if side == "BUY"
+                        else (entry_p - partial_price) * qty_closed
+                    )
+                    partial_fee = partial_price * qty_closed * fee_rate
+                    open_pos["realized_partial_pnl"] += raw_partial_pnl - partial_fee
+                    open_pos["fees_paid"] += partial_fee
+                    open_pos["qty_remaining"] -= qty_closed
+                    open_pos["partial_taken"] = True
+                    balance += raw_partial_pnl - partial_fee
+
+                if (
+                    bool(params.get("breakeven_enabled", True))
+                    and not open_pos["be_activated"]
+                    and current_r >= float(params.get("breakeven_trigger_rr", 1.0))
+                ):
+                    be_buffer = entry_p * (fee_rate * 2.2)
+                    if side == "BUY":
+                        open_pos["sl_price"] = max(open_pos["sl_price"], entry_p + be_buffer)
+                    else:
+                        open_pos["sl_price"] = min(open_pos["sl_price"], entry_p - be_buffer)
+                    open_pos["be_activated"] = True
+
+                if (
+                    bool(params.get("trailing_stop_enabled", True))
+                    and current_r >= float(params.get("trailing_activation_rr", 1.3))
+                ):
+                    trail_dist = max(atr_val * float(params.get("trailing_distance_atr", 1.1)), entry_p * 0.002)
+                    if side == "BUY":
+                        new_sl = close - trail_dist
+                        if new_sl > open_pos["sl_price"]:
+                            open_pos["sl_price"] = new_sl
+                            open_pos["trailing_activated"] = True
+                    else:
+                        new_sl = close + trail_dist
+                        if new_sl < open_pos["sl_price"]:
+                            open_pos["sl_price"] = new_sl
+                            open_pos["trailing_activated"] = True
 
             if exit_reason is None and open_pos["bars_held"] >= int(params.get("max_bars_in_trade", 48)):
                 raw_exit_price = close
                 exit_reason = "TIME_STOP"
 
-            # E. Check Opposite Signal Exit if still open
             sig_eval = _evaluate_candle_signal(row, prev_row, params)
             if (
                 exit_reason is None
@@ -1067,14 +1392,12 @@ def run_backtest_experiment(
             sig_eval = _evaluate_candle_signal(row, prev_row, params)
             if sig_eval["signal"] in ("BUY", "SELL"):
                 valid_signals_count += 1
-                # Check Cooldown, Max Trades/Day, Max Consecutive Losses
                 if i < cooldown_until_idx:
                     rejection_counts["cooldown_or_limits"] += 1
                 elif trades_today >= int(params.get("max_trades_per_day", 8)):
                     rejection_counts["cooldown_or_limits"] += 1
                 elif consecutive_losses >= int(params.get("max_consecutive_losses", 4)):
                     rejection_counts["cooldown_or_limits"] += 1
-                    # Reset consecutive loss circuit breaker after skipping one valid setup
                     consecutive_losses = max(0, consecutive_losses - 1)
                 else:
                     side = sig_eval["signal"]
@@ -1084,7 +1407,6 @@ def run_backtest_experiment(
                     sl_price = exec_entry - sl_dist if side == "BUY" else exec_entry + sl_dist
                     tp_price = exec_entry + tp_dist if side == "BUY" else exec_entry - tp_dist
 
-                    # Position Sizing
                     sizing_mode = params.get("position_sizing_mode", "risk_pct")
                     if sizing_mode == "fixed_usdt":
                         notional_usdt = min(float(params["fixed_position_usdt"]) * leverage, balance * leverage * 0.95)
@@ -1206,7 +1528,13 @@ def run_backtest_experiment(
             }
         )
 
-    # Compute Comprehensive Institutional Metrics
+    add_step(
+        7,
+        "Simulation chronologique des transactions",
+        f"{len(df) - warmup} chandeliers simulés → {len(closed_trades)} transactions exécutées ({ambiguous_sl_tp_candles} conflit(s) SL/TP résolu(s) prudemment).",
+    )
+
+    # Step 8: Compute Comprehensive Institutional Metrics
     metrics = _compute_backtest_metrics(
         initial_capital=initial_capital,
         final_equity=equity_curve[-1]["equity"] if equity_curve else initial_capital,
@@ -1214,25 +1542,38 @@ def run_backtest_experiment(
         equity_curve=equity_curve,
         timeframe=timeframe,
     )
+    add_step(
+        8,
+        "Calcul des métriques de performance",
+        f"Rendement {metrics['total_return_pct']:+.2f}% | Win Rate {metrics['win_rate_pct']:.1f}% | Profit Factor {metrics['profit_factor']} | Max DD -{metrics['max_drawdown_pct']:.2f}%.",
+    )
 
-    # Diagnostic Insights for the Admin ("Pourquoi la stratégie perd ou gagne")
-    diagnostics = _build_strategy_diagnostics(metrics, closed_trades, rejection_counts, params)
-
+    diagnostics = _build_strategy_diagnostics(metrics, closed_trades, rejection_counts, params, data_quality)
     elapsed_ms = int((time.time() - t0) * 1000)
 
-    # Downsample chart_candles & equity_curve if > 450 points to keep UI ultra-responsive while keeping all markers
     sampled_candles = _downsample_candles_preserving_markers(chart_candles, max_points=450)
     sampled_equity = _downsample_list(equity_curve, max_points=450)
 
+    first_ts = timestamps[warmup] if len(timestamps) > warmup else (timestamps[0] if timestamps else "")
+    last_ts = timestamps[-1] if timestamps else ""
+
     return {
+        "market_type": market_type,
         "symbol": symbol,
         "timeframe": timeframe,
         "trading_style": trading_style,
+        "period_split": period_split,
+        "split_label": split_label,
+        "engine_version": ENGINE_VERSION,
+        "strategy_version": STRATEGY_VERSION,
+        "status": "COMPLETED",
         "data_source": data_source,
-        "start_date": str(df.index[warmup].isoformat()) if len(df) > warmup else "",
-        "end_date": str(df.index[-1].isoformat()) if len(df) > 0 else "",
+        "start_date": first_ts.isoformat() if hasattr(first_ts, "isoformat") else str(first_ts),
+        "end_date": last_ts.isoformat() if hasattr(last_ts, "isoformat") else str(last_ts),
         "candles_count": len(df) - warmup,
         "execution_ms": elapsed_ms,
+        "data_quality": data_quality,
+        "execution_steps": execution_steps,
         "params": params,
         "metrics": metrics,
         "diagnostics": diagnostics,
@@ -1240,6 +1581,7 @@ def run_backtest_experiment(
             "total_candles_evaluated": len(df) - warmup,
             "valid_signals": valid_signals_count,
             "executed_trades": len(closed_trades),
+            "ambiguous_sl_tp_candles": ambiguous_sl_tp_candles,
             "rejection_counts": rejection_counts,
             "rejected_sample": rejected_signals_sample[:25],
         },
@@ -1306,7 +1648,6 @@ def _compute_backtest_metrics(
     tf_minutes = TIMEFRAME_SECONDS.get(timeframe, 900) / 60.0
     avg_duration_minutes = round(avg_bars_held * tf_minutes, 1)
 
-    # Max Consecutive Wins / Losses
     max_win_streak = 0
     max_loss_streak = 0
     cur_w = 0
@@ -1321,7 +1662,6 @@ def _compute_backtest_metrics(
             cur_w = 0
             max_loss_streak = max(max_loss_streak, cur_l)
 
-    # Drawdown & Sharpe / Sortino / Calmar
     max_dd_pct = 0.0
     max_dd_usdt = 0.0
     for pt in equity_curve:
@@ -1358,7 +1698,6 @@ def _compute_backtest_metrics(
 
     calmar_ratio = round(total_return_pct / max_dd_pct, 2) if max_dd_pct > 0.05 else 0.0
 
-    # Performance by exit reason
     by_exit_reason: Dict[str, Dict[str, Any]] = {}
     for t in closed_trades:
         r = t["exit_reason"]
@@ -1369,7 +1708,33 @@ def _compute_backtest_metrics(
         if t["pnl_usdt"] > 0:
             by_exit_reason[r]["wins"] += 1
 
-    # Buy & Hold benchmark comparison on same period
+    # PnL distribution buckets (in R multiples) for trade distribution chart
+    r_buckets = [
+        {"bucket": "<= -1.5R", "count": 0, "pnl_usdt": 0.0},
+        {"bucket": "-1.5R à -0.5R", "count": 0, "pnl_usdt": 0.0},
+        {"bucket": "-0.5R à 0R", "count": 0, "pnl_usdt": 0.0},
+        {"bucket": "0R à +1R", "count": 0, "pnl_usdt": 0.0},
+        {"bucket": "+1R à +2R", "count": 0, "pnl_usdt": 0.0},
+        {"bucket": "> +2R", "count": 0, "pnl_usdt": 0.0},
+    ]
+    for t in closed_trades:
+        rm = float(t["r_multiple"])
+        p = float(t["pnl_usdt"])
+        if rm <= -1.5:
+            idx = 0
+        elif rm <= -0.5:
+            idx = 1
+        elif rm <= 0.0:
+            idx = 2
+        elif rm <= 1.0:
+            idx = 3
+        elif rm <= 2.0:
+            idx = 4
+        else:
+            idx = 5
+        r_buckets[idx]["count"] += 1
+        r_buckets[idx]["pnl_usdt"] = round(r_buckets[idx]["pnl_usdt"] + p, 2)
+
     buy_hold_return_pct = 0.0
     if len(equity_curve) >= 2 and equity_curve[0]["price"] > 0:
         first_p = equity_curve[0]["price"]
@@ -1412,6 +1777,7 @@ def _compute_backtest_metrics(
         "short_win_rate_pct": round((len(short_wins) / len(short_trades) * 100.0), 1) if short_trades else 0.0,
         "short_pnl_usdt": round(sum(t["pnl_usdt"] for t in short_trades), 2),
         "by_exit_reason": by_exit_reason,
+        "r_distribution": r_buckets,
     }
 
 
@@ -1420,66 +1786,70 @@ def _build_strategy_diagnostics(
     closed_trades: List[Dict[str, Any]],
     rejection_counts: Dict[str, int],
     params: Dict[str, Any],
+    data_quality: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, str]]:
-    """Generates clear French quantitative diagnostics to help the administrator improve the strategy."""
+    """Generates deterministic French quantitative diagnostics distinguishing calculated facts from hypotheses."""
     insights: List[Dict[str, str]] = []
     total_trades = metrics["total_trades"]
+
+    if data_quality and data_quality.get("missing_intervals_count", 0) > 0:
+        insights.append({
+            "severity": "warning",
+            "title": f"Fait calculé : {data_quality['missing_intervals_count']} intervalle(s) manquant(s) sur la période",
+            "detail": f"La série historique comporte {data_quality['gap_ratio_pct']}% de lacunes non interpolées. Les indicateurs ont repris sur les bougies réelles suivantes.",
+        })
 
     if total_trades == 0:
         top_rej = max(rejection_counts.items(), key=lambda x: x[1])[0] if rejection_counts else "score_too_low"
         insights.append({
             "severity": "warning",
-            "title": "Aucun trade exécuté sur la période",
-            "detail": f"Les filtres actuels ont bloqué 100% des configurations (cause principale : {top_rej}). Essayez d'abaisser le Teddy Score minimum ({params['min_teddy_score']}) ou le filtre ADX ({params['adx_min']}).",
+            "title": "Fait calculé : 0 transaction exécutée sur l'échantillon",
+            "detail": f"Les filtres actuels ont bloqué 100% des configurations (filtre principal : {top_rej}). Piste d'ajustement : réduire le Teddy Score minimum ({params['min_teddy_score']}) ou le filtre ADX ({params['adx_min']}).",
         })
         return insights
 
-    # 1. Stop Loss Premature Hit Analysis (MFE vs SL)
-    sl_trades = [t for t in closed_trades if t["exit_reason"] == "STOP_LOSS"]
+    sl_trades = [t for t in closed_trades if "STOP_LOSS" in t["exit_reason"]]
     premature_sl = [t for t in sl_trades if t["mfe_pct"] >= 0.75]
     if len(sl_trades) >= 3 and len(premature_sl) / len(sl_trades) >= 0.45:
         insights.append({
             "severity": "warning",
-            "title": "Stop Loss fréquemment touché après un départ favorable",
-            "detail": f"{len(premature_sl)}/{len(sl_trades)} positions stoppées avaient pourtant évolué en gain (MFE >= +0.75%). Envisagez d'augmenter le multiplicateur SL ATR ({params['sl_atr_mult']}x -> {round(params['sl_atr_mult'] + 0.3, 1)}x) ou d'abaisser le seuil Break-Even.",
+            "title": "Fait calculé : Stop Loss touché après excursion favorable (MFE >= +0.75%)",
+            "detail": f"{len(premature_sl)}/{len(sl_trades)} positions stoppées avaient d'abord évolué en gain. Hypothèse à tester : élargir le multiplicateur SL ATR ({params['sl_atr_mult']}x) ou abaisser le seuil Break-Even ({params['breakeven_trigger_rr']}R).",
         })
 
-    # 2. Long vs Short Asymmetry
     if metrics["long_trades"] >= 3 and metrics["short_trades"] >= 3:
         if metrics["long_pnl_usdt"] > 0 and metrics["short_pnl_usdt"] < -abs(metrics["long_pnl_usdt"]) * 0.5:
             insights.append({
                 "severity": "info",
-                "title": "Asymétrie Long / Short marquée (Shorts déficitaires)",
-                "detail": f"Les positions LONG génèrent {metrics['long_pnl_usdt']:+.2f} USDT ({metrics['long_win_rate_pct']}% WR) tandis que les SHORT perdent {metrics['short_pnl_usdt']:+.2f} USDT ({metrics['short_win_rate_pct']}% WR). Activer le filtre de tendance EMA {params['ema_trend']} peut filtrer les shorts à contre-tendance.",
+                "title": "Fait calculé : Asymétrie Long / Short (Shorts déficitaires)",
+                "detail": f"Les LONG génèrent {metrics['long_pnl_usdt']:+.2f} USDT ({metrics['long_win_rate_pct']}% WR) contre {metrics['short_pnl_usdt']:+.2f} USDT ({metrics['short_win_rate_pct']}% WR) sur les SHORT. Hypothèse : activer le filtre EMA {params['ema_trend']}.",
             })
         elif metrics["short_pnl_usdt"] > 0 and metrics["long_pnl_usdt"] < -abs(metrics["short_pnl_usdt"]) * 0.5:
             insights.append({
                 "severity": "info",
-                "title": "Asymétrie Long / Short marquée (Longs déficitaires)",
-                "detail": f"Les positions SHORT génèrent {metrics['short_pnl_usdt']:+.2f} USDT ({metrics['short_win_rate_pct']}% WR) tandis que les LONG perdent {metrics['long_pnl_usdt']:+.2f} USDT ({metrics['long_win_rate_pct']}% WR).",
+                "title": "Fait calculé : Asymétrie Long / Short (Longs déficitaires)",
+                "detail": f"Les SHORT génèrent {metrics['short_pnl_usdt']:+.2f} USDT ({metrics['short_win_rate_pct']}% WR) contre {metrics['long_pnl_usdt']:+.2f} USDT ({metrics['long_win_rate_pct']}% WR) sur les LONG.",
             })
 
-    # 3. Fee Drag Analysis
     gross_abs = abs(metrics["net_profit_usdt"]) + metrics["total_fees_usdt"]
     if metrics["total_fees_usdt"] > 0 and gross_abs > 0 and (metrics["total_fees_usdt"] / gross_abs) > 0.35:
         insights.append({
             "severity": "warning",
-            "title": "Impact élevé des frais et du slippage (Overtrading)",
-            "detail": f"Les frais cumulés ({metrics['total_fees_usdt']:.2f} USDT) absorbent une part importante de la performance sur {total_trades} trades. Augmentez le Cooldown ({params['cooldown_candles']} bougies) ou le Teddy Score minimum.",
+            "title": "Fait calculé : Poids élevé des frais et du slippage",
+            "detail": f"Les frais cumulés ({metrics['total_fees_usdt']:.2f} USDT) représentent plus de 35% de la variation brute sur {total_trades} trades. Hypothèse : augmenter le Cooldown ({params['cooldown_candles']} bougies).",
         })
 
-    # 4. Strong Robustness Confirmation
     if metrics["profit_factor"] >= 1.35 and metrics["max_drawdown_pct"] <= 12.0 and total_trades >= 8:
         insights.append({
             "severity": "success",
-            "title": "Profil de risque robuste sur l'échantillon",
-            "detail": f"Profit Factor de {metrics['profit_factor']} avec un Drawdown maîtrisé ({metrics['max_drawdown_pct']:.2f}%) et une espérance positive de {metrics['expectancy_usdt']:+.2f} USDT/trade.",
+            "title": "Fait calculé : Espérance positive sur cet échantillon",
+            "detail": f"Profit Factor de {metrics['profit_factor']} avec un Drawdown maximal de -{metrics['max_drawdown_pct']:.2f}% ({metrics['expectancy_usdt']:+.2f} USDT/trade). Vérifiez la tenue sur le segment Validation (Out-of-Sample) pour écarter tout surajustement.",
         })
     elif metrics["net_profit_usdt"] < 0:
         insights.append({
             "severity": "error",
-            "title": "Espérance mathématique négative sur cette configuration",
-            "detail": f"Perte nette de {metrics['net_profit_usdt']:.2f} USDT (Profit Factor {metrics['profit_factor']}). Utilisez l'outil Balayage de Paramètres (Grid Sweep) pour identifier la zone optimale de Score Teddy et SL ATR.",
+            "title": "Fait calculé : Espérance mathématique négative sur la période",
+            "detail": f"Perte nette de {metrics['net_profit_usdt']:.2f} USDT (Profit Factor {metrics['profit_factor']}). Comparez avec un autre scénario dans le Comparateur A/B.",
         })
 
     return insights
@@ -1492,6 +1862,7 @@ def run_parameter_sweep(
     base_params: Dict[str, Any],
     param_name: str,
     values: List[Any],
+    market_type: str = "futures",
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     max_candles: int = 800,
@@ -1516,13 +1887,15 @@ def run_parameter_sweep(
         param_name = "min_teddy_score"
 
     clean_values = values[:8] if isinstance(values, list) and values else [50, 55, 60, 65, 70]
-    preloaded = load_historical_candles(
+    raw_df, data_source, _ = load_historical_candles(
         symbol=symbol,
         timeframe=timeframe,
+        market_type=market_type,
         start_date=start_date,
         end_date=end_date,
         max_candles=max_candles,
     )
+    preloaded = (raw_df, data_source)
 
     results = []
     for val in clean_values:
@@ -1532,10 +1905,12 @@ def run_parameter_sweep(
             symbol=symbol,
             timeframe=timeframe,
             trading_style=trading_style,
+            market_type=market_type,
             start_date=start_date,
             end_date=end_date,
             raw_params=p,
             max_candles=max_candles,
+            allow_unreliable_data=True,
             preloaded_df=preloaded,
         )
         m = run_res["metrics"]
@@ -1553,8 +1928,12 @@ def run_parameter_sweep(
             }
         )
 
-    best_row = max(results, key=lambda r: (r["profit_factor"] if r["total_trades"] >= 3 else -999.0, r["total_return_pct"])) if results else None
+    best_row = max(
+        results,
+        key=lambda r: (r["profit_factor"] if r["total_trades"] >= 3 else -999.0, r["total_return_pct"]),
+    ) if results else None
     return {
+        "market_type": market_type,
         "symbol": normalize_symbol(symbol),
         "timeframe": timeframe,
         "trading_style": trading_style,
@@ -1562,6 +1941,105 @@ def run_parameter_sweep(
         "param_label": allowed_sweep_params.get(param_name, param_name),
         "results": results,
         "best": best_row,
+    }
+
+
+def generate_gemini_lab_analysis(
+    run_a: Dict[str, Any],
+    run_b: Optional[Dict[str, Any]] = None,
+    admin_question: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    On-demand AI interpretation of already-calculated Strategy Lab results.
+    - NEVER invents metrics; receives exact engine-computed JSON.
+    - Clearly separates [FAITS CALCULÉS PAR LE MOTEUR] and [HYPOTHÈSES & PISTES DE RECHERCHE].
+    - Falls back to a structured deterministic quantitative synthesis if GEMINI_API_KEY is not configured.
+    """
+    m1 = run_a.get("metrics", {})
+    p1 = run_a.get("params", {})
+    q1 = run_a.get("data_quality", {})
+
+    facts_lines = [
+        f"• Expérience #{run_a.get('id', 'Active')} : {run_a.get('symbol')} ({run_a.get('market_type', 'futures').upper()} • {run_a.get('timeframe')}) sur {run_a.get('candles_count')} chandeliers ({run_a.get('data_source')}).",
+        f"• Qualité des données : statut {q1.get('status', 'VALID')}, {q1.get('missing_intervals_count', 0)} intervalle(s) manquant(s), {q1.get('cached_reused_candles', 0)} bougies réutilisées du cache.",
+        f"• Capital initial : {m1.get('initial_capital')} USDT → Capital final : {m1.get('final_capital')} USDT (Profit net : {m1.get('net_profit_usdt'):+.2f} USDT / {m1.get('total_return_pct'):+.2f}%).",
+        f"• Transactions : {m1.get('total_trades')} ({m1.get('winning_trades')} gagnantes, {m1.get('losing_trades')} perdantes, Taux de réussite : {m1.get('win_rate_pct')}%).",
+        f"• Profit Factor : {m1.get('profit_factor')} | Drawdown maximal : -{m1.get('max_drawdown_pct')}% (-{m1.get('max_drawdown_usdt')} USDT) | Frais totaux : {m1.get('total_fees_usdt')} USDT.",
+    ]
+    if run_b and run_b.get("metrics"):
+        m2 = run_b["metrics"]
+        facts_lines.append(
+            f"• Comparaison avec Expérience #{run_b.get('id', 'B')} ({run_b.get('symbol')} {run_b.get('timeframe')}) : "
+            f"Rendement {m2.get('total_return_pct'):+.2f}% vs {m1.get('total_return_pct'):+.2f}%, "
+            f"Profit Factor {m2.get('profit_factor')} vs {m1.get('profit_factor')}, "
+            f"Drawdown -{m2.get('max_drawdown_pct')}% vs -{m1.get('max_drawdown_pct')}%."
+        )
+
+    gemini_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+    if gemini_key:
+        try:
+            import requests
+            prompt = (
+                "Tu es l'analyste quantitatif du Strategy Lab privé de Bitsure. "
+                "RÈGLE ABSOLUE : N'invente JAMAIS aucune métrique numérique. Utilise uniquement les chiffres fournis ci-dessous par le moteur de backtesting. "
+                "Structure obligatoirement ta réponse en français en 3 sections courtes :\n"
+                "1. FAITS CALCULÉS PAR LE MOTEUR (rappel fidèle des chiffres clés et de la qualité des données)\n"
+                "2. HYPOTHÈSES D'INTERPRÉTATION & LIMITES (analyse du drawdown, des frais, du risque de surajustement)\n"
+                "3. PISTES DE TEST MANUEL (sans modifier automatiquement les paramètres).\n\n"
+                f"DONNÉES CALCULÉES :\n{chr(10).join(facts_lines)}\n"
+                f"PARAMÈTRES A : Score>={p1.get('min_teddy_score')}, SL={p1.get('sl_atr_mult')}xATR, R:R>={p1.get('min_rr_ratio')}, ADX>={p1.get('adx_min')}\n"
+            )
+            if admin_question:
+                prompt += f"\nQuestion de l'administrateur : {admin_question}\n"
+
+            resp = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}",
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                timeout=12,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates") or []
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts") or []
+                    if parts and parts[0].get("text"):
+                        return {
+                            "provider": "Gemini 2.5 Flash (Assisté)",
+                            "analysis": parts[0]["text"],
+                            "facts_summary": facts_lines,
+                        }
+        except Exception as e:
+            logger.warning("Gemini Lab analysis fallback: %s", e)
+
+    # Deterministic structured synthesis when Gemini key is absent or unreachable
+    hypotheses = []
+    if m1.get("total_trades", 0) < 15:
+        hypotheses.append(
+            "• Échantillon statistique restreint (< 15 transactions) : les métriques (Win Rate, Profit Factor) ont une variance élevée et peuvent être sensibles au surajustement."
+        )
+    if m1.get("max_drawdown_pct", 0) > 10.0:
+        hypotheses.append(
+            f"• Drawdown maximal notable (-{m1.get('max_drawdown_pct')}%) : réduire le risque par trade ({p1.get('risk_per_trade_pct')}%) ou activer le filtre de tendance EMA {p1.get('ema_trend')} pourrait amortir les séries de pertes."
+        )
+    if m1.get("profit_factor", 0) >= 1.25:
+        hypotheses.append(
+            "• Le ratio gains/pertes est positif sur cette période. Il est recommandé de relancer exactement ces paramètres sur le segment « Validation (20% Out-of-Sample) » avant de désigner cette configuration comme candidate."
+        )
+    else:
+        hypotheses.append(
+            "• Le Profit Factor est inférieur à 1.25 : vérifiez dans l'onglet « Diagnostic des Filtres » si les pertes proviennent de signaux à contre-tendance ou de Stop Loss trop serrés."
+        )
+
+    text_report = (
+        "1. FAITS CALCULÉS PAR LE MOTEUR (100% Déterministes)\n"
+        + "\n".join(facts_lines)
+        + "\n\n2. HYPOTHÈSES D'INTERPRÉTATION & LIMITES MÉTHODOLOGIQUES\n"
+        + "\n".join(hypotheses)
+    )
+    return {
+        "provider": "Synthèse Quantitative Déterministe Bitsure (Moteur Interne)",
+        "analysis": text_report,
+        "facts_summary": facts_lines,
     }
 
 
@@ -1670,30 +2148,49 @@ def delete_lab_preset(admin_user_id: int, preset_id: int) -> List[Dict[str, Any]
     return list_lab_presets(admin_user_id)
 
 
-def save_lab_run(admin_user_id: int, run_data: Dict[str, Any], name: Optional[str] = None, notes: str = "", tags: str = "") -> int:
+def save_lab_run(
+    admin_user_id: int,
+    run_data: Dict[str, Any],
+    name: Optional[str] = None,
+    notes: str = "",
+    tags: str = "",
+    parent_run_id: Optional[int] = None,
+) -> int:
     db = get_db()
     now = time.time()
+    mkt = run_data.get("market_type", "futures")
+    split = run_data.get("period_split", "full")
     run_name = (
         name
-        or f"{run_data['symbol']} {run_data['timeframe']} ({run_data['trading_style'].upper()}) — Score>={run_data['params'].get('min_teddy_score', 58)}"
+        or f"{run_data['symbol']} {mkt.upper()} {run_data['timeframe']} ({run_data['trading_style'].upper()}) — Score>={run_data['params'].get('min_teddy_score', 58)}"
     )[:140]
     db.execute(
         """
         INSERT INTO strategy_lab_runs
-        (name, preset_id, symbol, timeframe, trading_style, start_date, end_date, data_source, candles_count,
-         params_json, metrics_json, trades_json, equity_json, signals_summary_json, tags, is_favorite, notes, created_by, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, %s, %s)
+        (name, preset_id, parent_run_id, market_type, symbol, timeframe, trading_style, period_split,
+         start_date, end_date, data_source, candles_count, engine_version, strategy_version, status,
+         is_candidate, data_quality_json, steps_json, params_json, metrics_json, trades_json, equity_json,
+         signals_summary_json, tags, is_favorite, notes, created_by, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, %s, %s)
         """,
         (
             run_name,
             run_data.get("preset_id"),
+            int(parent_run_id) if parent_run_id else None,
+            mkt,
             run_data["symbol"],
             run_data["timeframe"],
             run_data["trading_style"],
+            split,
             run_data.get("start_date", ""),
             run_data.get("end_date", ""),
             run_data.get("data_source", "Binance Historical"),
             int(run_data.get("candles_count", 0)),
+            run_data.get("engine_version", ENGINE_VERSION),
+            run_data.get("strategy_version", STRATEGY_VERSION),
+            run_data.get("status", "COMPLETED"),
+            json.dumps(run_data.get("data_quality", {})),
+            json.dumps(run_data.get("execution_steps", [])),
             json.dumps(run_data.get("params", {})),
             json.dumps(run_data.get("metrics", {})),
             json.dumps(run_data.get("trades", [])),
@@ -1713,14 +2210,16 @@ def save_lab_run(admin_user_id: int, run_data: Dict[str, Any], name: Optional[st
     return int(row["id"]) if row else 0
 
 
-def list_lab_runs(limit: int = 30) -> List[Dict[str, Any]]:
+def list_lab_runs(limit: int = 35) -> List[Dict[str, Any]]:
     db = get_db()
     rows = db.execute(
         """
-        SELECT id, name, preset_id, symbol, timeframe, trading_style, start_date, end_date,
-               data_source, candles_count, params_json, metrics_json, tags, is_favorite, notes, created_at
+        SELECT id, name, preset_id, parent_run_id, market_type, symbol, timeframe, trading_style,
+               period_split, start_date, end_date, data_source, candles_count, engine_version,
+               strategy_version, status, is_candidate, data_quality_json, params_json, metrics_json,
+               tags, is_favorite, notes, created_at
         FROM strategy_lab_runs
-        ORDER BY is_favorite DESC, created_at DESC
+        ORDER BY is_candidate DESC, is_favorite DESC, created_at DESC
         LIMIT %s
         """,
         (int(limit),),
@@ -1728,25 +2227,37 @@ def list_lab_runs(limit: int = 30) -> List[Dict[str, Any]]:
     out = []
     for r in rows:
         try:
-            params = json.loads(r["params_json"])
+            params = json.loads(r.get("params_json") or "{}")
         except Exception:
             params = {}
         try:
-            metrics = json.loads(r["metrics_json"])
+            metrics = json.loads(r.get("metrics_json") or "{}")
         except Exception:
             metrics = {}
+        try:
+            dq = json.loads(r.get("data_quality_json") or "{}")
+        except Exception:
+            dq = {}
         out.append(
             {
                 "id": int(r["id"]),
                 "name": r["name"],
                 "preset_id": r.get("preset_id"),
+                "parent_run_id": r.get("parent_run_id"),
+                "market_type": r.get("market_type") or "futures",
                 "symbol": r["symbol"],
                 "timeframe": r["timeframe"],
                 "trading_style": r["trading_style"],
+                "period_split": r.get("period_split") or "full",
                 "start_date": r.get("start_date") or "",
                 "end_date": r.get("end_date") or "",
                 "data_source": r.get("data_source") or "",
                 "candles_count": int(r.get("candles_count") or 0),
+                "engine_version": r.get("engine_version") or ENGINE_VERSION,
+                "strategy_version": r.get("strategy_version") or STRATEGY_VERSION,
+                "status": r.get("status") or "COMPLETED",
+                "is_candidate": bool(r.get("is_candidate")),
+                "data_quality": dq,
                 "params": params,
                 "metrics": metrics,
                 "tags": r.get("tags") or "",
@@ -1767,13 +2278,23 @@ def get_lab_run_detail(run_id: int) -> Optional[Dict[str, Any]]:
     return {
         "id": int(r["id"]),
         "name": r["name"],
+        "preset_id": r.get("preset_id"),
+        "parent_run_id": r.get("parent_run_id"),
+        "market_type": r.get("market_type") or "futures",
         "symbol": r["symbol"],
         "timeframe": r["timeframe"],
         "trading_style": r["trading_style"],
+        "period_split": r.get("period_split") or "full",
         "start_date": r.get("start_date") or "",
         "end_date": r.get("end_date") or "",
         "data_source": r.get("data_source") or "",
         "candles_count": int(r.get("candles_count") or 0),
+        "engine_version": r.get("engine_version") or ENGINE_VERSION,
+        "strategy_version": r.get("strategy_version") or STRATEGY_VERSION,
+        "status": r.get("status") or "COMPLETED",
+        "is_candidate": bool(r.get("is_candidate")),
+        "data_quality": json.loads(r.get("data_quality_json") or "{}"),
+        "execution_steps": json.loads(r.get("steps_json") or "[]"),
         "params": json.loads(r.get("params_json") or "{}"),
         "metrics": json.loads(r.get("metrics_json") or "{}"),
         "trades": json.loads(r.get("trades_json") or "[]"),
@@ -1788,18 +2309,34 @@ def get_lab_run_detail(run_id: int) -> Optional[Dict[str, Any]]:
     }
 
 
-def update_lab_run_meta(run_id: int, name: Optional[str] = None, notes: Optional[str] = None, tags: Optional[str] = None, is_favorite: Optional[bool] = None) -> bool:
+def update_lab_run_meta(
+    run_id: int,
+    name: Optional[str] = None,
+    notes: Optional[str] = None,
+    tags: Optional[str] = None,
+    is_favorite: Optional[bool] = None,
+    is_candidate: Optional[bool] = None,
+) -> bool:
     db = get_db()
-    row = db.execute("SELECT id, name, notes, tags, is_favorite FROM strategy_lab_runs WHERE id = %s", (int(run_id),)).fetchone()
+    row = db.execute(
+        "SELECT id, name, notes, tags, is_favorite, is_candidate FROM strategy_lab_runs WHERE id = %s",
+        (int(run_id),),
+    ).fetchone()
     if not row:
         return False
     new_name = (name if name is not None else row["name"]).strip()[:140]
     new_notes = (notes if notes is not None else (row.get("notes") or "")).strip()[:2000]
     new_tags = (tags if tags is not None else (row.get("tags") or "")).strip()[:150]
     new_fav = (1 if is_favorite else 0) if is_favorite is not None else int(row.get("is_favorite") or 0)
+    new_cand = (1 if is_candidate else 0) if is_candidate is not None else int(row.get("is_candidate") or 0)
+
+    if is_candidate is True:
+        # Clear previous candidate flag so the newly designated candidate stands out clearly
+        db.execute("UPDATE strategy_lab_runs SET is_candidate = 0 WHERE is_candidate = 1")
+
     db.execute(
-        "UPDATE strategy_lab_runs SET name = %s, notes = %s, tags = %s, is_favorite = %s WHERE id = %s",
-        (new_name, new_notes, new_tags, new_fav, int(run_id)),
+        "UPDATE strategy_lab_runs SET name = %s, notes = %s, tags = %s, is_favorite = %s, is_candidate = %s WHERE id = %s",
+        (new_name, new_notes, new_tags, new_fav, new_cand, int(run_id)),
     )
     return True
 
