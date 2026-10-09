@@ -653,10 +653,13 @@ def _analyze_symbol_complete(user_id: int, symbol: str, timeframe: str = "1h", s
     data_source = "live_api"
     try:
         if norm_sym in ("BTCUSDT", "ETHUSDT"):
-            df = get_klines_dataframe(norm_sym, timeframe, cfg.market_type, 500)
+            # Use Spot klines as canonical chart reference so displayed price matches Binance Spot WebSocket/Ticker
+            df = get_klines_dataframe(norm_sym, timeframe, "spot", 500)
+            if df is None or df.empty:
+                df = get_klines_dataframe(norm_sym, timeframe, cfg.market_type, 500)
             for htf, htf_min in (("1h", 60), ("4h", 240), ("1d", 1440)):
                 if htf_min >= base_min and base_min * 500 < htf_min * 55:
-                    htf_df = get_klines_dataframe(norm_sym, htf, cfg.market_type, 120)
+                    htf_df = get_klines_dataframe(norm_sym, htf, "spot", 120)
                     if htf_df is not None and not htf_df.empty:
                         htf_data[htf] = htf_df
     except Exception:
@@ -678,6 +681,26 @@ def _analyze_symbol_complete(user_id: int, symbol: str, timeframe: str = "1h", s
         df = _load_fallback_csv(norm_sym)
         data_source = "historical_csv_cache"
 
+    # Synchronize the latest candle close with live real-time ticker so analysis & ticker never diverge
+    live_quote = None
+    try:
+        live_quote = run_coro(fetcher.get_realtime_price(norm_sym, force_fresh=True))
+    except Exception:
+        live_quote = None
+    live_tick_price = _extract_price_float(live_quote, 0.0)
+    if live_tick_price > 0 and df is not None and not df.empty and "Close" in df.columns:
+        try:
+            if hasattr(df, "_data") and "Close" in df._data and len(df._data["Close"]) > 0:
+                df._data["Close"][-1] = float(live_tick_price)
+                if "High" in df._data and float(live_tick_price) > float(df._data["High"][-1]):
+                    df._data["High"][-1] = float(live_tick_price)
+                if "Low" in df._data and float(live_tick_price) < float(df._data["Low"][-1]):
+                    df._data["Low"][-1] = float(live_tick_price)
+            else:
+                df.iloc[-1, df.columns.get_loc("Close")] = float(live_tick_price)
+        except Exception:
+            pass
+
     analysis = SignalEngine.analyze(
         df,
         lang=lang,
@@ -687,7 +710,7 @@ def _analyze_symbol_complete(user_id: int, symbol: str, timeframe: str = "1h", s
         timeframe_minutes=float(base_min),
     )
     ind = analysis.get("indicators") or {}
-    last_price = ind.get("price") or (float(df["Close"].iloc[-1]) if df is not None and not df.empty else 0.0)
+    last_price = live_tick_price or ind.get("price") or (float(df["Close"].iloc[-1]) if df is not None and not df.empty else 0.0)
 
     # Update PaperTrader cached price and check automatic SL/TP exits
     pt = PaperTrader()

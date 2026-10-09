@@ -466,8 +466,8 @@ export function App() {
     let unmounted = false;
 
     const endpoints = [
-      'wss://data-stream.binance.vision/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker/btcusdt@bookTicker/ethusdt@bookTicker',
-      'wss://stream.binance.com:9443/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker/btcusdt@bookTicker/ethusdt@bookTicker',
+      'wss://data-stream.binance.vision/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker/paxgusdt@miniTicker/btcusdt@bookTicker/ethusdt@bookTicker/paxgusdt@bookTicker',
+      'wss://stream.binance.com:9443/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker/paxgusdt@miniTicker/btcusdt@bookTicker/ethusdt@bookTicker/paxgusdt@bookTicker',
     ];
     let epIndex = 0;
 
@@ -487,7 +487,8 @@ export function App() {
             const msg = JSON.parse(evt.data);
             const d = msg?.data || msg;
             if (!d || !d.s) return;
-            const sym = String(d.s).toUpperCase();
+            const rawSym = String(d.s).toUpperCase();
+            const sym = rawSym === 'PAXGUSDT' ? 'XAUUSD' : rawSym;
             if (d.e === '24hrMiniTicker' || d.c) {
               const closeP = parseFloat(d.c);
               const openP = parseFloat(d.o);

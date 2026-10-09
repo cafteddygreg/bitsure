@@ -149,7 +149,6 @@ class DataFetcher:
                 f"https://api.binance.com/api/v3/ticker/bookTicker?symbol={binance_sym}",
                 f"https://api1.binance.com/api/v3/ticker/bookTicker?symbol={binance_sym}",
                 f"https://fapi.binance.com/fapi/v1/ticker/bookTicker?symbol={binance_sym}",
-                f"https://testnet.binance.vision/api/v3/ticker/bookTicker?symbol={binance_sym}",
             )
             for url in price_urls:
                 try:
@@ -184,7 +183,35 @@ class DataFetcher:
             except Exception as e:
                 logger.warning(f"Price error {symbol}: {e}")
 
-        # 3. Repli Yahoo Finance pour XAUUSD si TwelveData absent
+        # 3. Or Spot Temps Réel pour XAUUSD (évite l'écart de +25$ du contrat Futures COMEX GC=F)
+        if symbol == "XAUUSD":
+            for gold_url in (
+                "https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol=PAXGUSDT",
+                "https://api.binance.com/api/v3/ticker/bookTicker?symbol=PAXGUSDT",
+                "https://api1.binance.com/api/v3/ticker/bookTicker?symbol=PAXGUSDT",
+            ):
+                try:
+                    r = requests.get(gold_url, timeout=5)
+                    if r.status_code == 200:
+                        data = r.json()
+                        bid = float(data.get("bidPrice", 0) or 0)
+                        ask = float(data.get("askPrice", 0) or 0)
+                        if bid > 0 or ask > 0:
+                            price = (bid + ask) / 2.0 if (bid and ask) else (bid or ask)
+                            return {"price": price, "bid": bid or price, "ask": ask or price, "timestamp": time.time()}
+                except Exception:
+                    pass
+            try:
+                r = requests.get("https://api.coinbase.com/v2/prices/XAU-USD/spot", timeout=5)
+                if r.status_code == 200:
+                    amt = float((r.json().get("data") or {}).get("amount") or 0)
+                    if amt > 0:
+                        spread = max(amt * 0.0003, 0.05)
+                        return {"price": amt, "bid": amt - spread / 2, "ask": amt + spread / 2, "timestamp": time.time()}
+            except Exception:
+                pass
+
+        # 4. Repli Yahoo Finance si nécessaire
         try:
             import yfinance as yf
             yf_map = {"XAUUSD": "GC=F"}
@@ -205,8 +232,8 @@ class DataFetcher:
 
     async def get_historical_data(self, symbol: str, timeframe: str = DEFAULT_TIMEFRAME, period: str = HISTORY_PERIOD) -> Optional[pd.DataFrame]:
         symbol = normalize_symbol(symbol)
-        # Actifs Binance : pas de cache — données toujours fraîches à la demande
-        if symbol.endswith("USDT"):
+        # Actifs Binance & XAUUSD Spot : toujours frais à la demande
+        if symbol.endswith("USDT") or symbol == "XAUUSD":
             return await self._fetch_history(symbol, timeframe)
         # Actifs TwelveData : cache conservé pour respecter les quotas API
         key = cache_key(symbol, timeframe, period)
@@ -264,10 +291,40 @@ class DataFetcher:
             except Exception as e:
                 logger.warning(f"History error {symbol}: {e}")
 
-        # 3. Repli Yahoo Finance (ex: XAUUSD -> GC=F)
+        # 3. Or Spot Temps Réel OHLCV (XAUUSD -> PAXGUSDT Spot 1:1 1oz Gold)
+        if symbol == "XAUUSD":
+            for kline_base in (
+                "https://data-api.binance.vision/api/v3/klines",
+                "https://api.binance.com/api/v3/klines",
+                "https://api1.binance.com/api/v3/klines",
+            ):
+                try:
+                    r = requests.get(
+                        kline_base,
+                        params={"symbol": "PAXGUSDT", "interval": timeframe, "limit": 500},
+                        timeout=7,
+                    )
+                    if r.status_code == 200:
+                        klines = r.json()
+                        if isinstance(klines, list) and len(klines) > 0:
+                            df = pd.DataFrame(
+                                klines,
+                                columns=[
+                                    "OpenTime", "Open", "High", "Low", "Close", "Volume",
+                                    "CloseTime", "QuoteAssetVolume", "NumberOfTrades",
+                                    "TakerBuyBaseVolume", "TakerBuyQuoteVolume", "Ignore",
+                                ],
+                            )
+                            df["Date"] = pd.to_datetime(df["OpenTime"], unit="ms")
+                            df.set_index("Date", inplace=True)
+                            return df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+                except Exception as e:
+                    logger.debug(f"XAUUSD Spot History mirror error ({kline_base}): {e}")
+
+        # 4. Repli Yahoo Finance (ex: XAUUSD -> PAXG-USD ou GC=F recalibré sur le spot)
         try:
             import yfinance as yf
-            yf_map = {"XAUUSD": "GC=F"}
+            yf_map = {"XAUUSD": "PAXG-USD"}
             yf_sym = yf_map.get(symbol)
             if yf_sym:
                 yf_interval = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}.get(timeframe, "1h")
