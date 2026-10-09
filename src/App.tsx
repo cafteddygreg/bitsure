@@ -98,6 +98,14 @@ export function App() {
   const [authName, setAuthName] = useState('');
   const [authTelegram, setAuthTelegram] = useState('');
   const [googleOAuthEnabled, setGoogleOAuthEnabled] = useState(false);
+  const [googlePendingToken, setGooglePendingToken] = useState<string | null>(null);
+  const [capsLockOn, setCapsLockOn] = useState(false);
+
+  const handleCapsLockEvent = useCallback((e: React.KeyboardEvent<HTMLInputElement> | React.MouseEvent<HTMLInputElement>) => {
+    if (typeof e.getModifierState === 'function') {
+      setCapsLockOn(Boolean(e.getModifierState('CapsLock')));
+    }
+  }, []);
 
   // Admin Quota Editor State
   const [editingQuotasUid, setEditingQuotasUid] = useState<number | null>(null);
@@ -507,10 +515,43 @@ export function App() {
   useEffect(() => {
     loadUserAndCoreData();
 
+    const applyGooglePending = (pending: any) => {
+      if (!pending || !pending.google_pending_token) return;
+      setGooglePendingToken(String(pending.google_pending_token));
+      if (pending.email) setAuthEmail(String(pending.email));
+      if (pending.display_name) setAuthName(String(pending.display_name));
+      const nextMode = pending.mode === 'register' ? 'register' : 'login';
+      setAuthModal(nextMode);
+      setAuthError(null);
+      try {
+        sessionStorage.removeItem('bitsure_google_pending');
+        localStorage.removeItem('bitsure_google_pending');
+      } catch {
+        // ignore
+      }
+      showToast(
+        nextMode === 'login'
+          ? `Compte Google (${pending.email}) vérifié. Veuillez saisir votre mot de passe pour finaliser la connexion.`
+          : `Compte Google (${pending.email}) vérifié. Veuillez choisir un mot de passe pour finaliser votre inscription.`,
+        'info'
+      );
+    };
+
+    try {
+      const rawPending = sessionStorage.getItem('bitsure_google_pending') || localStorage.getItem('bitsure_google_pending');
+      if (rawPending) {
+        applyGooglePending(JSON.parse(rawPending));
+      }
+    } catch {
+      // ignore
+    }
+
     const handleOAuthMessage = (event: MessageEvent) => {
       const data = event.data;
       if (!data || typeof data !== 'object') return;
-      if (data.type === 'OAUTH_AUTH_SUCCESS') {
+      if (data.type === 'OAUTH_PASSWORD_REQUIRED') {
+        applyGooglePending(data);
+      } else if (data.type === 'OAUTH_AUTH_SUCCESS') {
         if (data.token) {
           setStoredSession(data.token, data.csrf_token || '');
         }
@@ -643,12 +684,14 @@ export function App() {
           password: authPassword,
           display_name: authName.trim(),
           telegram_handle: authTelegram.trim(),
+          google_pending_token: googlePendingToken || undefined,
         }),
       });
       setStoredSession(res.token, res.csrf_token || res.user?.csrf_token || '');
       setUser(res.user);
       setAuthModal(null);
       setAuthPassword('');
+      setGooglePendingToken(null);
       setViewMode('workspace');
       await loadUserAndCoreData();
       showToast(
@@ -1030,6 +1073,32 @@ export function App() {
         </button>
       </div>
 
+      {googlePendingToken && (
+        <div className="p-3 rounded-lg bg-[#10B981]/15 border border-[#10B981]/40 text-xs text-[#34D399] flex items-start justify-between gap-2">
+          <div className="flex items-start gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-[#10B981]" />
+            <div>
+              <div className="font-semibold text-[#F1F5F9]">Identité Google vérifiée ({authEmail})</div>
+              <div className="text-[11px] text-[#94A3B8] mt-0.5">
+                {mode === 'login'
+                  ? 'Veuillez saisir votre mot de passe Bitsure pour confirmer et ouvrir votre session.'
+                  : 'Veuillez définir votre mot de passe Bitsure (min. 8 caractères) pour finaliser votre inscription.'}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setGooglePendingToken(null);
+              setAuthEmail('');
+            }}
+            className="text-[10px] text-[#94A3B8] hover:text-[#F1F5F9] underline shrink-0"
+          >
+            Changer
+          </button>
+        </div>
+      )}
+
       {authError && (
         <div className="p-3 rounded-lg bg-[#F43F5E]/15 border border-[#F43F5E]/40 text-xs text-[#FB7185] flex items-start gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -1069,24 +1138,46 @@ export function App() {
             type="email"
             value={authEmail}
             onChange={(e) => setAuthEmail(e.target.value)}
+            readOnly={Boolean(googlePendingToken)}
             placeholder="votre@email.com"
-            className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+            className={`w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9] ${
+              googlePendingToken ? 'opacity-70 cursor-not-allowed' : ''
+            }`}
             required
           />
         </div>
         <div>
-          <label className="block text-xs text-[#94A3B8] mb-1">
-            Mot de passe {mode === 'register' && <span className="text-[#64748B]">(min. 8 caractères)</span>}
-          </label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="block text-xs text-[#94A3B8]">
+              Mot de passe {mode === 'register' && <span className="text-[#64748B]">(min. 8 caractères)</span>}{' '}
+              <span className="text-[#10B981] font-semibold">*</span>
+            </label>
+            {capsLockOn && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#F59E0B]/15 border border-[#F59E0B]/40 text-[10px] font-mono-tabular font-semibold text-[#FBBF24]">
+                <AlertTriangle className="w-3 h-3" />
+                Verr. Maj (Caps Lock) activé
+              </span>
+            )}
+          </div>
           <input
             type="password"
             value={authPassword}
             onChange={(e) => setAuthPassword(e.target.value)}
+            onKeyDown={handleCapsLockEvent}
+            onKeyUp={handleCapsLockEvent}
+            onClick={handleCapsLockEvent}
+            onBlur={() => setCapsLockOn(false)}
             placeholder="••••••••"
             minLength={mode === 'register' ? 8 : 1}
             className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
             required
           />
+          {capsLockOn && (
+            <p className="mt-1.5 text-[11px] text-[#FBBF24] flex items-center gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>Attention : la touche Majuscules (Caps Lock) est activée sur votre ordinateur.</span>
+            </p>
+          )}
         </div>
         <button
           type="submit"
@@ -1095,6 +1186,10 @@ export function App() {
         >
           {authSubmitting
             ? 'Vérification en cours...'
+            : googlePendingToken
+            ? mode === 'login'
+              ? 'Confirmer le mot de passe et se connecter'
+              : 'Confirmer le mot de passe et créer le compte'
             : mode === 'login'
             ? 'Se connecter'
             : "Soumettre ma demande d'accès"}

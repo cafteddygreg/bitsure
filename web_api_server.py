@@ -209,6 +209,19 @@ def _init_web_schema_and_seed():
 
     db.execute(
         """
+        CREATE TABLE IF NOT EXISTS google_pending_tokens (
+            token TEXT PRIMARY KEY,
+            email TEXT NOT NULL,
+            google_sub TEXT,
+            display_name TEXT,
+            created_at DOUBLE PRECISION DEFAULT 0,
+            expires_at DOUBLE PRECISION DEFAULT 0
+        )
+        """
+    )
+
+    db.execute(
+        """
         CREATE TABLE IF NOT EXISTS support_tickets (
             id SERIAL PRIMARY KEY,
             user_id BIGINT NOT NULL,
@@ -1029,107 +1042,59 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             um = UserManager.get_instance()
             existing = db.execute("SELECT * FROM web_accounts WHERE LOWER(email) = %s", (email,)).fetchone()
-            is_explicit_admin = bool(ADMIN_EMAIL and email == ADMIN_EMAIL)
+            has_existing_account = bool(existing)
 
-            if existing:
-                uid = int(existing["user_id"])
-                db.execute(
-                    "UPDATE web_accounts SET google_sub = %s, last_login_at = %s WHERE LOWER(email) = %s",
-                    (google_sub, time.time(), email),
-                )
-                if is_explicit_admin:
-                    um.approve_user(uid, "admin")
-                    um.set_role(uid, "admin")
-                    um.set_account_status(uid, ACCOUNT_STATUS_APPROVED)
-            else:
-                if is_explicit_admin:
-                    uid = _resolve_configured_admin_uid()
-                    um.get_user(uid, username=name)
-                    um.approve_user(uid, "admin")
-                    um.set_role(uid, "admin")
-                    um.set_account_status(uid, ACCOUNT_STATUS_APPROVED)
-                else:
-                    uid = int(time.time() * 1000) % 900000000 + 100000000
-                    um.get_user(uid, username=name)
-                    # CRITICAL: Every new non-admin Google user starts as PENDING_APPROVAL
-                    um.set_account_status(uid, ACCOUNT_STATUS_PENDING)
-
-                PaperTrader().init_capital(uid, PAPER_DEFAULT_CAPITAL)
-                trading_config.ensure_config_row(uid)
-                for s in ("BTCUSDT", "ETHUSDT", "XAUUSD"):
-                    um.add_to_watchlist(uid, s)
-
-                db.execute(
-                    """
-                    INSERT INTO web_accounts (email, user_id, password_hash, display_name, telegram_handle, google_sub, auth_provider, last_login_at, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'google', %s, %s)
-                    """,
-                    (
-                        email,
-                        uid,
-                        _hash_password_secure(secrets.token_urlsafe(24)),
-                        name,
-                        f"@{email.split('@')[0]}",
-                        google_sub,
-                        time.time(),
-                        time.time(),
-                    ),
-                )
-                log_security_event(
-                    "GOOGLE_REGISTER",
-                    severity="info",
-                    user_id=uid,
-                    email=email,
-                    ip_address=self._client_ip(),
-                    details=f"Inscription via Google OAuth (statut={'APPROVED (Admin)' if is_explicit_admin else 'PENDING_APPROVAL'}).",
-                )
-
-            token, csrf_token = _create_session(
-                uid,
-                email,
-                ip_address=self._client_ip(),
-                user_agent=self.headers.get("User-Agent", ""),
+            # MANDATORY REQUIREMENT: Even when signing in or registering via Google,
+            # the user MUST still enter/confirm their password before a session is issued.
+            pending_token = secrets.token_urlsafe(32)
+            now_ts = time.time()
+            db.execute("DELETE FROM google_pending_tokens WHERE expires_at < %s OR LOWER(email) = %s", (now_ts, email))
+            db.execute(
+                """
+                INSERT INTO google_pending_tokens (token, email, google_sub, display_name, created_at, expires_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (pending_token, email, google_sub, name, now_ts, now_ts + 600),
             )
             log_security_event(
-                "GOOGLE_LOGIN_SUCCESS",
+                "GOOGLE_IDENTITY_VERIFIED_AWAITING_PASSWORD",
                 severity="info",
-                user_id=uid,
                 email=email,
                 ip_address=self._client_ip(),
-                details="Connexion Google OAuth réussie.",
+                details=f"Identité Google vérifiée ({email}). En attente de saisie obligatoire du mot de passe ({'connexion' if has_existing_account else 'inscription'}).",
             )
-            cookie_hdr = self._build_session_cookie_header(token)
             payload_js = json.dumps({
-                "type": "OAUTH_AUTH_SUCCESS",
-                "token": token,
-                "csrf_token": csrf_token,
-                "user_id": uid,
+                "type": "OAUTH_PASSWORD_REQUIRED",
+                "google_pending_token": pending_token,
+                "email": email,
+                "display_name": name,
+                "mode": "login" if has_existing_account else "register",
             })
             html = f"""<!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>Authentification Bitsure</title></head>
+  <head><meta charset="utf-8"><title>Vérification Google — Mot de passe requis</title></head>
   <body style="background:#090D16;color:#F1F5F9;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
     <div style="text-align:center;">
-      <p>Authentification Google réussie. Fermeture de la fenêtre...</p>
+      <p>Compte Google vérifié ({email}). Redirection pour saisie obligatoire du mot de passe...</p>
     </div>
     <script>
       (function() {{
         var data = {payload_js};
         try {{
-          localStorage.setItem('bitsure_session_token', data.token);
-          localStorage.setItem('bitsure_csrf_token', data.csrf_token);
+          sessionStorage.setItem('bitsure_google_pending', JSON.stringify(data));
+          localStorage.setItem('bitsure_google_pending', JSON.stringify(data));
         }} catch (e) {{}}
         if (window.opener) {{
           window.opener.postMessage(data, '*');
           window.close();
         }} else {{
-          window.location.href = '/';
+          window.location.href = '/?google_pending=1';
         }}
       }})();
     </script>
   </body>
 </html>"""
-            self._send_html(200, html, extra_headers=[("Set-Cookie", cookie_hdr)])
+            self._send_html(200, html)
         except Exception as e:
             logger.error("Google OAuth callback error: %s", e)
             log_security_event(
@@ -1695,11 +1660,25 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             if path == "/api/auth/login":
                 email = (body.get("email") or "").strip().lower()
                 password = body.get("password") or ""
+                google_pending_token = (body.get("google_pending_token") or "").strip()
+
+                db = get_db()
+                google_sub_verified = None
+                if google_pending_token:
+                    gp_row = db.execute(
+                        "SELECT * FROM google_pending_tokens WHERE token = %s",
+                        (google_pending_token,),
+                    ).fetchone()
+                    if not gp_row or float(gp_row["expires_at"] or 0) < time.time():
+                        self._send_json(400, {"ok": False, "error": "La session de vérification Google a expiré. Veuillez recommencer."})
+                        return
+                    email = str(gp_row["email"]).strip().lower()
+                    google_sub_verified = gp_row.get("google_sub")
+
                 if not email or not password:
                     self._send_json(400, {"ok": False, "error": "Veuillez saisir votre adresse email et votre mot de passe."})
                     return
 
-                db = get_db()
                 row = db.execute("SELECT * FROM web_accounts WHERE LOWER(email) = %s", (email,)).fetchone()
                 if not row or not _verify_password_secure(password, row["password_hash"] or ""):
                     log_security_event(
@@ -1719,7 +1698,14 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         "UPDATE web_accounts SET password_hash = %s WHERE LOWER(email) = %s",
                         (_hash_password_secure(password), email),
                     )
-                db.execute("UPDATE web_accounts SET last_login_at = %s WHERE LOWER(email) = %s", (time.time(), email))
+                if google_sub_verified:
+                    db.execute(
+                        "UPDATE web_accounts SET google_sub = %s, last_login_at = %s WHERE LOWER(email) = %s",
+                        (google_sub_verified, time.time(), email),
+                    )
+                    db.execute("DELETE FROM google_pending_tokens WHERE token = %s", (google_pending_token,))
+                else:
+                    db.execute("UPDATE web_accounts SET last_login_at = %s WHERE LOWER(email) = %s", (time.time(), email))
 
                 token, csrf_token = _create_session(
                     uid,
@@ -1733,7 +1719,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     user_id=uid,
                     email=row["email"],
                     ip_address=client_ip,
-                    details="Connexion réussie.",
+                    details="Connexion réussie (Google + Mot de passe)." if google_sub_verified else "Connexion réussie.",
                 )
                 cookie_hdr = self._build_session_cookie_header(token)
                 self._send_json(
@@ -1753,6 +1739,22 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 password = body.get("password") or ""
                 display_name = (body.get("display_name") or "").strip()
                 telegram_handle = (body.get("telegram_handle") or "").strip()
+                google_pending_token = (body.get("google_pending_token") or "").strip()
+
+                db = get_db()
+                google_sub_verified = None
+                if google_pending_token:
+                    gp_row = db.execute(
+                        "SELECT * FROM google_pending_tokens WHERE token = %s",
+                        (google_pending_token,),
+                    ).fetchone()
+                    if not gp_row or float(gp_row["expires_at"] or 0) < time.time():
+                        self._send_json(400, {"ok": False, "error": "La session de vérification Google a expiré. Veuillez recommencer."})
+                        return
+                    email = str(gp_row["email"]).strip().lower()
+                    google_sub_verified = gp_row.get("google_sub")
+                    if not display_name and gp_row.get("display_name"):
+                        display_name = str(gp_row["display_name"]).strip()
 
                 if not email or "@" not in email or "." not in email.split("@")[-1]:
                     self._send_json(400, {"ok": False, "error": "Veuillez saisir une adresse email valide."})
@@ -1761,10 +1763,9 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {"ok": False, "error": "Le mot de passe doit contenir au moins 8 caractères."})
                     return
 
-                db = get_db()
                 existing = db.execute("SELECT email FROM web_accounts WHERE LOWER(email) = %s", (email,)).fetchone()
                 if existing:
-                    self._send_json(400, {"ok": False, "error": "Cette adresse email est déjà associée à un compte."})
+                    self._send_json(400, {"ok": False, "error": "Cette adresse email est déjà associée à un compte. Veuillez basculer sur Connexion et saisir votre mot de passe."})
                     return
 
                 um = UserManager.get_instance()
@@ -1792,8 +1793,8 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 pw_hash = _hash_password_secure(password)
                 db.execute(
                     """
-                    INSERT INTO web_accounts (email, user_id, password_hash, display_name, telegram_handle, auth_provider, last_login_at, created_at)
-                    VALUES (%s, %s, %s, %s, %s, 'local', %s, %s)
+                    INSERT INTO web_accounts (email, user_id, password_hash, display_name, telegram_handle, google_sub, auth_provider, last_login_at, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         email,
@@ -1801,10 +1802,14 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         pw_hash,
                         display_name or email.split("@")[0],
                         telegram_handle or f"@{email.split('@')[0]}",
+                        google_sub_verified,
+                        "google" if google_sub_verified else "local",
                         time.time(),
                         time.time(),
                     ),
                 )
+                if google_pending_token:
+                    db.execute("DELETE FROM google_pending_tokens WHERE token = %s", (google_pending_token,))
                 log_security_event(
                     "ACCOUNT_REGISTERED",
                     severity="info",
