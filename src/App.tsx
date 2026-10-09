@@ -27,6 +27,8 @@ import {
   Compass,
   CreditCard,
   DollarSign,
+  Eye,
+  EyeOff,
   FlaskConical,
   Key,
   Layers,
@@ -100,6 +102,7 @@ export function App() {
   const [googleOAuthEnabled, setGoogleOAuthEnabled] = useState(false);
   const [googlePendingToken, setGooglePendingToken] = useState<string | null>(null);
   const [capsLockOn, setCapsLockOn] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleCapsLockEvent = useCallback((e: React.KeyboardEvent<HTMLInputElement> | React.MouseEvent<HTMLInputElement>) => {
     if (typeof e.getModifierState === 'function') {
@@ -1147,35 +1150,37 @@ export function App() {
           />
         </div>
         <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="block text-xs text-[#94A3B8]">
-              Mot de passe {mode === 'register' && <span className="text-[#64748B]">(min. 8 caractères)</span>}{' '}
-              <span className="text-[#10B981] font-semibold">*</span>
-            </label>
-            {capsLockOn && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#F59E0B]/15 border border-[#F59E0B]/40 text-[10px] font-mono-tabular font-semibold text-[#FBBF24]">
-                <AlertTriangle className="w-3 h-3" />
-                Verr. Maj (Caps Lock) activé
-              </span>
-            )}
+          <label className="block text-xs text-[#94A3B8] mb-1">
+            Mot de passe {mode === 'register' && <span className="text-[#64748B]">(min. 8 caractères)</span>}{' '}
+            <span className="text-[#10B981] font-semibold">*</span>
+          </label>
+          <div className="relative">
+            <input
+              type={showPassword ? 'text' : 'password'}
+              value={authPassword}
+              onChange={(e) => setAuthPassword(e.target.value)}
+              onKeyDown={handleCapsLockEvent}
+              onKeyUp={handleCapsLockEvent}
+              onClick={handleCapsLockEvent}
+              onBlur={() => setCapsLockOn(false)}
+              placeholder="••••••••"
+              minLength={mode === 'register' ? 8 : 1}
+              className="w-full px-3 py-2 pr-10 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+              required
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((prev) => !prev)}
+              aria-label={showPassword ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}
+              title={showPassword ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}
+              className="absolute inset-y-0 right-0 px-3 flex items-center text-[#64748B] hover:text-[#F1F5F9] transition-colors"
+            >
+              {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
           </div>
-          <input
-            type="password"
-            value={authPassword}
-            onChange={(e) => setAuthPassword(e.target.value)}
-            onKeyDown={handleCapsLockEvent}
-            onKeyUp={handleCapsLockEvent}
-            onClick={handleCapsLockEvent}
-            onBlur={() => setCapsLockOn(false)}
-            placeholder="••••••••"
-            minLength={mode === 'register' ? 8 : 1}
-            className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
-            required
-          />
           {capsLockOn && (
-            <p className="mt-1.5 text-[11px] text-[#FBBF24] flex items-center gap-1.5">
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-              <span>Attention : la touche Majuscules (Caps Lock) est activée sur votre ordinateur.</span>
+            <p className="mt-1 text-[11px] text-[#94A3B8]">
+              Le verrouillage majuscule (Caps Lock) est activé.
             </p>
           )}
         </div>
