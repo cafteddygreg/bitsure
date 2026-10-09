@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { CandlePoint } from '../types';
-import { Layers, Eye, EyeOff, Maximize2 } from 'lucide-react';
+import { AppLang, tr } from '../i18n';
 
 interface PriceChartProps {
   candles: CandlePoint[];
@@ -12,6 +12,7 @@ interface PriceChartProps {
   tp2?: number | null;
   support?: number | null;
   resistance?: number | null;
+  lang?: AppLang;
 }
 
 export const PriceChart: React.FC<PriceChartProps> = ({
@@ -24,6 +25,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
   tp2,
   support,
   resistance,
+  lang = 'fr',
 }) => {
   const [showSMA, setShowSMA] = useState(true);
   const [showBB, setShowBB] = useState(true);
@@ -46,7 +48,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
   if (!visibleCandles.length) {
     return (
       <div className="h-[380px] flex items-center justify-center bg-[#090D16] border border-white/[0.07] rounded-lg text-[#64748B] text-sm">
-        Chargement des bougies OHLCV...
+        {tr(lang, 'Chargement des bougies OHLCV...', 'Loading OHLCV candles...')}
       </div>
     );
   }

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import './index.css';
 import { apiFetch, setStoredSession, clearStoredSession, ApiError } from './api';
+import { AppLang, getInitialLang, setSavedLang, tr } from './i18n';
 import {
   UserProfile,
   MarketAnalysis,
@@ -72,7 +73,7 @@ type ActiveTab =
 const SYMBOLS = [
   { id: 'BTCUSDT', label: 'BTC / USDT', category: 'Crypto Spot/Perp' },
   { id: 'ETHUSDT', label: 'ETH / USDT', category: 'Crypto Spot/Perp' },
-  { id: 'XAUUSD', label: 'XAU / USD (Or)', category: 'Matières Premières' },
+  { id: 'XAUUSD', label: 'XAU / USD (Or)', labelEn: 'XAU / USD (Gold)', category: 'Matières Premières' },
 ];
 
 const TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d'];
@@ -88,6 +89,7 @@ export function App() {
   const [viewMode, setViewMode] = useState<'landing' | 'workspace'>('workspace');
   const [activeTab, setActiveTab] = useState<ActiveTab>('intelligence');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [lang, setLang] = useState<AppLang>(getInitialLang);
 
   // Auth & User State
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -103,6 +105,22 @@ export function App() {
   const [googlePendingToken, setGooglePendingToken] = useState<string | null>(null);
   const [capsLockOn, setCapsLockOn] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+
+  const handleToggleLang = useCallback(() => {
+    const nextLang: AppLang = lang === 'fr' ? 'en' : 'fr';
+    setLang(nextLang);
+    setSavedLang(nextLang);
+    if (user) {
+      apiFetch('/api/user/preferences', {
+        method: 'POST',
+        body: JSON.stringify({ lang: nextLang }),
+      })
+        .then((r) => {
+          if (r?.user) setUser(r.user);
+        })
+        .catch(() => {});
+    }
+  }, [lang, user]);
 
   const handleCapsLockEvent = useCallback((e: React.KeyboardEvent<HTMLInputElement> | React.MouseEvent<HTMLInputElement>) => {
     if (typeof e.getModifierState === 'function') {
@@ -233,6 +251,16 @@ export function App() {
       if (currentUser?.google_oauth_enabled !== undefined) {
         setGoogleOAuthEnabled(Boolean(currentUser.google_oauth_enabled));
       }
+      if (currentUser?.lang === 'en' || currentUser?.lang === 'fr') {
+        const saved = localStorage.getItem('bitsure_lang');
+        if (saved === 'en' || saved === 'fr') {
+          currentUser.lang = saved;
+          setLang(saved);
+        } else {
+          setLang(currentUser.lang);
+          setSavedLang(currentUser.lang);
+        }
+      }
       setUser(currentUser);
       setAuthChecking(false);
 
@@ -307,7 +335,7 @@ export function App() {
       if (!silent) setLoadingAnalysis(true);
       try {
         const res = await apiFetch(
-          `/api/market/analyze?symbol=${encodeURIComponent(sym)}&timeframe=${encodeURIComponent(tf)}&style=${encodeURIComponent(st)}&lang=${user?.lang || 'fr'}&silent=${silent ? '1' : '0'}`
+          `/api/market/analyze?symbol=${encodeURIComponent(sym)}&timeframe=${encodeURIComponent(tf)}&style=${encodeURIComponent(st)}&lang=${lang}&silent=${silent ? '1' : '0'}`
         );
         const ana: MarketAnalysis = res.analysis;
         setAnalysis(ana);
@@ -338,7 +366,7 @@ export function App() {
         if (!silent) setLoadingAnalysis(false);
       }
     },
-    [selectedSymbol, selectedTimeframe, selectedStyle, user?.lang, newAlertPrice, showToast, updateLiveTick]
+    [selectedSymbol, selectedTimeframe, selectedStyle, lang, newAlertPrice, showToast, updateLiveTick]
   );
 
   const runMultiScan = useCallback(
@@ -348,7 +376,7 @@ export function App() {
       if (showFeedback) setLoadingScan(true);
       try {
         const res = await apiFetch(
-          `/api/market/multi-scan?timeframe=${encodeURIComponent(tf)}&style=${encodeURIComponent(st)}&lang=${user?.lang || 'fr'}&record=${showFeedback ? '1' : '0'}`
+          `/api/market/multi-scan?timeframe=${encodeURIComponent(tf)}&style=${encodeURIComponent(st)}&lang=${lang}&record=${showFeedback ? '1' : '0'}`
         );
         const scans: MarketAnalysis[] = res.scans || [];
         setMultiScans(scans);
@@ -361,7 +389,9 @@ export function App() {
         if (showFeedback) {
           const validCount = scans.filter((s) => s.signal === 'BUY' || s.signal === 'SELL').length;
           showToast(
-            `Scan global terminé (${tf.toUpperCase()}) : ${scans.length} marchés analysés, ${validCount} signal(s) actif(s).`,
+            lang === 'en'
+              ? `Global scan completed (${tf.toUpperCase()}): ${scans.length} markets analyzed, ${validCount} active signal(s).`
+              : `Scan global terminé (${tf.toUpperCase()}) : ${scans.length} marchés analysés, ${validCount} signal(s) actif(s).`,
             validCount > 0 ? 'success' : 'info'
           );
         }
@@ -371,7 +401,7 @@ export function App() {
         if (showFeedback) setLoadingScan(false);
       }
     },
-    [selectedTimeframe, selectedStyle, user?.lang, showToast, updateLiveTick]
+    [selectedTimeframe, selectedStyle, lang, showToast, updateLiveTick]
   );
 
   const loadHistoryAndJournal = useCallback(async () => {
@@ -1025,27 +1055,36 @@ export function App() {
           </div>
           <div>
             <h3 className="font-display text-base sm:text-lg font-bold text-[#F1F5F9]">
-              {mode === 'login' ? 'Connexion Bitsure Teddy' : 'Créer un compte Bitsure Teddy'}
+              {mode === 'login' ? tr(lang, 'Connexion Bitsure Teddy') : tr(lang, 'Créer un compte Bitsure Teddy')}
             </h3>
             <p className="text-[11px] text-[#64748B]">
               {mode === 'login'
-                ? 'Accès sécurisé au terminal quantitatif'
-                : 'Inscription soumise à validation administrateur'}
+                ? tr(lang, 'Accès sécurisé au terminal quantitatif')
+                : tr(lang, 'Inscription soumise à validation administrateur')}
             </p>
           </div>
         </div>
-        {!isFullPage && (
+        <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => {
-              setAuthModal(null);
-              setAuthError(null);
-            }}
-            className="text-[#64748B] hover:text-[#F1F5F9]"
+            onClick={handleToggleLang}
+            className="px-2 py-1 rounded bg-[#090D16] border border-white/10 text-[10px] font-mono-tabular uppercase text-[#94A3B8] hover:text-[#F1F5F9]"
           >
-            <XCircle className="w-5 h-5" />
+            {lang === 'fr' ? 'FR ▾ EN' : 'EN ▾ FR'}
           </button>
-        )}
+          {!isFullPage && (
+            <button
+              type="button"
+              onClick={() => {
+                setAuthModal(null);
+                setAuthError(null);
+              }}
+              className="text-[#64748B] hover:text-[#F1F5F9]"
+            >
+              <XCircle className="w-5 h-5" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Mode Switch Tabs */}
@@ -1060,7 +1099,7 @@ export function App() {
             mode === 'login' ? 'bg-[#10B981] text-[#090D16]' : 'text-[#94A3B8] hover:text-[#F1F5F9]'
           }`}
         >
-          Connexion
+          {tr(lang, 'Connexion')}
         </button>
         <button
           type="button"
@@ -1072,7 +1111,7 @@ export function App() {
             mode === 'register' ? 'bg-[#10B981] text-[#090D16]' : 'text-[#94A3B8] hover:text-[#F1F5F9]'
           }`}
         >
-          Inscription
+          {tr(lang, 'Inscription')}
         </button>
       </div>
 
@@ -1081,10 +1120,16 @@ export function App() {
           <div className="flex items-start gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-[#10B981]" />
             <div>
-              <div className="font-semibold text-[#F1F5F9]">Identité Google vérifiée ({authEmail})</div>
+              <div className="font-semibold text-[#F1F5F9]">
+                {lang === 'en' ? `Google Identity Verified (${authEmail})` : `Identité Google vérifiée (${authEmail})`}
+              </div>
               <div className="text-[11px] text-[#94A3B8] mt-0.5">
                 {mode === 'login'
-                  ? 'Veuillez saisir votre mot de passe Bitsure pour confirmer et ouvrir votre session.'
+                  ? lang === 'en'
+                    ? 'Please enter your Bitsure password to confirm and open your session.'
+                    : 'Veuillez saisir votre mot de passe Bitsure pour confirmer et ouvrir votre session.'
+                  : lang === 'en'
+                  ? 'Please set your Bitsure password (min. 8 characters) to complete registration.'
                   : 'Veuillez définir votre mot de passe Bitsure (min. 8 caractères) pour finaliser votre inscription.'}
               </div>
             </div>
@@ -1097,7 +1142,7 @@ export function App() {
             }}
             className="text-[10px] text-[#94A3B8] hover:text-[#F1F5F9] underline shrink-0"
           >
-            Changer
+            {tr(lang, 'Changer')}
           </button>
         </div>
       )}
@@ -1113,36 +1158,36 @@ export function App() {
         {mode === 'register' && (
           <>
             <div>
-              <label className="block text-xs text-[#94A3B8] mb-1">Nom ou Pseudonyme</label>
+              <label className="block text-xs text-[#94A3B8] mb-1">{tr(lang, 'Nom ou Pseudonyme')}</label>
               <input
                 type="text"
                 value={authName}
                 onChange={(e) => setAuthName(e.target.value)}
-                placeholder="Votre nom ou pseudo"
+                placeholder={tr(lang, 'Votre nom ou pseudo')}
                 className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
                 required
               />
             </div>
             <div>
-              <label className="block text-xs text-[#94A3B8] mb-1">Identifiant Telegram (optionnel)</label>
+              <label className="block text-xs text-[#94A3B8] mb-1">{tr(lang, 'Identifiant Telegram (optionnel)')}</label>
               <input
                 type="text"
                 value={authTelegram}
                 onChange={(e) => setAuthTelegram(e.target.value)}
-                placeholder="@votre_pseudo"
+                placeholder={tr(lang, '@votre_pseudo')}
                 className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
               />
             </div>
           </>
         )}
         <div>
-          <label className="block text-xs text-[#94A3B8] mb-1">Adresse Email</label>
+          <label className="block text-xs text-[#94A3B8] mb-1">{tr(lang, 'Adresse Email')}</label>
           <input
             type="email"
             value={authEmail}
             onChange={(e) => setAuthEmail(e.target.value)}
             readOnly={Boolean(googlePendingToken)}
-            placeholder="votre@email.com"
+            placeholder={tr(lang, 'votre@email.com')}
             className={`w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9] ${
               googlePendingToken ? 'opacity-70 cursor-not-allowed' : ''
             }`}
@@ -1151,7 +1196,8 @@ export function App() {
         </div>
         <div>
           <label className="block text-xs text-[#94A3B8] mb-1">
-            Mot de passe {mode === 'register' && <span className="text-[#64748B]">(min. 8 caractères)</span>}{' '}
+            {tr(lang, 'Mot de passe')}{' '}
+            {mode === 'register' && <span className="text-[#64748B]">{tr(lang, '(min. 8 caractères)')}</span>}{' '}
             <span className="text-[#10B981] font-semibold">*</span>
           </label>
           <div className="relative">
@@ -1171,8 +1217,8 @@ export function App() {
             <button
               type="button"
               onClick={() => setShowPassword((prev) => !prev)}
-              aria-label={showPassword ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}
-              title={showPassword ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}
+              aria-label={showPassword ? tr(lang, 'Masquer le mot de passe') : tr(lang, 'Afficher le mot de passe')}
+              title={showPassword ? tr(lang, 'Masquer le mot de passe') : tr(lang, 'Afficher le mot de passe')}
               className="absolute inset-y-0 right-0 px-3 flex items-center text-[#64748B] hover:text-[#F1F5F9] transition-colors"
             >
               {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -1180,7 +1226,7 @@ export function App() {
           </div>
           {capsLockOn && (
             <p className="mt-1 text-[11px] text-[#94A3B8]">
-              Le verrouillage majuscule (Caps Lock) est activé.
+              {tr(lang, 'Le verrouillage majuscule (Caps Lock) est activé.')}
             </p>
           )}
         </div>
@@ -1190,20 +1236,20 @@ export function App() {
           className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-semibold rounded-lg transition-colors"
         >
           {authSubmitting
-            ? 'Vérification en cours...'
+            ? tr(lang, 'Vérification en cours...')
             : googlePendingToken
             ? mode === 'login'
-              ? 'Confirmer le mot de passe et se connecter'
-              : 'Confirmer le mot de passe et créer le compte'
+              ? tr(lang, 'Confirmer le mot de passe et se connecter')
+              : tr(lang, 'Confirmer le mot de passe et créer le compte')
             : mode === 'login'
-            ? 'Se connecter'
-            : "Soumettre ma demande d'accès"}
+            ? tr(lang, 'Se connecter')
+            : tr(lang, "Soumettre ma demande d'accès")}
         </button>
       </form>
 
       <div className="relative flex py-1 items-center">
         <div className="flex-grow border-t border-white/10" />
-        <span className="flex-shrink mx-3 text-[11px] text-[#64748B] uppercase">ou</span>
+        <span className="flex-shrink mx-3 text-[11px] text-[#64748B] uppercase">{tr(lang, 'ou')}</span>
         <div className="flex-grow border-t border-white/10" />
       </div>
 
@@ -1230,14 +1276,25 @@ export function App() {
             d="M12 4.75c1.8 0 3.41.62 4.68 1.84l3.51-3.51C18.07 1.19 15.3 0 12 0 7.21 0 3.03 2.86 1.02 6.25l4.01 3.14c.98-2.95 3.73-5.14 6.97-5.14z"
           />
         </svg>
-        <span>Continuer avec Google</span>
+        <span>{tr(lang, 'Continuer avec Google')}</span>
       </button>
 
       {mode === 'register' && (
         <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] text-[11px] text-[#94A3B8] leading-relaxed">
-          <strong className="text-[#10B981]">Sécurité & Validation :</strong> Toute nouvelle inscription est placée en
-          statut <code className="text-[#F59E0B]">PENDING_APPROVAL</code> jusqu&apos;à son approbation par
-          l&apos;administrateur Bitsure.
+          <strong className="text-[#10B981]">
+            {lang === 'en' ? 'Security & Approval:' : 'Sécurité & Validation :'}
+          </strong>{' '}
+          {lang === 'en' ? (
+            <>
+              All new registrations are placed in <code className="text-[#F59E0B]">PENDING_APPROVAL</code> status until
+              approved by the Bitsure administrator.
+            </>
+          ) : (
+            <>
+              Toute nouvelle inscription est placée en statut <code className="text-[#F59E0B]">PENDING_APPROVAL</code>{' '}
+              jusqu&apos;à son approbation par l&apos;administrateur Bitsure.
+            </>
+          )}
         </div>
       )}
     </div>
@@ -1247,6 +1304,8 @@ export function App() {
     return (
       <>
         <LandingPage
+          lang={lang}
+          onToggleLang={handleToggleLang}
           onEnterWorkspace={() => {
             if (user) {
               setViewMode('workspace');
@@ -1274,7 +1333,9 @@ export function App() {
       <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex items-center justify-center p-6">
         <div className="flex flex-col items-center gap-3">
           <RefreshCw className="w-6 h-6 text-[#10B981] animate-spin" />
-          <p className="text-xs font-mono-tabular text-[#94A3B8]">Vérification sécurisée de votre session...</p>
+          <p className="text-xs font-mono-tabular text-[#94A3B8]">
+            {tr(lang, 'Vérification sécurisée de votre session...')}
+          </p>
         </div>
       </div>
     );
@@ -1296,16 +1357,27 @@ export function App() {
             </div>
             <div>
               <div className="font-display font-bold text-sm tracking-tight text-[#F1F5F9]">BITSURE TEDDY</div>
-              <div className="text-[10px] font-mono-tabular text-[#64748B]">TERMINAL QUANTITATIF PROTÉGÉ</div>
+              <div className="text-[10px] font-mono-tabular text-[#64748B]">
+                {tr(lang, 'TERMINAL QUANTITATIF PROTÉGÉ')}
+              </div>
             </div>
           </button>
-          <button
-            type="button"
-            onClick={() => setViewMode('landing')}
-            className="px-3 py-1.5 rounded-lg bg-[#111827] border border-white/10 text-xs text-[#94A3B8] hover:text-[#F1F5F9]"
-          >
-            Présentation & Tarifs
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleToggleLang}
+              className="px-3 py-1.5 rounded-lg bg-[#111827] border border-white/10 text-xs font-mono-tabular uppercase text-[#94A3B8] hover:text-[#F1F5F9]"
+            >
+              {lang === 'fr' ? 'FR ▾ EN' : 'EN ▾ FR'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('landing')}
+              className="px-3 py-1.5 rounded-lg bg-[#111827] border border-white/10 text-xs text-[#94A3B8] hover:text-[#F1F5F9]"
+            >
+              {tr(lang, 'Présentation & Tarifs')}
+            </button>
+          </div>
         </header>
 
         <div className="flex-1 flex items-center justify-center py-8">
@@ -1313,7 +1385,9 @@ export function App() {
         </div>
 
         <footer className="text-center text-[11px] text-[#64748B] font-mono-tabular">
-          Bitsure Teddy • Authentification serveur obligatoire • Protection des accès & quotas actifs
+          {lang === 'en'
+            ? 'Bitsure Teddy • Mandatory server authentication • Active access protection & quotas'
+            : 'Bitsure Teddy • Authentification serveur obligatoire • Protection des accès & quotas actifs'}
         </footer>
       </div>
     );
@@ -1334,17 +1408,24 @@ export function App() {
             </div>
             <div>
               <div className="font-display font-bold text-sm tracking-tight text-[#F1F5F9]">BITSURE TEDDY</div>
-              <div className="text-[10px] font-mono-tabular text-[#64748B]">CONTRÔLE D&apos;ACCÈS</div>
+              <div className="text-[10px] font-mono-tabular text-[#64748B]">{tr(lang, "CONTRÔLE D'ACCÈS")}</div>
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleToggleLang}
+              className="px-2.5 py-1.5 rounded-lg bg-[#111827] border border-white/10 text-xs font-mono-tabular uppercase text-[#94A3B8] hover:text-[#F1F5F9]"
+            >
+              {lang === 'fr' ? 'FR ▾ EN' : 'EN ▾ FR'}
+            </button>
             <button
               type="button"
               onClick={() => loadUserAndCoreData()}
               className="px-3 py-1.5 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-xs text-[#F1F5F9] flex items-center gap-1.5"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              <span>Vérifier mon statut</span>
+              <span>{tr(lang, 'Vérifier mon statut')}</span>
             </button>
             <button
               type="button"
@@ -1352,7 +1433,7 @@ export function App() {
               className="px-3 py-1.5 rounded-lg bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-xs text-[#FB7185] flex items-center gap-1.5"
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span>Déconnexion</span>
+              <span>{tr(lang, 'Déconnexion')}</span>
             </button>
           </div>
         </header>
@@ -1377,35 +1458,41 @@ export function App() {
                     : 'bg-[#F59E0B]/15 border-[#F59E0B]/40 text-[#F59E0B]'
                 }`}
               >
-                Statut : {status}
+                {lang === 'en' ? 'Status:' : 'Statut :'} {status}
               </span>
               <h2 className="font-display text-xl font-bold text-[#F1F5F9]">
                 {isRejected
-                  ? "Demande d'accès refusée"
+                  ? tr(lang, "Demande d'accès refusée")
                   : isSuspended
-                  ? 'Compte suspendu'
-                  : "Compte en attente d'approbation"}
+                  ? tr(lang, 'Compte suspendu')
+                  : tr(lang, "Compte en attente d'approbation")}
               </h2>
               <p className="text-xs sm:text-sm text-[#94A3B8] leading-relaxed">
                 {isRejected
-                  ? "Votre demande d'accès à Bitsure Teddy a été refusée par l'administrateur. Vous ne pouvez pas accéder aux fonctionnalités d'analyse ou de trading."
+                  ? lang === 'en'
+                    ? 'Your access request to Bitsure Teddy was declined by the administrator. You cannot access analysis or trading features.'
+                    : "Votre demande d'accès à Bitsure Teddy a été refusée par l'administrateur. Vous ne pouvez pas accéder aux fonctionnalités d'analyse ou de trading."
                   : isSuspended
-                  ? "Votre compte a été temporairement suspendu par l'administrateur. Contactez le support Bitsure pour plus d'informations."
+                  ? lang === 'en'
+                    ? 'Your account has been temporarily suspended by the administrator. Contact Bitsure support for more information.'
+                    : "Votre compte a été temporairement suspendu par l'administrateur. Contactez le support Bitsure pour plus d'informations."
+                  : lang === 'en'
+                  ? 'Your registration has been recorded. For security reasons, access to market analyses, scans, alerts, and trading tools is locked until the administrator approves your account.'
                   : "Votre inscription a bien été enregistrée. Par mesure de sécurité, l'accès aux analyses, scans, alertes et outils de trading est bloqué tant que l'administrateur n'a pas approuvé votre compte."}
               </p>
             </div>
 
             <div className="p-4 rounded-xl bg-[#090D16] border border-white/[0.07] text-left text-xs font-mono-tabular space-y-1.5">
               <div className="flex justify-between">
-                <span className="text-[#64748B]">Compte :</span>
+                <span className="text-[#64748B]">{tr(lang, 'Compte :')}</span>
                 <span className="text-[#F1F5F9]">{user.email}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#64748B]">Nom :</span>
+                <span className="text-[#64748B]">{tr(lang, 'Nom :')}</span>
                 <span className="text-[#F1F5F9]">{user.display_name}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#64748B]">ID Utilisateur :</span>
+                <span className="text-[#64748B]">{tr(lang, 'ID Utilisateur :')}</span>
                 <span className="text-[#94A3B8]">#{user.user_id}</span>
               </div>
             </div>
@@ -1417,7 +1504,7 @@ export function App() {
                 className="flex-1 py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
               >
                 <RefreshCw className="w-4 h-4" />
-                <span>Actualiser mon statut</span>
+                <span>{tr(lang, 'Actualiser mon statut')}</span>
               </button>
               <button
                 type="button"
@@ -1425,7 +1512,7 @@ export function App() {
                 className="flex-1 py-2.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
               >
                 <LogOut className="w-4 h-4" />
-                <span>Se déconnecter</span>
+                <span>{tr(lang, 'Se déconnecter')}</span>
               </button>
             </div>
           </div>
@@ -1441,25 +1528,78 @@ export function App() {
 
   const isAdminUser = Boolean(user?.is_admin || user?.role === 'admin');
   const navItems = [
-    { id: 'intelligence', label: 'Market Intelligence', icon: Activity },
-    { id: 'paper', label: 'Paper Trading', icon: Layers, count: openPaper.length },
-    { id: 'alerts', label: 'Alertes & Watchlist', icon: Bell, count: alerts.length },
+    { id: 'intelligence', label: tr(lang, 'Market Intelligence'), icon: Activity },
+    { id: 'paper', label: tr(lang, 'Paper Trading'), icon: Layers, count: openPaper.length },
+    { id: 'alerts', label: tr(lang, 'Alertes & Watchlist'), icon: Bell, count: alerts.length },
     {
       id: 'safety',
-      label: 'Auto-Trade & Safety',
+      label: tr(lang, 'Auto-Trade & Safety'),
       icon: ShieldCheck,
       warn: tradingCfg?.safety_lock || tradingCfg?.safety_warn,
       apiConnected: Boolean(tradingCfg?.credentials_valid),
     },
-    { id: 'history', label: 'Historique & Journal', icon: BookOpen },
-    { id: 'account', label: 'Compte, Plans & PIN', icon: CreditCard },
+    { id: 'history', label: tr(lang, 'Historique & Journal'), icon: BookOpen },
+    { id: 'account', label: tr(lang, 'Compte, Plans & PIN'), icon: CreditCard },
     ...(isAdminUser
       ? [
-          { id: 'strategy_lab', label: 'Strategy Lab (Backtest)', icon: FlaskConical },
-          { id: 'admin', label: 'Admin & Log Doctor', icon: Terminal },
+          { id: 'strategy_lab', label: tr(lang, 'Strategy Lab (Backtest)'), icon: FlaskConical },
+          { id: 'admin', label: tr(lang, 'Admin & Log Doctor'), icon: Terminal },
         ]
       : []),
   ];
+
+  // Grouped Mobile Hub structure (4 primary tabs on mobile + sub-switcher strip)
+  const mobileHubGroups = [
+    {
+      hubId: 'markets',
+      label: tr(lang, 'Marchés'),
+      icon: Activity,
+      tabs: [
+        { id: 'intelligence' as ActiveTab, label: tr(lang, 'Market Intelligence'), icon: Activity },
+        { id: 'alerts' as ActiveTab, label: tr(lang, 'Alertes & Watchlist'), icon: Bell, count: alerts.length },
+      ],
+    },
+    {
+      hubId: 'trading',
+      label: tr(lang, 'Trading'),
+      icon: Layers,
+      tabs: [
+        { id: 'paper' as ActiveTab, label: tr(lang, 'Paper Trading'), icon: Layers, count: openPaper.length },
+        { id: 'safety' as ActiveTab, label: tr(lang, 'Auto-Trade & Safety'), icon: ShieldCheck },
+      ],
+    },
+    {
+      hubId: 'tracking',
+      label: tr(lang, 'Suivi'),
+      icon: BookOpen,
+      tabs: [
+        { id: 'history' as ActiveTab, label: tr(lang, 'Historique & Journal'), icon: BookOpen },
+        { id: 'account' as ActiveTab, label: tr(lang, 'Compte, Plans & PIN'), icon: CreditCard },
+      ],
+    },
+    ...(isAdminUser
+      ? [
+          {
+            hubId: 'admin_hub',
+            label: 'Admin & Lab',
+            icon: FlaskConical,
+            tabs: [
+              { id: 'strategy_lab' as ActiveTab, label: tr(lang, 'Strategy Lab (Backtest)'), icon: FlaskConical },
+              { id: 'admin' as ActiveTab, label: tr(lang, 'Admin & Log Doctor'), icon: Terminal },
+            ],
+          },
+        ]
+      : [
+          {
+            hubId: 'account_hub',
+            label: tr(lang, 'Compte'),
+            icon: CreditCard,
+            tabs: [{ id: 'account' as ActiveTab, label: tr(lang, 'Compte, Plans & PIN'), icon: CreditCard }],
+          },
+        ]),
+  ];
+  const currentMobileHub =
+    mobileHubGroups.find((g) => g.tabs.some((t) => t.id === activeTab)) || mobileHubGroups[0];
 
   return (
     <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex flex-col md:flex-row">
@@ -1562,7 +1702,7 @@ export function App() {
           {/* Watchlist Quick Selector */}
           <div className="px-4 pt-4 pb-2">
             <div className="flex items-center justify-between text-[11px] font-mono-tabular uppercase tracking-wider text-[#64748B] mb-2">
-              <span>Marchés Documentés</span>
+              <span>{tr(lang, 'Marchés Documentés')}</span>
               <span className="inline-flex items-center gap-1 text-[9px] text-[#10B981]">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-ping" />
                 LIVE
@@ -1631,7 +1771,10 @@ export function App() {
               <div className="text-[11px] text-[#64748B] font-mono-tabular flex items-center justify-between">
                 <span>{user.telegram_handle}</span>
                 <span>
-                  Quota: {user.remaining_requests < 0 || user.remaining_requests >= 999 ? 'Illimité' : `${user.remaining_requests}/${user.daily_limit}`}
+                  Quota:{' '}
+                  {user.remaining_requests < 0 || user.remaining_requests >= 999
+                    ? tr(lang, 'Illimité')
+                    : `${user.remaining_requests}/${user.daily_limit}`}
                 </span>
               </div>
             </div>
@@ -1645,29 +1788,29 @@ export function App() {
               }}
               className="flex-1 py-1.5 text-xs text-[#94A3B8] hover:text-[#F1F5F9] border border-white/10 rounded hover:bg-white/[0.04] transition-colors"
             >
-              Présentation
+              {tr(lang, 'Présentation')}
             </button>
             <button
               onClick={handleLogout}
               className="px-3 py-1.5 text-xs text-[#FB7185] hover:bg-[#F43F5E]/15 border border-[#F43F5E]/30 rounded transition-colors flex items-center gap-1"
-              title="Se déconnecter"
+              title={tr(lang, 'Se déconnecter')}
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span>Quitter</span>
+              <span>{tr(lang, 'Quitter')}</span>
             </button>
           </div>
         </div>
       </aside>
 
       {/* Main Workspace Area */}
-      <div className="flex-1 flex flex-col min-w-0 pb-16 md:pb-0">
+      <div className="flex-1 flex flex-col min-w-0 pb-20 md:pb-0">
         {/* Top Utility & Market Bar */}
-        <header className="min-h-16 py-2.5 px-3 sm:px-6 border-b border-white/[0.07] bg-[#0B101B]/90 flex flex-wrap items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+        <header className="min-h-14 py-2 px-3 sm:px-6 border-b border-white/[0.07] bg-[#0B101B]/95 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-3 flex-wrap">
             <button
               onClick={() => setMobileMenuOpen(true)}
               className="md:hidden p-2 bg-[#111827] border border-white/10 rounded-lg text-[#F1F5F9]"
-              aria-label="Ouvrir le menu"
+              aria-label={lang === 'en' ? 'Open menu' : 'Ouvrir le menu'}
             >
               <Menu className="w-4 h-4" />
             </button>
@@ -1678,11 +1821,11 @@ export function App() {
                 setSelectedSymbol(e.target.value);
                 runAnalysis(e.target.value, selectedTimeframe, selectedStyle);
               }}
-              className="px-2.5 sm:px-3 py-1.5 bg-[#111827] border border-white/15 rounded-lg text-xs font-mono-tabular font-semibold text-[#F1F5F9]"
+              className="px-2 sm:px-3 py-1.5 bg-[#111827] border border-white/15 rounded-lg text-xs font-mono-tabular font-semibold text-[#F1F5F9]"
             >
               {SYMBOLS.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.label}
+                  {lang === 'en' && s.labelEn ? s.labelEn : s.label}
                 </option>
               ))}
             </select>
@@ -1714,7 +1857,7 @@ export function App() {
                 runAnalysis(selectedSymbol, selectedTimeframe, e.target.value);
                 runMultiScan(selectedTimeframe, e.target.value, false);
               }}
-              className="px-2.5 sm:px-3 py-1.5 bg-[#111827] border border-white/10 rounded-lg text-xs text-[#F1F5F9]"
+              className="hidden sm:block px-2.5 sm:px-3 py-1.5 bg-[#111827] border border-white/10 rounded-lg text-xs text-[#F1F5F9]"
             >
               {STYLES.map((st) => (
                 <option key={st.id} value={st.id}>
@@ -1729,22 +1872,30 @@ export function App() {
                 runMultiScan(selectedTimeframe, selectedStyle, false);
               }}
               disabled={loadingAnalysis}
-              className="px-2.5 sm:px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] flex items-center gap-1.5 transition-colors"
+              className="px-2 sm:px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] flex items-center gap-1.5 transition-colors"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loadingAnalysis ? 'animate-spin text-[#10B981]' : ''}`} />
-              <span className="hidden sm:inline">Actualiser</span>
+              <span className="hidden sm:inline">{tr(lang, 'Actualiser')}</span>
             </button>
           </div>
 
-          <div className="flex items-center gap-3 text-xs flex-wrap">
+          <div className="flex items-center gap-2 sm:gap-3 text-xs">
             {/* Live Binance Ticker Strip */}
             <div className="hidden xl:flex items-center gap-2 bg-[#111827] border border-white/[0.08] px-3 py-1 rounded-lg font-mono-tabular">
               <span
                 className="inline-flex items-center gap-1.5 pr-2 border-r border-white/10 text-[10px] font-bold text-[#10B981]"
-                title={wsConnected ? 'Flux WebSocket Binance temps réel connecté' : 'Synchronisation temps réel active'}
+                title={
+                  wsConnected
+                    ? lang === 'en'
+                      ? 'Real-time Binance WebSocket connected'
+                      : 'Flux WebSocket Binance temps réel connecté'
+                    : lang === 'en'
+                    ? 'Real-time synchronization active'
+                    : 'Synchronisation temps réel active'
+                }
               >
                 <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse" />
-                DIRECT
+                {lang === 'en' ? 'LIVE' : 'DIRECT'}
               </span>
               {SYMBOLS.map((symObj) => {
                 const t = livePrices[symObj.id];
@@ -1800,7 +1951,14 @@ export function App() {
             {paperStats && (
               <div className="hidden lg:flex items-center gap-4 font-mono-tabular bg-[#111827] border border-white/[0.07] px-3.5 py-1.5 rounded-lg">
                 <span className="text-[#94A3B8]">
-                  Équité Paper : <strong className="text-[#F1F5F9]">{Number(paperStats.equity ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</strong>
+                  {lang === 'en' ? 'Paper Equity:' : 'Équité Paper :'}{' '}
+                  <strong className="text-[#F1F5F9]">
+                    {Number(paperStats.equity ?? 0).toLocaleString('en-US', {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}{' '}
+                    USDT
+                  </strong>
                 </span>
                 <span className={(paperStats.total_pnl ?? 0) >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
                   PnL : {(paperStats.total_pnl ?? 0) >= 0 ? '+' : ''}
@@ -1811,21 +1969,50 @@ export function App() {
 
             <button
               onClick={() => {
-                const nextLang = user?.lang === 'fr' ? 'en' : 'fr';
-                apiFetch('/api/user/preferences', {
-                  method: 'POST',
-                  body: JSON.stringify({ lang: nextLang }),
-                }).then((r) => {
-                  setUser(r.user);
-                  runAnalysis(selectedSymbol, selectedTimeframe, selectedStyle);
-                });
+                const nextLang: AppLang = lang === 'fr' ? 'en' : 'fr';
+                handleToggleLang();
+                runAnalysis(selectedSymbol, selectedTimeframe, selectedStyle, true);
+                runMultiScan(selectedTimeframe, selectedStyle, false);
+                if (activeLang => activeLang === nextLang) {
+                  // state updated
+                }
               }}
-              className="px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded-lg font-mono-tabular uppercase text-[#94A3B8] hover:text-[#F1F5F9]"
+              title={lang === 'en' ? 'Switch language (FR / EN)' : 'Changer de langue (FR / EN)'}
+              className="px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded-lg font-mono-tabular uppercase text-[#F1F5F9] hover:border-[#10B981]/50 flex items-center gap-1"
             >
-              {user?.lang || 'fr'}
+              <span className={lang === 'fr' ? 'text-[#10B981] font-bold' : 'text-[#64748B]'}>FR</span>
+              <span className="text-[#64748B]">/</span>
+              <span className={lang === 'en' ? 'text-[#10B981] font-bold' : 'text-[#64748B]'}>EN</span>
             </button>
           </div>
         </header>
+
+        {/* Mobile Consolidated Sub-Tab Pill Bar (Only shown on mobile when the active Hub has 2 tabs) */}
+        {currentMobileHub && currentMobileHub.tabs.length > 1 && (
+          <div className="md:hidden px-3 pt-2.5">
+            <div className="grid grid-cols-2 gap-1.5 p-1 bg-[#111827] border border-white/[0.08] rounded-xl">
+              {currentMobileHub.tabs.map((subTab) => {
+                const SubIcon = subTab.icon;
+                const isSubActive = activeTab === subTab.id;
+                return (
+                  <button
+                    key={subTab.id}
+                    type="button"
+                    onClick={() => setActiveTab(subTab.id)}
+                    className={`py-2 px-2.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                      isSubActive
+                        ? 'bg-[#10B981] text-[#090D16] shadow-sm'
+                        : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                    }`}
+                  >
+                    <SubIcon className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{subTab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Toast Notification Banner */}
         {toast && (
@@ -1872,11 +2059,14 @@ export function App() {
                     >
                       <div className="flex items-center justify-between text-xs text-[#94A3B8]">
                         <span className="flex items-center gap-1.5">
-                          <span>Cours Temps Réel ({symKey})</span>
-                          <span className="w-2 h-2 rounded-full bg-[#10B981] animate-ping" title="Flux en direct" />
+                          <span>{lang === 'en' ? `Live Price (${symKey})` : `Cours Temps Réel (${symKey})`}</span>
+                          <span
+                            className="w-2 h-2 rounded-full bg-[#10B981] animate-ping"
+                            title={lang === 'en' ? 'Live feed' : 'Flux en direct'}
+                          />
                         </span>
                         <span className="font-mono-tabular text-[#10B981]">
-                          {analysis?.market_status?.is_open ? '● LIVE 24/7' : '○ FERMÉ'}
+                          {analysis?.market_status?.is_open ? tr(lang, '● LIVE 24/7') : tr(lang, '○ FERMÉ')}
                         </span>
                       </div>
                       <div className="flex items-baseline justify-between gap-2">
@@ -1931,8 +2121,10 @@ export function App() {
                 {/* KPI 2: Signal & Teddy Score */}
                 <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-2">
                   <div className="flex items-center justify-between text-xs text-[#94A3B8]">
-                    <span>Signal & Teddy Score</span>
-                    <span className="font-mono-tabular text-[#94A3B8]">Confiance : {analysis?.confidence || '—'}</span>
+                    <span>{tr(lang, 'Signal & Teddy Score')}</span>
+                    <span className="font-mono-tabular text-[#94A3B8]">
+                      {lang === 'en' ? 'Confidence:' : 'Confiance :'} {analysis?.confidence || '—'}
+                    </span>
                   </div>
                   <div className="flex items-baseline gap-3">
                     <span
@@ -1961,7 +2153,7 @@ export function App() {
                 {/* KPI 3: Multi-Timeframe Hierarchy */}
                 <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-2">
                   <div className="flex items-center justify-between text-xs text-[#94A3B8]">
-                    <span>Alignement Multi-Timeframes</span>
+                    <span>{tr(lang, 'Alignement Multi-Timeframes')}</span>
                     <span className="font-mono-tabular text-[#F59E0B]">
                       {tfAlign.status || 'NEUTRAL'} ({tfAlign.modifier >= 0 ? `+${tfAlign.modifier || 0}` : tfAlign.modifier} pts)
                     </span>
@@ -1974,14 +2166,14 @@ export function App() {
                           <div className="text-[10px] text-[#64748B] uppercase">{k}</div>
                           <div
                             className={`font-semibold text-[11px] ${
-                              val === 'HAUSSIER'
+                              val === 'HAUSSIER' || val === 'BULLISH'
                                 ? 'text-[#10B981]'
-                                : val === 'BAISSIER'
+                                : val === 'BAISSIER' || val === 'BEARISH'
                                 ? 'text-[#F43F5E]'
                                 : 'text-[#94A3B8]'
                             }`}
                           >
-                            {val}
+                            {tr(lang, val)}
                           </div>
                         </div>
                       );
@@ -1992,17 +2184,18 @@ export function App() {
                 {/* KPI 4: Risk Sizing Recommendation */}
                 <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-2">
                   <div className="flex items-center justify-between text-xs text-[#94A3B8]">
-                    <span>Taille Position Recommandée</span>
+                    <span>{tr(lang, 'Taille Position Recommandée')}</span>
                     <span className="font-mono-tabular text-[#10B981]">
-                      Risque {analysis?.sizing_recommendation?.risk_pct || 1}%
+                      {lang === 'en' ? 'Risk' : 'Risque'} {analysis?.sizing_recommendation?.risk_pct || 1}%
                     </span>
                   </div>
                   <div className="font-mono-tabular text-2xl font-bold text-[#F1F5F9]">
                     {analysis?.sizing_recommendation?.position_size ?? 0}{' '}
-                    <span className="text-xs font-normal text-[#64748B]">unités</span>
+                    <span className="text-xs font-normal text-[#64748B]">{tr(lang, 'unités')}</span>
                   </div>
                   <div className="text-xs text-[#64748B] font-mono-tabular">
-                    Risque max : {analysis?.sizing_recommendation?.risk_amount_usd ?? 100} USDT • Marge :{' '}
+                    {lang === 'en' ? 'Max risk:' : 'Risque max :'} {analysis?.sizing_recommendation?.risk_amount_usd ?? 100}{' '}
+                    USDT • {lang === 'en' ? 'Margin:' : 'Marge :'}{' '}
                     {analysis?.sizing_recommendation?.margin_required_usd ?? 0} USDT
                   </div>
                 </div>
@@ -2021,17 +2214,22 @@ export function App() {
                     tp2={analysis?.tp2}
                     support={ind.support}
                     resistance={ind.resistance}
+                    lang={lang}
                   />
 
                   {/* Technical Indicators Breakdown Strip */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                     <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
-                      <div className="text-xs text-[#64748B]">RSI (14) & Stochastique</div>
+                      <div className="text-xs text-[#64748B]">{tr(lang, 'RSI (14) & Stochastique')}</div>
                       <div className="font-mono-tabular text-base font-semibold text-[#F1F5F9] mt-1">
                         {ind.rsi ? ind.rsi.toFixed(2) : '—'}
                       </div>
                       <div className="text-[11px] text-[#94A3B8] mt-0.5">
-                        {ind.rsi > 70 ? 'Zone de surachat (>70)' : ind.rsi < 30 ? 'Zone de survente (<30)' : 'Zone neutre équilibrée'}
+                        {ind.rsi > 70
+                          ? tr(lang, 'Zone de surachat (>70)')
+                          : ind.rsi < 30
+                          ? tr(lang, 'Zone de survente (<30)')
+                          : tr(lang, 'Zone neutre équilibrée')}
                       </div>
                     </div>
 
@@ -2046,10 +2244,12 @@ export function App() {
                     </div>
 
                     <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
-                      <div className="text-xs text-[#64748B]">ADX (14) • Force Tendance</div>
+                      <div className="text-xs text-[#64748B]">{tr(lang, 'ADX (14) • Force Tendance')}</div>
                       <div className="font-mono-tabular text-base font-semibold text-[#F1F5F9] mt-1">
                         {ind.adx ? ind.adx.toFixed(2) : '—'}{' '}
-                        <span className="text-xs text-[#10B981]">{ind.adx_rising ? '↑ En hausse' : '↓ En repli'}</span>
+                        <span className="text-xs text-[#10B981]">
+                          {ind.adx_rising ? tr(lang, '↑ En hausse') : tr(lang, '↓ En repli')}
+                        </span>
                       </div>
                       <div className="text-[11px] text-[#94A3B8] mt-0.5 font-mono-tabular">
                         +DI: {ind.plus_di ? ind.plus_di.toFixed(1) : '—'} / -DI: {ind.minus_di ? ind.minus_di.toFixed(1) : '—'}
@@ -2057,7 +2257,7 @@ export function App() {
                     </div>
 
                     <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
-                      <div className="text-xs text-[#64748B]">Support / Résistance (50p)</div>
+                      <div className="text-xs text-[#64748B]">{tr(lang, 'Support / Résistance (50p)')}</div>
                       <div className="font-mono-tabular text-sm font-semibold text-[#10B981] mt-1">
                         S: {ind.support ? ind.support.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}
                       </div>
@@ -2074,15 +2274,15 @@ export function App() {
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
                     <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
                       <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
-                        Diagnostic du Moteur Teddy
+                        {tr(lang, 'Diagnostic du Moteur Teddy')}
                       </h3>
                       <span className="font-mono-tabular text-xs text-[#94A3B8]">
-                        Statut : {analysis?.validation_status || '—'}
+                        {lang === 'en' ? 'Status:' : 'Statut :'} {analysis?.validation_status || '—'}
                       </span>
                     </div>
 
                     <div className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] text-xs text-[#F1F5F9] leading-relaxed">
-                      {analysis?.reason || 'Analyse en cours...'}
+                      {analysis?.reason || tr(lang, 'Analyse en cours...')}
                     </div>
 
                     {/* Levels SL / TP1 / TP2 / RR */}
@@ -2090,13 +2290,13 @@ export function App() {
                       <div className="p-2.5 rounded bg-[#090D16] border border-white/[0.05]">
                         <div className="text-[#64748B] text-[10px]">STOP LOSS (ATR)</div>
                         <div className="text-[#F43F5E] font-semibold mt-0.5">
-                          {analysis?.sl ? analysis.sl.toLocaleString('en-US', { maximumFractionDigits: 2 }) : 'Non actif (WAIT)'}
+                          {analysis?.sl ? analysis.sl.toLocaleString('en-US', { maximumFractionDigits: 2 }) : tr(lang, 'Non actif (WAIT)')}
                         </div>
                       </div>
                       <div className="p-2.5 rounded bg-[#090D16] border border-white/[0.05]">
                         <div className="text-[#64748B] text-[10px]">TAKE PROFIT 1</div>
                         <div className="text-[#10B981] font-semibold mt-0.5">
-                          {analysis?.tp1 ? analysis.tp1.toLocaleString('en-US', { maximumFractionDigits: 2 }) : 'Non actif (WAIT)'}
+                          {analysis?.tp1 ? analysis.tp1.toLocaleString('en-US', { maximumFractionDigits: 2 }) : tr(lang, 'Non actif (WAIT)')}
                         </div>
                       </div>
                       <div className="p-2.5 rounded bg-[#090D16] border border-white/[0.05]">
@@ -2118,7 +2318,7 @@ export function App() {
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
                     <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
                       <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
-                        Exécution Rapide Paper Trading
+                        {tr(lang, 'Exécution Rapide Paper Trading')}
                       </h3>
                       <span className="font-mono-tabular text-xs text-[#10B981]">
                         Cap: {Number(paperStats?.capital ?? 10000).toFixed(0)} USDT
@@ -2153,7 +2353,9 @@ export function App() {
 
                       <div className="grid grid-cols-2 gap-2.5">
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">Quantité ({selectedSymbol})</label>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {lang === 'en' ? 'Quantity' : 'Quantité'} ({selectedSymbol})
+                          </label>
                           <input
                             type="number"
                             step="any"
@@ -2164,7 +2366,7 @@ export function App() {
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">Levier (1x–20x)</label>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Levier (1x–20x)')}</label>
                           <input
                             type="number"
                             min="1"
@@ -2206,7 +2408,7 @@ export function App() {
                         type="submit"
                         className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors"
                       >
-                        Ouvrir Position Paper ({selectedSymbol})
+                        {lang === 'en' ? `Open Paper Position (${selectedSymbol})` : `Ouvrir Position Paper (${selectedSymbol})`}
                       </button>
                     </form>
                   </div>
@@ -2219,16 +2421,18 @@ export function App() {
                   <div>
                     <div className="flex items-center gap-2.5">
                       <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                        Scanner Multi-Marchés (BTCUSDT • ETHUSDT • XAUUSD)
+                        {tr(lang, 'Scanner Multi-Marchés (BTCUSDT • ETHUSDT • XAUUSD)')}
                       </h3>
                       {lastScannedAt && (
                         <span className="text-[11px] font-mono-tabular text-[#10B981] bg-[#10B981]/10 border border-[#10B981]/30 px-2 py-0.5 rounded">
-                          Mis à jour à {new Date(lastScannedAt).toLocaleTimeString()}
+                          {lang === 'en' ? 'Updated at' : 'Mis à jour à'} {new Date(lastScannedAt).toLocaleTimeString()}
                         </span>
                       )}
                     </div>
                     <p className="text-xs text-[#64748B] mt-0.5">
-                      Analyse simultanée en temps réel sur bougies clôturées ({selectedTimeframe.toUpperCase()} • Style {selectedStyle}). Cliquez sur une carte pour charger son graphique détaillé.
+                      {lang === 'en'
+                        ? `Simultaneous real-time analysis on closed candles (${selectedTimeframe.toUpperCase()} • Style ${selectedStyle}). Click a card to load its detailed chart.`
+                        : `Analyse simultanée en temps réel sur bougies clôturées (${selectedTimeframe.toUpperCase()} • Style ${selectedStyle}). Cliquez sur une carte pour charger son graphique détaillé.`}
                     </p>
                   </div>
                   <button
@@ -2237,7 +2441,13 @@ export function App() {
                     className="w-full sm:w-auto justify-center px-4 py-2 bg-[#10B981] hover:bg-[#059669] text-[#090D16] rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors shadow-lg shadow-[#10B981]/15"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${loadingScan ? 'animate-spin' : ''}`} />
-                    <span>{loadingScan ? 'Scan en cours...' : `Lancer le Scan Global (${selectedTimeframe.toUpperCase()})`}</span>
+                    <span>
+                      {loadingScan
+                        ? tr(lang, 'Scan en cours...')
+                        : lang === 'en'
+                        ? `Run Global Scan (${selectedTimeframe.toUpperCase()})`
+                        : `Lancer le Scan Global (${selectedTimeframe.toUpperCase()})`}
+                    </span>
                   </button>
                 </div>
 
@@ -2321,20 +2531,20 @@ export function App() {
 
                           <div className="grid grid-cols-3 gap-1.5 text-[10px] font-mono-tabular">
                             {(['1h', '4h', '1d'] as const).map((tfKey) => {
-                              const tr = scTrends[tfKey] || 'NEUTRE';
+                              const trVal = scTrends[tfKey] || 'NEUTRE';
                               return (
                                 <div key={tfKey} className="bg-[#111827] px-2 py-1 rounded text-center">
                                   <span className="text-[#64748B] uppercase mr-1">{tfKey}:</span>
                                   <span
                                     className={
-                                      tr === 'HAUSSIER'
+                                      trVal === 'HAUSSIER' || trVal === 'BULLISH'
                                         ? 'text-[#10B981] font-semibold'
-                                        : tr === 'BAISSIER'
+                                        : trVal === 'BAISSIER' || trVal === 'BEARISH'
                                         ? 'text-[#F43F5E] font-semibold'
                                         : 'text-[#94A3B8]'
                                     }
                                   >
-                                    {tr}
+                                    {tr(lang, trVal)}
                                   </span>
                                 </div>
                               );
@@ -2367,36 +2577,39 @@ export function App() {
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
                   <h2 className="font-display text-2xl font-bold text-[#F1F5F9]">
-                    Portefeuille Paper Trading Réaliste
+                    {tr(lang, 'Portefeuille Paper Trading Réaliste')}
                   </h2>
                   <p className="text-xs text-[#94A3B8]">
-                    Simulation fidèle avec frais d'ouverture/clôture (0.04%), slippage (0.02%) et surveillance automatique des seuils SL/TP.
+                    {tr(
+                      lang,
+                      "Simulation fidèle avec frais d'ouverture/clôture (0.04%), slippage (0.02%) et surveillance automatique des seuils SL/TP."
+                    )}
                   </p>
                 </div>
                 <button
                   onClick={handleResetPaperAccount}
                   className="px-3.5 py-2 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] transition-colors"
                 >
-                  Réinitialiser le capital (10 000 USDT)
+                  {tr(lang, 'Réinitialiser le capital (10 000 USDT)')}
                 </button>
               </div>
 
               {paperStats && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5">
-                    <div className="text-xs text-[#94A3B8]">Capital Disponible</div>
+                    <div className="text-xs text-[#94A3B8]">{tr(lang, 'Capital Disponible')}</div>
                     <div className="font-mono-tabular text-2xl font-bold text-[#F1F5F9] mt-1">
                       {Number(paperStats.capital ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
                     </div>
                   </div>
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5">
-                    <div className="text-xs text-[#94A3B8]">Équité Totale (Marge + Latent)</div>
+                    <div className="text-xs text-[#94A3B8]">{tr(lang, 'Équité Totale (Marge + Latent)')}</div>
                     <div className="font-mono-tabular text-2xl font-bold text-[#10B981] mt-1">
                       {Number(paperStats.equity ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
                     </div>
                   </div>
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5">
-                    <div className="text-xs text-[#94A3B8]">PnL Réalisé Cumulé</div>
+                    <div className="text-xs text-[#94A3B8]">{tr(lang, 'PnL Réalisé Cumulé')}</div>
                     <div
                       className={`font-mono-tabular text-2xl font-bold mt-1 ${
                         (paperStats.total_pnl ?? 0) >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
@@ -2407,7 +2620,7 @@ export function App() {
                     </div>
                   </div>
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5">
-                    <div className="text-xs text-[#94A3B8]">Taux de Réussite (Win Rate)</div>
+                    <div className="text-xs text-[#94A3B8]">{tr(lang, 'Taux de Réussite (Win Rate)')}</div>
                     <div className="font-mono-tabular text-2xl font-bold text-[#F59E0B] mt-1">
                       {Number(paperStats.win_rate ?? 0).toFixed(1)}%{' '}
                       <span className="text-xs font-normal text-[#64748B]">
@@ -2422,28 +2635,31 @@ export function App() {
               <div className="bg-[#111827] border border-white/[0.07] rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
                   <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
-                    Positions Ouvertes ({openPaper.length})
+                    {lang === 'en' ? 'Open Positions' : 'Positions Ouvertes'} ({openPaper.length})
                   </h3>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
-                        <th className="py-3 px-4">Actif</th>
-                        <th className="py-3 px-4">Sens & Levier</th>
-                        <th className="py-3 px-4 text-right">Entrée</th>
-                        <th className="py-3 px-4 text-right">Cours Actuel</th>
+                        <th className="py-3 px-4">{tr(lang, 'Actif')}</th>
+                        <th className="py-3 px-4">{tr(lang, 'Sens & Levier')}</th>
+                        <th className="py-3 px-4 text-right">{tr(lang, 'Entrée')}</th>
+                        <th className="py-3 px-4 text-right">{tr(lang, 'Cours Actuel')}</th>
                         <th className="py-3 px-4 text-right">SL / TP</th>
-                        <th className="py-3 px-4 text-right">Marge</th>
-                        <th className="py-3 px-4 text-right">PnL Latent</th>
-                        <th className="py-3 px-4 text-right">Action</th>
+                        <th className="py-3 px-4 text-right">{tr(lang, 'Marge')}</th>
+                        <th className="py-3 px-4 text-right">{tr(lang, 'PnL Latent')}</th>
+                        <th className="py-3 px-4 text-right">{tr(lang, 'Action')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
                       {openPaper.length === 0 ? (
                         <tr>
                           <td colSpan={8} className="py-8 text-center text-[#64748B] font-sans">
-                            Aucune position Paper ouverte. Utilisez le ticket d'ordre depuis l'onglet Market Intelligence.
+                            {tr(
+                              lang,
+                              "Aucune position Paper ouverte. Utilisez le ticket d'ordre depuis l'onglet Market Intelligence."
+                            )}
                           </td>
                         </tr>
                       ) : (
@@ -2498,7 +2714,7 @@ export function App() {
                                   onClick={() => handleClosePaperPosition(pos.id)}
                                   className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px]"
                                 >
-                                  Clôturer
+                                  {tr(lang, 'Clôturer')}
                                 </button>
                               </td>
                             </tr>
@@ -2514,19 +2730,19 @@ export function App() {
               <div className="bg-[#111827] border border-white/[0.07] rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-white/[0.07]">
                   <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
-                    Historique des Positions Clôturées ({closedPaper.length})
+                    {lang === 'en' ? 'Closed Positions History' : 'Historique des Positions Clôturées'} ({closedPaper.length})
                   </h3>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
-                        <th className="py-3 px-4">Actif</th>
-                        <th className="py-3 px-4">Sens</th>
-                        <th className="py-3 px-4 text-right">Entrée</th>
-                        <th className="py-3 px-4 text-right">Sortie</th>
-                        <th className="py-3 px-4">Raison</th>
-                        <th className="py-3 px-4 text-right">PnL Réalisé</th>
+                        <th className="py-3 px-4">{tr(lang, 'Actif')}</th>
+                        <th className="py-3 px-4">{tr(lang, 'Sens')}</th>
+                        <th className="py-3 px-4 text-right">{tr(lang, 'Entrée')}</th>
+                        <th className="py-3 px-4 text-right">{tr(lang, 'Sortie')}</th>
+                        <th className="py-3 px-4">{tr(lang, 'Raison')}</th>
+                        <th className="py-3 px-4 text-right">{tr(lang, 'PnL Réalisé')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
@@ -2543,7 +2759,7 @@ export function App() {
                                 {pos.side} {pos.leverage}x
                               </span>
                             </td>
-                            <td className="py-3 px-4 text-right">{entryVal.toLocaleString()}</td>
+                            <td className="py-3.5 px-4 text-right">{entryVal.toLocaleString()}</td>
                             <td className="py-3 px-4 text-right">{exitVal ? exitVal.toLocaleString() : '—'}</td>
                             <td className="py-3 px-4 text-[#94A3B8]">{pos.close_reason ?? pos.exit_reason ?? '—'}</td>
                             <td
@@ -2571,14 +2787,16 @@ export function App() {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               <div className="lg:col-span-5 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
                 <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                  Créer une Alerte de Prix
+                  {tr(lang, 'Créer une Alerte de Prix')}
                 </h3>
                 <p className="text-xs text-[#94A3B8]">
-                  Quota actuel : {alerts.length} / {alertLimit} alertes actives ({user?.role.toUpperCase()}).
+                  {lang === 'en'
+                    ? `Current quota: ${alerts.length} / ${alertLimit} active alerts (${user?.role.toUpperCase()}).`
+                    : `Quota actuel : ${alerts.length} / ${alertLimit} alertes actives (${user?.role.toUpperCase()}).`}
                 </p>
                 <form onSubmit={handleAddAlert} className="space-y-3.5 text-xs">
                   <div>
-                    <label className="block text-[#94A3B8] mb-1">Symbole</label>
+                    <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Symbole')}</label>
                     <select
                       value={newAlertSymbol}
                       onChange={(e) => setNewAlertSymbol(e.target.value)}
@@ -2586,24 +2804,28 @@ export function App() {
                     >
                       {SYMBOLS.map((s) => (
                         <option key={s.id} value={s.id}>
-                          {s.label}
+                          {lang === 'en' && s.labelEn ? s.labelEn : s.label}
                         </option>
                       ))}
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[#94A3B8] mb-1">Condition de franchissement</label>
+                    <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Condition de franchissement')}</label>
                     <select
                       value={newAlertCond}
                       onChange={(e) => setNewAlertCond(e.target.value as 'above' | 'below')}
                       className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
                     >
-                      <option value="above">Franchissement à la hausse (ABOVE &ge;)</option>
-                      <option value="below">Franchissement à la baisse (BELOW &le;)</option>
+                      <option value="above">
+                        {lang === 'en' ? 'Crosses Above (ABOVE ≥)' : 'Franchissement à la hausse (ABOVE ≥)'}
+                      </option>
+                      <option value="below">
+                        {lang === 'en' ? 'Crosses Below (BELOW ≤)' : 'Franchissement à la baisse (BELOW ≤)'}
+                      </option>
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[#94A3B8] mb-1">Prix Cible (USD / USDT)</label>
+                    <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Prix Cible (USD / USDT)')}</label>
                     <input
                       type="number"
                       step="any"
@@ -2618,7 +2840,7 @@ export function App() {
                     type="submit"
                     className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors"
                   >
-                    Activer l'Alerte Prix
+                    {tr(lang, "Activer l'Alerte Prix")}
                   </button>
                 </form>
               </div>
@@ -2626,19 +2848,19 @@ export function App() {
               <div className="lg:col-span-7 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                    Alertes Actives ({alerts.length})
+                    {lang === 'en' ? 'Active Alerts' : 'Alertes Actives'} ({alerts.length})
                   </h3>
                   {alerts.length > 0 && (
                     <button
                       onClick={() =>
                         apiFetch('/api/alerts/clear', { method: 'POST' }).then((r) => {
                           setAlerts(r.alerts || []);
-                          showToast('Toutes les alertes ont été supprimées.', 'info');
+                          showToast(tr(lang, 'Toutes les alertes ont été supprimées.'), 'info');
                         })
                       }
                       className="text-xs text-[#F43F5E] hover:underline"
                     >
-                      Tout effacer
+                      {tr(lang, 'Tout effacer')}
                     </button>
                   )}
                 </div>
@@ -2646,7 +2868,7 @@ export function App() {
                 <div className="divide-y divide-white/[0.06]">
                   {alerts.length === 0 ? (
                     <div className="py-10 text-center text-xs text-[#64748B]">
-                      Aucune alerte active pour le moment.
+                      {tr(lang, 'Aucune alerte active pour le moment.')}
                     </div>
                   ) : (
                     alerts.map((a) => (
@@ -2660,7 +2882,7 @@ export function App() {
                                 : 'bg-[#F43F5E]/15 text-[#F43F5E]'
                             }`}
                           >
-                            {a.condition === 'above' ? '≥ HAUSSE' : '≤ BAISSE'}
+                            {a.condition === 'above' ? tr(lang, '≥ HAUSSE') : tr(lang, '≤ BAISSE')}
                           </span>
                           <span className="font-mono-tabular text-sm font-semibold text-[#F1F5F9]">
                             {Number(a.price ?? 0).toLocaleString()} USD
@@ -2700,17 +2922,17 @@ export function App() {
                     {tradingCfg.safety_lock ? (
                       <>
                         <ShieldAlert className="w-5 h-5 text-[#F43F5E]" />
-                        <span className="text-[#FB7185]">SAFETY LOCK ACTIF (Auto-Trade Suspendu)</span>
+                        <span className="text-[#FB7185]">{tr(lang, 'SAFETY LOCK ACTIF (Auto-Trade Suspendu)')}</span>
                       </>
                     ) : tradingCfg.safety_warn ? (
                       <>
                         <AlertTriangle className="w-5 h-5 text-[#F59E0B]" />
-                        <span className="text-[#FBBF24]">SAFETY WARN (Avertissement Temporaire Actif)</span>
+                        <span className="text-[#FBBF24]">{tr(lang, 'SAFETY WARN (Avertissement Temporaire Actif)')}</span>
                       </>
                     ) : (
                       <>
                         <ShieldCheck className="w-5 h-5 text-[#10B981]" />
-                        <span className="text-[#34D399]">SAFETY CENTER OPÉRATIONNEL</span>
+                        <span className="text-[#34D399]">{tr(lang, 'SAFETY CENTER OPÉRATIONNEL')}</span>
                       </>
                     )}
 
@@ -2727,10 +2949,14 @@ export function App() {
                         }`}
                       />
                       {tradingCfg.credentials_valid
-                        ? `API BINANCE CONNECTÉE (${tradingCfg.market_type.toUpperCase()} • ${
-                            tradingCfg.testnet ? 'TESTNET' : 'LIVE RÉEL'
-                          })`
-                        : 'API BINANCE DÉCONNECTÉE / CLÉS REQUISES'}
+                        ? lang === 'en'
+                          ? `BINANCE API CONNECTED (${tradingCfg.market_type.toUpperCase()} • ${
+                              tradingCfg.testnet ? 'TESTNET' : 'LIVE REAL'
+                            })`
+                          : `API BINANCE CONNECTÉE (${tradingCfg.market_type.toUpperCase()} • ${
+                              tradingCfg.testnet ? 'TESTNET' : 'LIVE RÉEL'
+                            })`
+                        : tr(lang, 'API BINANCE DÉCONNECTÉE / CLÉS REQUISES')}
                     </span>
                   </div>
 
@@ -2738,19 +2964,24 @@ export function App() {
                     {tradingCfg.safety_lock_reason ||
                       tradingCfg.safety_warn_reason ||
                       tradingCfg.api_status_message ||
-                      'Tous les garde-fous de risque (exposition max 20%, fraîcheur de signal 180s, TTL 3600s) sont actifs.'}
+                      tr(
+                        lang,
+                        'Tous les garde-fous de risque (exposition max 20%, fraîcheur de signal 180s, TTL 3600s) sont actifs.'
+                      )}
                   </div>
                   {(tradingCfg.safety_lock_at || tradingCfg.safety_warn_at) && (
                     <div className="text-[11px] font-mono-tabular text-[#64748B]">
                       {tradingCfg.safety_lock_at && (
                         <span>
-                          Lock activé il y a {Math.round(tradingCfg.safety_lock_age_seconds || 0)}s (TTL:{' '}
-                          {tradingCfg.safety_lock_ttl_seconds}s){' '}
+                          {lang === 'en'
+                            ? `Lock activated ${Math.round(tradingCfg.safety_lock_age_seconds || 0)}s ago (TTL: ${tradingCfg.safety_lock_ttl_seconds}s) `
+                            : `Lock activé il y a ${Math.round(tradingCfg.safety_lock_age_seconds || 0)}s (TTL: ${tradingCfg.safety_lock_ttl_seconds}s) `}
                         </span>
                       )}
                       {tradingCfg.safety_warn_at && (
                         <span>
-                          • Warn horodaté : {new Date(tradingCfg.safety_warn_at * 1000).toLocaleTimeString()}
+                          • {lang === 'en' ? 'Warn timestamp:' : 'Warn horodaté :'}{' '}
+                          {new Date(tradingCfg.safety_warn_at * 1000).toLocaleTimeString()}
                         </span>
                       )}
                     </div>
@@ -2762,7 +2993,7 @@ export function App() {
                     <input
                       type="password"
                       maxLength={6}
-                      placeholder="PIN (6 chiffres)"
+                      placeholder={tr(lang, 'PIN (6 chiffres)')}
                       value={safetyPinInput}
                       onChange={(e) => setSafetyPinInput(e.target.value)}
                       className="w-32 px-2.5 py-2 bg-[#090D16] border border-white/15 rounded-lg font-mono-tabular text-[#F1F5F9]"
@@ -2773,21 +3004,32 @@ export function App() {
                       onClick={() => handleSafetyAction('clearsafe')}
                       className="px-3.5 py-2 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors"
                     >
-                      Acquitter / Déverrouiller (/clearsafe)
+                      {tr(lang, 'Acquitter / Déverrouiller (/clearsafe)')}
                     </button>
                   )}
                   {!tradingCfg.safety_lock && (
                     <button
-                      onClick={() => handleSafetyAction('engage_lock', 'Verrouillage d’urgence manuel par l’opérateur')}
+                      onClick={() =>
+                        handleSafetyAction(
+                          'engage_lock',
+                          lang === 'en'
+                            ? 'Manual emergency lock by operator'
+                            : 'Verrouillage d’urgence manuel par l’opérateur'
+                        )
+                      }
                       className="px-3.5 py-2 bg-[#F43F5E]/20 hover:bg-[#F43F5E]/30 border border-[#F43F5E]/40 text-[#FB7185] font-semibold rounded-lg transition-colors"
                     >
-                      Verrouiller Safe Mode
+                      {tr(lang, 'Verrouiller Safe Mode')}
                     </button>
                   )}
                   <button
                     onClick={() => handleSafetyAction('emergency_stop')}
                     className="px-3.5 py-2 bg-[#F43F5E] hover:bg-[#E11D48] text-white font-semibold rounded-lg transition-colors"
-                    title="Ferme toutes les positions ouvertes et désactive AutoTrade (/emergency)"
+                    title={
+                      lang === 'en'
+                        ? 'Close all open positions and disable AutoTrade (/emergency)'
+                        : 'Ferme toutes les positions ouvertes et désactive AutoTrade (/emergency)'
+                    }
                   >
                     🛑 Emergency Stop All (/emergency)
                   </button>
@@ -2795,12 +3037,12 @@ export function App() {
                     onClick={() =>
                       apiFetch('/api/trading/reconcile', { method: 'POST' }).then(() => {
                         loadLiveAccountAndOrders();
-                        showToast('Réconciliation DB ↔ Binance exécutée.', 'success');
+                        showToast(tr(lang, 'Réconciliation DB ↔ Binance exécutée.'), 'success');
                       })
                     }
                     className="px-3.5 py-2 bg-[#111827] hover:bg-[#1E293B] border border-white/15 text-[#F1F5F9] rounded-lg transition-colors"
                   >
-                    Réconcilier DB ↔ Binance
+                    {tr(lang, 'Réconcilier DB ↔ Binance')}
                   </button>
                 </div>
               </div>
@@ -2812,10 +3054,13 @@ export function App() {
                   <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] pb-3.5">
                     <div>
                       <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                        Configuration Complète Auto-Trade & Stratégie (Miroir Bot Telegram)
+                        {tr(lang, 'Configuration Complète Auto-Trade & Stratégie (Miroir Bot Telegram)')}
                       </h3>
                       <p className="text-xs text-[#64748B]">
-                        Synchronisé en temps réel avec `/config`, `/autotrade` et `/periodic_analysis`. Toute modification critique suspend Auto-Trade par sécurité.
+                        {tr(
+                          lang,
+                          'Synchronisé en temps réel avec `/config`, `/autotrade` et `/periodic_analysis`. Toute modification critique suspend Auto-Trade par sécurité.'
+                        )}
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -2842,7 +3087,11 @@ export function App() {
                             : 'bg-[#F59E0B]/15 text-[#FBBF24] border-[#F59E0B]/40'
                         }`}
                       >
-                        {tradingCfg.testnet ? 'MODE: TESTNET' : 'MODE: LIVE RÉEL'}
+                        {tradingCfg.testnet
+                          ? 'MODE: TESTNET'
+                          : lang === 'en'
+                          ? 'MODE: LIVE REAL'
+                          : 'MODE: LIVE RÉEL'}
                       </button>
                     </div>
                   </div>
@@ -2850,11 +3099,11 @@ export function App() {
                   {/* Section 1: Market, Style & Periodic Analysis (/setmarket, /settradingstyle, /setanalysistf, /setanalysisinterval) */}
                   <div className="space-y-3">
                     <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#10B981]">
-                      1. Marché, Style & Analyse Périodique
+                      {tr(lang, '1. Marché, Style & Analyse Périodique')}
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
                       <div>
-                        <label className="block text-[#94A3B8] mb-1">Marché (/setmarket)</label>
+                        <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Marché (/setmarket)')}</label>
                         <select
                           value={tradingCfg.market_type}
                           onChange={(e) =>
@@ -2868,7 +3117,7 @@ export function App() {
                       </div>
 
                       <div>
-                        <label className="block text-[#94A3B8] mb-1">Style (/settradingstyle)</label>
+                        <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Style (/settradingstyle)')}</label>
                         <select
                           value={tradingCfg.trading_style}
                           onChange={(e) => {
@@ -2904,7 +3153,7 @@ export function App() {
                       </div>
 
                       <div>
-                        <label className="block text-[#94A3B8] mb-1">Intervalle Scan (/setanalysisinterval)</label>
+                        <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Intervalle Scan (/setanalysisinterval)')}</label>
                         <div className="flex gap-1.5">
                           {[5, 10].map((mins) => (
                             <button
@@ -2934,8 +3183,9 @@ export function App() {
                           }
                         />
                         <span className="font-medium text-[#F1F5F9]">
-                          Analyse Périodique Automatique (/periodic_analysis) — toutes les{' '}
-                          {tradingCfg.analysis_interval_minutes} min en {tradingCfg.analysis_timeframe.toUpperCase()}
+                          {lang === 'en'
+                            ? `Automatic Periodic Analysis (/periodic_analysis) — every ${tradingCfg.analysis_interval_minutes} min on ${tradingCfg.analysis_timeframe.toUpperCase()}`
+                            : `Analyse Périodique Automatique (/periodic_analysis) — toutes les ${tradingCfg.analysis_interval_minutes} min en ${tradingCfg.analysis_timeframe.toUpperCase()}`}
                         </span>
                       </label>
                       <button
@@ -2949,7 +3199,7 @@ export function App() {
                         className="px-3 py-1.5 bg-[#10B981]/15 hover:bg-[#10B981]/25 border border-[#10B981]/40 text-[#10B981] rounded-md font-semibold flex items-center gap-1.5"
                       >
                         <Play className="w-3.5 h-3.5" />
-                        <span>Scanner Maintenant (/periodic_analysis now)</span>
+                        <span>{tr(lang, 'Scanner Maintenant (/periodic_analysis now)')}</span>
                       </button>
                     </div>
                   </div>
@@ -2957,14 +3207,14 @@ export function App() {
                   {/* Section 2: Leverage, Risk, Max Positions, Min Score, Daily Max Loss, Cooldown */}
                   <div className="space-y-3 pt-2 border-t border-white/[0.06]">
                     <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#10B981]">
-                      2. Paramètres de Risque, Levier & Filtres d'Exécution
+                      {tr(lang, "2. Paramètres de Risque, Levier & Filtres d'Exécution")}
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
                       {/* Leverage */}
                       <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[#94A3B8]">Levier (/setleverage 1–125)</span>
+                          <span className="text-[#94A3B8]">{tr(lang, 'Levier (/setleverage 1–125)')}</span>
                           <span className="font-mono-tabular font-bold text-[#10B981]">x{tradingCfg.leverage}</span>
                         </div>
                         <div className="flex flex-wrap gap-1">
@@ -3000,7 +3250,7 @@ export function App() {
                       {/* Risk per trade */}
                       <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[#94A3B8]">Risque / Trade (/setrisk)</span>
+                          <span className="text-[#94A3B8]">{tr(lang, 'Risque / Trade (/setrisk)')}</span>
                           <span className="font-mono-tabular font-bold text-[#10B981]">
                             {tradingCfg.risk_per_trade}%
                           </span>
@@ -3077,7 +3327,7 @@ export function App() {
                       {/* Min Score */}
                       <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[#94A3B8]">Score Min (/setminscore)</span>
+                          <span className="text-[#94A3B8]">{tr(lang, 'Score Min (/setminscore)')}</span>
                           <span className="font-mono-tabular font-bold text-[#10B981]">
                             {tradingCfg.min_score}/100
                           </span>
@@ -3115,13 +3365,13 @@ export function App() {
                       {/* Daily Max Loss */}
                       <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[#94A3B8]">Perte Max/Jour (/setdailymaxloss)</span>
+                          <span className="text-[#94A3B8]">{tr(lang, 'Perte Max/Jour (/setdailymaxloss)')}</span>
                           <span className="font-mono-tabular font-bold text-[#F43F5E]">
                             {tradingCfg.max_daily_loss}%
                           </span>
                         </div>
                         <div className="text-[11px] font-mono-tabular text-[#64748B]">
-                          Cumul jour : {(tradingCfg.daily_loss_tracked || 0).toFixed(2)} USDT
+                          {lang === 'en' ? 'Daily total:' : 'Cumul jour :'} {(tradingCfg.daily_loss_tracked || 0).toFixed(2)} USDT
                         </div>
                         <div className="flex gap-1.5">
                           <input
@@ -3190,7 +3440,7 @@ export function App() {
                   {/* Section 3: Trailing Stop ATR & DCA Parameters (/settrailing, /setdca) */}
                   <div className="space-y-3 pt-2 border-t border-white/[0.06]">
                     <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#10B981]">
-                      3. Trailing Stop Dynamique (ATR) & DCA (/settrailing • /setdca)
+                      {tr(lang, '3. Trailing Stop Dynamique (ATR) & DCA (/settrailing • /setdca)')}
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
@@ -3228,7 +3478,7 @@ export function App() {
                           ))}
                         </div>
                         <div className="flex items-center gap-2">
-                          <span className="text-[#94A3B8] text-[11px]">Facteur / Distance (0.1–20%) :</span>
+                          <span className="text-[#94A3B8] text-[11px]">{tr(lang, 'Facteur / Distance (0.1–20%) :')}</span>
                           <input
                             type="number"
                             step="0.1"
@@ -3254,16 +3504,16 @@ export function App() {
                               checked={tradingCfg.dca_enabled}
                               onChange={(e) => handleUpdateTradingConfig({ dca_enabled: e.target.checked })}
                             />
-                            <span>Configuration DCA (/setdca)</span>
+                            <span>{tr(lang, 'Configuration DCA (/setdca)')}</span>
                           </label>
                           <span className="font-mono-tabular text-[#F59E0B]">
-                            {tradingCfg.dca_enabled ? 'ON' : 'OFF'} ({tradingCfg.dca_steps ?? 3} ét.,{' '}
-                            {tradingCfg.dca_step_pct ?? 2.0}%)
+                            {tradingCfg.dca_enabled ? 'ON' : 'OFF'} ({tradingCfg.dca_steps ?? 3}{' '}
+                            {lang === 'en' ? 'st.' : 'ét.'}, {tradingCfg.dca_step_pct ?? 2.0}%)
                           </span>
                         </div>
                         <div className="grid grid-cols-2 gap-2">
                           <div>
-                            <label className="block text-[11px] text-[#94A3B8] mb-1">Étapes (1–10)</label>
+                            <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Étapes (1–10)')}</label>
                             <input
                               type="number"
                               min="1"
@@ -3278,7 +3528,7 @@ export function App() {
                             />
                           </div>
                           <div>
-                            <label className="block text-[11px] text-[#94A3B8] mb-1">Écart % (0.1–20%)</label>
+                            <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Écart % (0.1–20%)')}</label>
                             <input
                               type="number"
                               step="0.5"
@@ -3301,7 +3551,7 @@ export function App() {
                   {/* Section 4: Whitelist & Blacklist (/whitelist, /blacklist) */}
                   <div className="space-y-3 pt-2 border-t border-white/[0.06]">
                     <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#10B981]">
-                      4. Filtrage des Symboles Documentés (/whitelist • /blacklist)
+                      {tr(lang, '4. Filtrage des Symboles Documentés (/whitelist • /blacklist)')}
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                       {/* Whitelist */}
@@ -3314,7 +3564,7 @@ export function App() {
                               onClick={() => handleUpdateTradingConfig({ symbol_whitelist: [] })}
                               className="text-[11px] text-[#F43F5E] hover:underline"
                             >
-                              Vider (clear)
+                              {tr(lang, 'Vider (clear)')}
                             </button>
                           )}
                         </div>
@@ -3344,8 +3594,8 @@ export function App() {
                         </div>
                         <div className="text-[11px] text-[#64748B]">
                           {(tradingCfg.symbol_whitelist || []).length === 0
-                            ? 'Aucune restriction (tous les symboles documentés sont autorisés).'
-                            : `Actifs autorisés : ${(tradingCfg.symbol_whitelist || []).join(', ')}`}
+                            ? tr(lang, 'Aucune restriction (tous les symboles documentés sont autorisés).')
+                            : `${lang === 'en' ? 'Allowed assets:' : 'Actifs autorisés :'} ${(tradingCfg.symbol_whitelist || []).join(', ')}`}
                         </div>
                       </div>
 
@@ -3359,7 +3609,7 @@ export function App() {
                               onClick={() => handleUpdateTradingConfig({ symbol_blacklist: [] })}
                               className="text-[11px] text-[#F43F5E] hover:underline"
                             >
-                              Vider (clear)
+                              {tr(lang, 'Vider (clear)')}
                             </button>
                           )}
                         </div>
@@ -3389,8 +3639,8 @@ export function App() {
                         </div>
                         <div className="text-[11px] text-[#64748B]">
                           {(tradingCfg.symbol_blacklist || []).length === 0
-                            ? 'Aucun actif bloqué.'
-                            : `Actifs exclus : ${(tradingCfg.symbol_blacklist || []).join(', ')}`}
+                            ? tr(lang, 'Aucun actif bloqué.')
+                            : `${lang === 'en' ? 'Excluded assets:' : 'Actifs exclus :'} ${(tradingCfg.symbol_blacklist || []).join(', ')}`}
                         </div>
                       </div>
                     </div>
@@ -3405,7 +3655,7 @@ export function App() {
                       <div className="flex items-center gap-2">
                         <Key className="w-4 h-4 text-[#10B981]" />
                         <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                          Clés API Binance (/setapikeys)
+                          {tr(lang, 'Clés API Binance (/setapikeys)')}
                         </h3>
                       </div>
                       <span
@@ -3416,16 +3666,16 @@ export function App() {
                         }`}
                       >
                         {tradingCfg.credentials_valid
-                          ? `● OPÉRATIONNEL (${tradingCfg.api_key_masked || 'Testnet'})`
-                          : '○ NON CONNECTÉ'}
+                          ? `● ${lang === 'en' ? 'OPERATIONAL' : 'OPÉRATIONNEL'} (${tradingCfg.api_key_masked || 'Testnet'})`
+                          : tr(lang, '○ NON CONNECTÉ')}
                       </span>
                     </div>
 
                     <div className="flex items-center justify-between p-3 rounded-lg bg-[#090D16] border border-white/[0.06] text-xs">
                       <div>
-                        <div className="text-[#94A3B8]">Clé active :</div>
+                        <div className="text-[#94A3B8]">{tr(lang, 'Clé active :')}</div>
                         <div className="font-mono-tabular font-semibold text-[#F1F5F9]">
-                          {tradingCfg.api_key_masked || 'Aucune clé chargée'} •{' '}
+                          {tradingCfg.api_key_masked || tr(lang, 'Aucune clé chargée')} •{' '}
                           {tradingCfg.testnet ? 'TESTNET' : 'LIVE'} ({tradingCfg.market_type.toUpperCase()})
                         </div>
                       </div>
@@ -3436,7 +3686,7 @@ export function App() {
                         className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] flex items-center gap-1.5"
                       >
                         <RefreshCw className={`w-3.5 h-3.5 ${testingApiConn ? 'animate-spin text-[#10B981]' : ''}`} />
-                        <span>Tester Connexion</span>
+                        <span>{tr(lang, 'Tester Connexion')}</span>
                       </button>
                     </div>
 
@@ -3447,7 +3697,7 @@ export function App() {
                           type="text"
                           value={binanceKey}
                           onChange={(e) => setBinanceKey(e.target.value)}
-                          placeholder="Entrez votre clé API Binance..."
+                          placeholder={tr(lang, 'Entrez votre clé API Binance...')}
                           className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
                           required
                         />
@@ -3469,13 +3719,13 @@ export function App() {
                           checked={binanceTestnet}
                           onChange={(e) => setBinanceTestnet(e.target.checked)}
                         />
-                        <span>Environnement Binance Testnet (/settestnet on|off)</span>
+                        <span>{tr(lang, 'Environnement Binance Testnet (/settestnet on|off)')}</span>
                       </label>
                       <button
                         type="submit"
                         className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors"
                       >
-                        Enregistrer & Vérifier les Clés API
+                        {tr(lang, 'Enregistrer & Vérifier les Clés API')}
                       </button>
                     </form>
                   </div>
@@ -3486,7 +3736,7 @@ export function App() {
                       <div className="flex items-center gap-2">
                         <Wallet className="w-4 h-4 text-[#10B981]" />
                         <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                          Solde & Marge Compte Binance (/account)
+                          {tr(lang, 'Solde & Marge Compte Binance (/account)')}
                         </h3>
                       </div>
                       <button
@@ -3496,7 +3746,7 @@ export function App() {
                         className="text-xs text-[#10B981] hover:underline flex items-center gap-1"
                       >
                         <RefreshCw className={`w-3.5 h-3.5 ${loadingLiveAccount ? 'animate-spin' : ''}`} />
-                        <span>Rafraîchir</span>
+                        <span>{tr(lang, 'Rafraîchir')}</span>
                       </button>
                     </div>
 
@@ -3504,7 +3754,7 @@ export function App() {
                       <div className="space-y-3 text-xs">
                         <div className="grid grid-cols-2 gap-3 font-mono-tabular">
                           <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06]">
-                            <div className="text-[10px] text-[#64748B] uppercase">Solde Total Wallet</div>
+                            <div className="text-[10px] text-[#64748B] uppercase">{tr(lang, 'Solde Total Wallet')}</div>
                             <div className="text-base font-bold text-[#F1F5F9] mt-0.5">
                               {Number(liveAccount.total_wallet_balance || 0).toLocaleString('en-US', {
                                 minimumFractionDigits: 2,
@@ -3514,7 +3764,7 @@ export function App() {
                             </div>
                           </div>
                           <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06]">
-                            <div className="text-[10px] text-[#64748B] uppercase">Disponible</div>
+                            <div className="text-[10px] text-[#64748B] uppercase">{tr(lang, 'Disponible')}</div>
                             <div className="text-base font-bold text-[#10B981] mt-0.5">
                               {Number(liveAccount.available_balance || 0).toLocaleString('en-US', {
                                 minimumFractionDigits: 2,
@@ -3524,7 +3774,7 @@ export function App() {
                             </div>
                           </div>
                           <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06]">
-                            <div className="text-[10px] text-[#64748B] uppercase">PnL Non Réalisé</div>
+                            <div className="text-[10px] text-[#64748B] uppercase">{tr(lang, 'PnL Non Réalisé')}</div>
                             <div
                               className={`text-base font-bold mt-0.5 ${
                                 Number(liveAccount.unrealized_pnl || 0) >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
@@ -3535,7 +3785,7 @@ export function App() {
                             </div>
                           </div>
                           <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06]">
-                            <div className="text-[10px] text-[#64748B] uppercase">Marge Utilisée</div>
+                            <div className="text-[10px] text-[#64748B] uppercase">{tr(lang, 'Marge Utilisée')}</div>
                             <div className="text-base font-bold text-[#F59E0B] mt-0.5">
                               {liveAccount.market_type === 'futures' ? `${liveAccount.margin_used_pct || 0}%` : 'SPOT'}
                             </div>
@@ -3544,14 +3794,14 @@ export function App() {
 
                         {Array.isArray(liveAccount.assets) && liveAccount.assets.length > 0 && (
                           <div className="space-y-1.5 pt-1">
-                            <div className="text-[11px] text-[#94A3B8] font-semibold">Actifs détectés :</div>
+                            <div className="text-[11px] text-[#94A3B8] font-semibold">{tr(lang, 'Actifs détectés :')}</div>
                             <div className="max-h-32 overflow-y-auto divide-y divide-white/[0.05] font-mono-tabular">
                               {liveAccount.assets.slice(0, 6).map((a: any) => (
                                 <div key={a.asset} className="py-1.5 flex items-center justify-between text-[11px]">
                                   <span className="font-bold text-[#F1F5F9]">{a.asset}</span>
                                   <span className="text-[#94A3B8]">
                                     {liveAccount.market_type === 'futures'
-                                      ? `${Number(a.wallet || 0).toFixed(4)} (Dispo: ${Number(a.available || 0).toFixed(2)})`
+                                      ? `${Number(a.wallet || 0).toFixed(4)} (${lang === 'en' ? 'Avail' : 'Dispo'}: ${Number(a.available || 0).toFixed(2)})`
                                       : `${Number(a.total || 0).toFixed(4)} (~${Number(a.usdt_value || 0).toFixed(2)} USDT)`}
                                   </span>
                                 </div>
@@ -3562,7 +3812,10 @@ export function App() {
                       </div>
                     ) : (
                       <div className="p-4 rounded-lg bg-[#090D16] border border-white/[0.06] text-xs text-[#94A3B8]">
-                        Connectez des clés API Binance valides pour afficher le solde temps réel, la marge disponible et les positions sur le serveur Binance.
+                        {tr(
+                          lang,
+                          'Connectez des clés API Binance valides pour afficher le solde temps réel, la marge disponible et les positions sur le serveur Binance.'
+                        )}
                       </div>
                     )}
                   </div>
@@ -3576,10 +3829,12 @@ export function App() {
                   <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
                     <div>
                       <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                        Ticket d'Ordre Live Manuel (/live_long • /live_short)
+                        {tr(lang, "Ticket d'Ordre Live Manuel (/live_long • /live_short)")}
                       </h3>
                       <p className="text-xs text-[#64748B]">
-                        Validation de pré-ordre + confirmation explicite avant envoi sur Binance ({tradingCfg.market_type.toUpperCase()}).
+                        {lang === 'en'
+                          ? `Pre-order validation + explicit confirmation before sending to Binance (${tradingCfg.market_type.toUpperCase()}).`
+                          : `Validation de pré-ordre + confirmation explicite avant envoi sur Binance (${tradingCfg.market_type.toUpperCase()}).`}
                       </p>
                     </div>
                   </div>
@@ -3598,7 +3853,7 @@ export function App() {
                             : 'bg-[#090D16] text-[#94A3B8] border-white/10'
                         }`}
                       >
-                        🟢 OUVRIR LONG (BUY)
+                        {tr(lang, '🟢 OUVRIR LONG (BUY)')}
                       </button>
                       <button
                         type="button"
@@ -3612,13 +3867,13 @@ export function App() {
                             : 'bg-[#090D16] text-[#94A3B8] border-white/10'
                         }`}
                       >
-                        🔴 OUVRIR SHORT (SELL)
+                        {tr(lang, '🔴 OUVRIR SHORT (SELL)')}
                       </button>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2.5">
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">Symbole</label>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Symbole')}</label>
                         <select
                           value={liveOrderSymbol}
                           onChange={(e) => {
@@ -3635,7 +3890,7 @@ export function App() {
                         </select>
                       </div>
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">Type d'Ordre</label>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, "Type d'Ordre")}</label>
                         <select
                           value={liveOrderType}
                           onChange={(e) => {
@@ -3652,7 +3907,7 @@ export function App() {
 
                     <div className="grid grid-cols-3 gap-2.5">
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">Montant</label>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Montant')}</label>
                         <input
                           type="number"
                           step="any"
@@ -3665,7 +3920,7 @@ export function App() {
                         />
                       </div>
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">Mode Montant</label>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Mode Montant')}</label>
                         <select
                           value={liveOrderAmountMode}
                           onChange={(e) => {
@@ -3674,12 +3929,12 @@ export function App() {
                           }}
                           className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded text-[#F1F5F9]"
                         >
-                          <option value="fixed">USDT Fixe</option>
-                          <option value="percentage">% Solde</option>
+                          <option value="fixed">{tr(lang, 'USDT Fixe')}</option>
+                          <option value="percentage">{tr(lang, '% Solde')}</option>
                         </select>
                       </div>
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">Levier (1–125)</label>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Levier (1–125)')}</label>
                         <input
                           type="number"
                           min="1"
@@ -3696,7 +3951,7 @@ export function App() {
 
                     {liveOrderType === 'LIMIT' && (
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">Prix Limite d'Entrée</label>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, "Prix Limite d'Entrée")}</label>
                         <input
                           type="number"
                           step="any"
@@ -3722,7 +3977,7 @@ export function App() {
                             setLiveOrderSL(e.target.value);
                             setLiveOrderDraftCheck(null);
                           }}
-                          placeholder="Prix SL..."
+                          placeholder={tr(lang, 'Prix SL...')}
                           className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F43F5E]"
                         />
                       </div>
@@ -3736,7 +3991,7 @@ export function App() {
                             setLiveOrderTP(e.target.value);
                             setLiveOrderDraftCheck(null);
                           }}
-                          placeholder="Prix TP..."
+                          placeholder={tr(lang, 'Prix TP...')}
                           className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#10B981]"
                         />
                       </div>
@@ -3744,7 +3999,7 @@ export function App() {
 
                     <div className="flex items-center justify-between gap-2 pt-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-[#94A3B8]">Marge :</span>
+                        <span className="text-[#94A3B8]">{lang === 'en' ? 'Margin:' : 'Marge :'}</span>
                         {(['ISOLATED', 'CROSS'] as const).map((mt) => (
                           <button
                             key={mt}
@@ -3772,13 +4027,14 @@ export function App() {
 
                     {liveOrderDraftCheck && (
                       <div className="p-3 rounded-lg bg-[#090D16] border border-[#10B981]/40 space-y-1 font-mono-tabular text-[11px]">
-                        <div className="text-[#10B981] font-bold">✅ Pré-validation Binance réussie :</div>
+                        <div className="text-[#10B981] font-bold">{tr(lang, '✅ Pré-validation Binance réussie :')}</div>
                         <div>
-                          Prix réf: {Number(liveOrderDraftCheck.price).toFixed(2)} • Quantité:{' '}
-                          <strong>{liveOrderDraftCheck.quantity}</strong>
+                          {lang === 'en' ? 'Ref price:' : 'Prix réf:'} {Number(liveOrderDraftCheck.price).toFixed(2)} •{' '}
+                          {tr(lang, 'Quantité')}: <strong>{liveOrderDraftCheck.quantity}</strong>
                         </div>
                         <div>
-                          Marge engagée: {Number(liveOrderDraftCheck.margin_amount).toFixed(2)} USDT • Notional:{' '}
+                          {lang === 'en' ? 'Committed margin:' : 'Marge engagée:'}{' '}
+                          {Number(liveOrderDraftCheck.margin_amount).toFixed(2)} USDT • Notional:{' '}
                           {Number(liveOrderDraftCheck.notional).toFixed(2)} USDT
                         </div>
                         <div>
@@ -3793,7 +4049,7 @@ export function App() {
                         onClick={() => handleLiveOrderAction('validate')}
                         className="flex-1 py-2.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] font-semibold rounded-lg transition-colors"
                       >
-                        1. Valider l'Ordre
+                        {tr(lang, "1. Valider l'Ordre")}
                       </button>
                       <button
                         type="button"
@@ -3805,7 +4061,7 @@ export function App() {
                             : 'bg-[#090D16] text-[#64748B] border border-white/5 cursor-not-allowed'
                         }`}
                       >
-                        2. Confirmer Envoi Réel
+                        {tr(lang, '2. Confirmer Envoi Réel')}
                       </button>
                     </div>
                   </div>
@@ -3817,33 +4073,35 @@ export function App() {
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl overflow-hidden">
                     <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
                       <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
-                        Positions AutoTrade & Live Ouvertes ({liveTrades.open.length}) — /positions
+                        {lang === 'en'
+                          ? `Open AutoTrade & Live Positions (${liveTrades.open.length}) — /positions`
+                          : `Positions AutoTrade & Live Ouvertes (${liveTrades.open.length}) — /positions`}
                       </h3>
                       <button
                         type="button"
                         onClick={loadLiveAccountAndOrders}
                         className="text-xs text-[#10B981] hover:underline"
                       >
-                        Actualiser
+                        {tr(lang, 'Actualiser')}
                       </button>
                     </div>
                     <div className="overflow-x-auto">
                       <table className="w-full text-left border-collapse text-xs">
                         <thead>
                           <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
-                            <th className="py-2.5 px-4">ID / Actif</th>
-                            <th className="py-2.5 px-4">Sens & Marché</th>
-                            <th className="py-2.5 px-4 text-right">Quantité</th>
-                            <th className="py-2.5 px-4 text-right">Entrée</th>
+                            <th className="py-2.5 px-4">{tr(lang, 'ID / Actif')}</th>
+                            <th className="py-2.5 px-4">{tr(lang, 'Sens & Marché')}</th>
+                            <th className="py-2.5 px-4 text-right">{tr(lang, 'Quantité')}</th>
+                            <th className="py-2.5 px-4 text-right">{tr(lang, 'Entrée')}</th>
                             <th className="py-2.5 px-4 text-right">SL / TP</th>
-                            <th className="py-2.5 px-4 text-right">Action (/close)</th>
+                            <th className="py-2.5 px-4 text-right">{tr(lang, 'Action (/close)')}</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
                           {liveTrades.open.length === 0 ? (
                             <tr>
                               <td colSpan={6} className="py-6 text-center text-[#64748B] font-sans">
-                                Aucune position ouverte enregistrée localement.
+                                {tr(lang, 'Aucune position ouverte enregistrée localement.')}
                               </td>
                             </tr>
                           ) : (
@@ -3870,7 +4128,7 @@ export function App() {
                                     onClick={() => handleCloseLivePosition(t.id)}
                                     className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px]"
                                   >
-                                    Fermer (#{t.id})
+                                    {tr(lang, 'Fermer')} (#{t.id})
                                   </button>
                                 </td>
                               </tr>
@@ -3885,25 +4143,27 @@ export function App() {
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl overflow-hidden">
                     <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
                       <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
-                        Ordres Protecteurs & Limites Ouverts sur Binance ({liveOpenOrders.length})
+                        {lang === 'en'
+                          ? `Protective & Limit Orders Open on Binance (${liveOpenOrders.length})`
+                          : `Ordres Protecteurs & Limites Ouverts sur Binance (${liveOpenOrders.length})`}
                       </h3>
                     </div>
                     <div className="overflow-x-auto">
                       <table className="w-full text-left border-collapse text-xs">
                         <thead>
                           <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
-                            <th className="py-2.5 px-4">Symbole</th>
-                            <th className="py-2.5 px-4">Type & Sens</th>
-                            <th className="py-2.5 px-4 text-right">Prix / Stop</th>
-                            <th className="py-2.5 px-4 text-right">Quantité</th>
-                            <th className="py-2.5 px-4 text-right">Action</th>
+                            <th className="py-2.5 px-4">{tr(lang, 'Symbole')}</th>
+                            <th className="py-2.5 px-4">{tr(lang, 'Type & Sens')}</th>
+                            <th className="py-2.5 px-4 text-right">{tr(lang, 'Prix / Stop')}</th>
+                            <th className="py-2.5 px-4 text-right">{tr(lang, 'Quantité')}</th>
+                            <th className="py-2.5 px-4 text-right">{tr(lang, 'Action')}</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
                           {liveOpenOrders.length === 0 ? (
                             <tr>
                               <td colSpan={5} className="py-5 text-center text-[#64748B] font-sans">
-                                Aucun ordre ouvert sur Binance actuellement.
+                                {tr(lang, 'Aucun ordre ouvert sur Binance actuellement.')}
                               </td>
                             </tr>
                           ) : (
@@ -3928,7 +4188,7 @@ export function App() {
                                     onClick={() => handleCancelLiveOrder(ord.symbol, String(ord.orderId))}
                                     className="px-2 py-1 bg-[#1E293B] hover:bg-[#F43F5E]/20 text-[#94A3B8] hover:text-[#FB7185] rounded text-[11px]"
                                   >
-                                    Annuler
+                                    {tr(lang, 'Annuler')}
                                   </button>
                                 </td>
                               </tr>
@@ -3952,10 +4212,10 @@ export function App() {
                 <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
                   <div>
                     <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                      Historique des Signaux Validés ({signalHistory.length})
+                      {lang === 'en' ? 'Validated Signals History' : 'Historique des Signaux Validés'} ({signalHistory.length})
                     </h3>
                     <p className="text-xs text-[#64748B]">
-                      Registre persistant des signaux générés par SignalEngine avec suivi de performance.
+                      {tr(lang, 'Registre persistant des signaux générés par SignalEngine avec suivi de performance.')}
                     </p>
                   </div>
                 </div>
@@ -3964,13 +4224,13 @@ export function App() {
                     <thead>
                       <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
                         <th className="py-3 px-4">ID</th>
-                        <th className="py-3 px-4">Actif & TF</th>
+                        <th className="py-3 px-4">{tr(lang, 'Actif & TF')}</th>
                         <th className="py-3 px-4">Signal</th>
                         <th className="py-3 px-4 text-right">Score</th>
-                        <th className="py-3 px-4 text-right">Prix Entrée</th>
+                        <th className="py-3 px-4 text-right">{tr(lang, 'Prix Entrée')}</th>
                         <th className="py-3 px-4 text-right">SL / TP</th>
                         <th className="py-3 px-4 text-right">R:R</th>
-                        <th className="py-3 px-4">Statut</th>
+                        <th className="py-3 px-4">{tr(lang, 'Statut')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
@@ -4025,14 +4285,14 @@ export function App() {
               <div className="lg:col-span-6 space-y-6">
                 <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
                   <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                    Abonnement PRO / VIP & Codes Promotionnels
+                    {tr(lang, 'Abonnement PRO / VIP & Codes Promotionnels')}
                   </h3>
                   <form onSubmit={handleRedeemPromo} className="flex gap-2 text-xs">
                     <input
                       type="text"
                       value={promoCodeInput}
                       onChange={(e) => setPromoCodeInput(e.target.value)}
-                      placeholder="Code Promo (ex: TEDDYPRO ou TEDDYVIP)"
+                      placeholder={tr(lang, 'Code Promo (ex: TEDDYPRO ou TEDDYVIP)')}
                       className="flex-1 px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular uppercase text-[#F1F5F9]"
                       required
                     />
@@ -4040,7 +4300,7 @@ export function App() {
                       type="submit"
                       className="px-4 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg"
                     >
-                      Activer Code
+                      {tr(lang, 'Activer Code')}
                     </button>
                   </form>
 
@@ -4049,24 +4309,31 @@ export function App() {
                       onClick={() => handleGenerateBinancePay('pro')}
                       className="p-3.5 rounded-lg bg-[#090D16] border border-[#10B981]/40 hover:bg-[#10B981]/10 text-left space-y-1 transition-colors"
                     >
-                      <div className="font-semibold text-[#10B981]">Générer Mémo Binance Pay PRO</div>
-                      <div className="font-mono-tabular text-[#F1F5F9]">19 USDT / mois</div>
+                      <div className="font-semibold text-[#10B981]">{tr(lang, 'Générer Mémo Binance Pay PRO')}</div>
+                      <div className="font-mono-tabular text-[#F1F5F9]">{tr(lang, '19 USDT / mois')}</div>
                     </button>
                     <button
                       onClick={() => handleGenerateBinancePay('vip')}
                       className="p-3.5 rounded-lg bg-[#090D16] border border-[#F59E0B]/40 hover:bg-[#F59E0B]/10 text-left space-y-1 transition-colors"
                     >
-                      <div className="font-semibold text-[#F59E0B]">Générer Mémo Binance Pay VIP</div>
-                      <div className="font-mono-tabular text-[#F1F5F9]">49 USDT / mois</div>
+                      <div className="font-semibold text-[#F59E0B]">{tr(lang, 'Générer Mémo Binance Pay VIP')}</div>
+                      <div className="font-mono-tabular text-[#F1F5F9]">{tr(lang, '49 USDT / mois')}</div>
                     </button>
                   </div>
 
                   {paymentInfo && (
                     <div className="p-4 rounded-lg bg-[#090D16] border border-[#10B981]/40 space-y-1.5 text-xs font-mono-tabular">
-                      <div className="text-[#10B981] font-semibold">Instructions Binance Pay :</div>
-                      <div>Binance ID destinataire : <strong className="text-[#F1F5F9]">{paymentInfo.binance_id || 'Non configuré'}</strong></div>
-                      <div>Montant à envoyer : <strong className="text-[#F1F5F9]">{paymentInfo.amount_usdt} USDT</strong></div>
-                      <div>Mémo obligatoire : <strong className="text-[#F59E0B]">{paymentInfo.memo}</strong></div>
+                      <div className="text-[#10B981] font-semibold">{tr(lang, 'Instructions Binance Pay :')}</div>
+                      <div>
+                        {tr(lang, 'Binance ID destinataire :')}{' '}
+                        <strong className="text-[#F1F5F9]">{paymentInfo.binance_id || tr(lang, 'Non configuré')}</strong>
+                      </div>
+                      <div>
+                        {tr(lang, 'Montant à envoyer :')} <strong className="text-[#F1F5F9]">{paymentInfo.amount_usdt} USDT</strong>
+                      </div>
+                      <div>
+                        {tr(lang, 'Mémo obligatoire :')} <strong className="text-[#F59E0B]">{paymentInfo.memo}</strong>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -4075,16 +4342,16 @@ export function App() {
                 <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
                   <div className="flex items-center justify-between">
                     <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                      Code PIN de Sécurité (4 chiffres)
+                      {tr(lang, 'Code PIN de Sécurité (4 chiffres)')}
                     </h3>
                     <span className="text-xs font-mono-tabular text-[#10B981]">
-                      {user.has_pin ? '● PIN Configuré' : '○ Aucun PIN'}
+                      {user.has_pin ? tr(lang, '● PIN Configuré') : tr(lang, '○ Aucun PIN')}
                     </span>
                   </div>
                   <form onSubmit={handleSavePin} className="space-y-3 text-xs">
                     {user.has_pin && (
                       <div>
-                        <label className="block text-[#94A3B8] mb-1">Ancien Code PIN</label>
+                        <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Ancien Code PIN')}</label>
                         <input
                           type="password"
                           maxLength={4}
@@ -4096,7 +4363,7 @@ export function App() {
                       </div>
                     )}
                     <div>
-                      <label className="block text-[#94A3B8] mb-1">Nouveau Code PIN (4 chiffres)</label>
+                      <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Nouveau Code PIN (4 chiffres)')}</label>
                       <input
                         type="password"
                         maxLength={4}
@@ -4111,7 +4378,7 @@ export function App() {
                       type="submit"
                       className="px-4 py-2 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-[#F1F5F9] font-semibold"
                     >
-                      Enregistrer le Code PIN
+                      {tr(lang, 'Enregistrer le Code PIN')}
                     </button>
                   </form>
                 </div>
@@ -4120,27 +4387,27 @@ export function App() {
               {/* Right: Direct Admin Support Messaging */}
               <div className="lg:col-span-6 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
                 <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                  Support Direct Administrateur
+                  {tr(lang, 'Support Direct Administrateur')}
                 </h3>
                 <form onSubmit={handleCreateSupportTicket} className="space-y-3 text-xs">
                   <div>
-                    <label className="block text-[#94A3B8] mb-1">Sujet</label>
+                    <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Sujet')}</label>
                     <input
                       type="text"
                       value={ticketSubject}
                       onChange={(e) => setTicketSubject(e.target.value)}
-                      placeholder="Validation paiement / Question stratégie..."
+                      placeholder={tr(lang, 'Validation paiement / Question stratégie...')}
                       className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
                       required
                     />
                   </div>
                   <div>
-                    <label className="block text-[#94A3B8] mb-1">Message</label>
+                    <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Message')}</label>
                     <textarea
                       rows={3}
                       value={ticketMessage}
                       onChange={(e) => setTicketMessage(e.target.value)}
-                      placeholder="Décrivez votre demande..."
+                      placeholder={tr(lang, 'Décrivez votre demande...')}
                       className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
                       required
                     />
@@ -4149,12 +4416,12 @@ export function App() {
                     type="submit"
                     className="px-4 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg"
                   >
-                    Envoyer à l'Administrateur
+                    {tr(lang, "Envoyer à l'Administrateur")}
                   </button>
                 </form>
 
                 <div className="space-y-2.5 pt-3 border-t border-white/[0.07]">
-                  <div className="text-xs font-semibold text-[#94A3B8]">Vos échanges récents :</div>
+                  <div className="text-xs font-semibold text-[#94A3B8]">{tr(lang, 'Vos échanges récents :')}</div>
                   {tickets.map((t) => (
                     <div key={t.id} className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-1.5 text-xs">
                       <div className="flex items-center justify-between">
@@ -4164,7 +4431,7 @@ export function App() {
                       <p className="text-[#94A3B8]">{t.message}</p>
                       {t.admin_reply && (
                         <div className="p-2 rounded bg-[#10B981]/10 border border-[#10B981]/30 text-[#34D399]">
-                          <strong>Réponse Admin :</strong> {t.admin_reply}
+                          <strong>{tr(lang, 'Réponse Admin :')}</strong> {t.admin_reply}
                         </div>
                       )}
                     </div>
@@ -4182,25 +4449,31 @@ export function App() {
               {/* Top Summary Metrics for Admin */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                 <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-4">
-                  <div className="text-[11px] text-[#64748B] uppercase font-mono-tabular">Total Comptes</div>
+                  <div className="text-[11px] text-[#64748B] uppercase font-mono-tabular">{tr(lang, 'Total Comptes')}</div>
                   <div className="text-xl font-bold font-mono-tabular text-[#F1F5F9] mt-1">
                     {(adminData?.users || []).length}
                   </div>
                 </div>
                 <div className="bg-[#111827] border border-[#F59E0B]/30 rounded-xl p-4">
-                  <div className="text-[11px] text-[#F59E0B] uppercase font-mono-tabular">En Attente d&apos;Approbation</div>
+                  <div className="text-[11px] text-[#F59E0B] uppercase font-mono-tabular">
+                    {tr(lang, "En Attente d'Approbation")}
+                  </div>
                   <div className="text-xl font-bold font-mono-tabular text-[#F59E0B] mt-1">
                     {(adminData?.users || []).filter((u: any) => u.account_status === 'PENDING_APPROVAL').length}
                   </div>
                 </div>
                 <div className="bg-[#111827] border border-[#10B981]/30 rounded-xl p-4">
-                  <div className="text-[11px] text-[#10B981] uppercase font-mono-tabular">Comptes Approuvés</div>
+                  <div className="text-[11px] text-[#10B981] uppercase font-mono-tabular">
+                    {tr(lang, 'Comptes Approuvés')}
+                  </div>
                   <div className="text-xl font-bold font-mono-tabular text-[#10B981] mt-1">
                     {(adminData?.users || []).filter((u: any) => u.account_status === 'APPROVED').length}
                   </div>
                 </div>
                 <div className="bg-[#111827] border border-[#F43F5E]/30 rounded-xl p-4">
-                  <div className="text-[11px] text-[#FB7185] uppercase font-mono-tabular">Suspendus / Refusés</div>
+                  <div className="text-[11px] text-[#FB7185] uppercase font-mono-tabular">
+                    {tr(lang, 'Suspendus / Refusés')}
+                  </div>
                   <div className="text-xl font-bold font-mono-tabular text-[#FB7185] mt-1">
                     {
                       (adminData?.users || []).filter(
@@ -4217,20 +4490,23 @@ export function App() {
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                        Contrôle des Accès, Approbation des Comptes & Quotas Utilisateurs
+                        {tr(lang, 'Contrôle des Accès, Approbation des Comptes & Quotas Utilisateurs')}
                       </h3>
                       <p className="text-xs text-[#64748B]">
-                        Approuvez, refusez, suspendez ou ajustez les quotas individuels de chaque utilisateur.
+                        {tr(
+                          lang,
+                          'Approuvez, refusez, suspendez ou ajustez les quotas individuels de chaque utilisateur.'
+                        )}
                       </p>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
                       {(
                         [
-                          { id: 'ALL', label: 'Tous' },
-                          { id: 'PENDING_APPROVAL', label: 'En attente' },
-                          { id: 'APPROVED', label: 'Approuvés' },
-                          { id: 'SUSPENDED', label: 'Suspendus' },
-                          { id: 'REJECTED', label: 'Refusés' },
+                          { id: 'ALL', label: tr(lang, 'Tous') },
+                          { id: 'PENDING_APPROVAL', label: tr(lang, 'En attente') },
+                          { id: 'APPROVED', label: tr(lang, 'Approuvés') },
+                          { id: 'SUSPENDED', label: tr(lang, 'Suspendus') },
+                          { id: 'REJECTED', label: tr(lang, 'Refusés') },
                         ] as const
                       ).map((f) => (
                         <button
@@ -4250,7 +4526,7 @@ export function App() {
                         onClick={loadAdminOverview}
                         className="px-2.5 py-1 bg-[#1E293B] hover:bg-[#334155] rounded text-xs text-[#10B981] flex items-center gap-1"
                       >
-                        <RefreshCw className="w-3.5 h-3.5" /> Actualiser
+                        <RefreshCw className="w-3.5 h-3.5" /> {tr(lang, 'Actualiser')}
                       </button>
                     </div>
                   </div>
@@ -4260,19 +4536,21 @@ export function App() {
                     <div className="p-4 rounded-xl bg-[#090D16] border border-[#10B981]/40 space-y-3">
                       <div className="flex items-center justify-between">
                         <div className="text-xs font-semibold text-[#10B981]">
-                          Configuration des quotas — Utilisateur #{editingQuotasUid}
+                          {lang === 'en'
+                            ? `Quota Configuration — User #${editingQuotasUid}`
+                            : `Configuration des quotas — Utilisateur #${editingQuotasUid}`}
                         </div>
                         <button
                           type="button"
                           onClick={() => setEditingQuotasUid(null)}
                           className="text-xs text-[#94A3B8] hover:text-[#F1F5F9]"
                         >
-                          Fermer
+                          {tr(lang, 'Fermer')}
                         </button>
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">Analyses / jour</label>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Analyses / jour')}</label>
                           <input
                             type="number"
                             min={1}
@@ -4284,7 +4562,7 @@ export function App() {
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">Scans / jour</label>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Scans / jour')}</label>
                           <input
                             type="number"
                             min={1}
@@ -4296,7 +4574,7 @@ export function App() {
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">Alertes actives max</label>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Alertes actives max')}</label>
                           <input
                             type="number"
                             min={1}
@@ -4308,7 +4586,7 @@ export function App() {
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">Paper Trades / jour</label>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Paper Trades / jour')}</label>
                           <input
                             type="number"
                             min={1}
@@ -4340,7 +4618,7 @@ export function App() {
                           }
                           className="px-4 py-1.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold text-xs rounded-lg"
                         >
-                          Enregistrer les Quotas
+                          {tr(lang, 'Enregistrer les Quotas')}
                         </button>
                       </div>
                     </div>
@@ -4350,11 +4628,11 @@ export function App() {
                     <table className="w-full text-left border-collapse text-xs">
                       <thead>
                         <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
-                          <th className="py-2.5 px-3">Utilisateur & Email</th>
-                          <th className="py-2.5 px-3">Statut & Rôle</th>
-                          <th className="py-2.5 px-3">Quotas (Utilisé / Max)</th>
-                          <th className="py-2.5 px-3">Inscription / Connexion</th>
-                          <th className="py-2.5 px-3 text-right">Actions d&apos;Approbation & Rôles</th>
+                          <th className="py-2.5 px-3">{tr(lang, 'Utilisateur & Email')}</th>
+                          <th className="py-2.5 px-3">{tr(lang, 'Statut & Rôle')}</th>
+                          <th className="py-2.5 px-3">{tr(lang, 'Quotas (Utilisé / Max)')}</th>
+                          <th className="py-2.5 px-3">{tr(lang, 'Inscription / Connexion')}</th>
+                          <th className="py-2.5 px-3 text-right">{tr(lang, "Actions d'Approbation & Rôles")}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
@@ -4381,7 +4659,7 @@ export function App() {
                                   <div className="font-semibold text-[#F1F5F9]">
                                     {u.display_name || u.username || `Trader #${u.user_id}`}
                                   </div>
-                                  <div className="text-[11px] text-[#94A3B8]">{u.email || 'Compte Telegram'}</div>
+                                  <div className="text-[11px] text-[#94A3B8]">{u.email || tr(lang, 'Compte Telegram')}</div>
                                   <div className="text-[10px] text-[#64748B]">
                                     ID: #{u.user_id} {u.auth_provider ? `• ${u.auth_provider.toUpperCase()}` : ''}
                                   </div>
@@ -4401,7 +4679,7 @@ export function App() {
                                     </span>
                                   </div>
                                   <div className="text-[11px] uppercase text-[#10B981] font-bold">
-                                    Rôle : {u.role} {u.memo ? `• Mémo: ${u.memo}` : ''}
+                                    {lang === 'en' ? 'Role:' : 'Rôle :'} {u.role} {u.memo ? `• Memo: ${u.memo}` : ''}
                                   </div>
                                 </td>
                                 <td className="py-3 px-3 text-[11px] space-y-0.5">
@@ -4412,7 +4690,8 @@ export function App() {
                                     Scans: <span className="text-[#F1F5F9]">{qu.scans_used}</span>/{q.daily_scans}
                                   </div>
                                   <div>
-                                    Alertes max: <span className="text-[#F1F5F9]">{q.max_alerts}</span> • Paper:{' '}
+                                    {lang === 'en' ? 'Max alerts:' : 'Alertes max:'}{' '}
+                                    <span className="text-[#F1F5F9]">{q.max_alerts}</span> • Paper:{' '}
                                     <span className="text-[#F1F5F9]">{qu.paper_trades_used}</span>/{q.max_paper_trades}
                                   </div>
                                   <button
@@ -4428,20 +4707,24 @@ export function App() {
                                     }}
                                     className="text-[10px] text-[#10B981] hover:underline"
                                   >
-                                    Modifier quotas
+                                    {tr(lang, 'Modifier quotas')}
                                   </button>
                                 </td>
                                 <td className="py-3 px-3 text-[10px] text-[#94A3B8] space-y-1">
                                   <div>
-                                    Créé:{' '}
+                                    {lang === 'en' ? 'Created:' : 'Créé:'}{' '}
                                     {u.created_at
-                                      ? new Date(Number(u.created_at) * 1000).toLocaleDateString('fr-FR')
+                                      ? new Date(Number(u.created_at) * 1000).toLocaleDateString(
+                                          lang === 'en' ? 'en-US' : 'fr-FR'
+                                        )
                                       : '—'}
                                   </div>
                                   <div>
-                                    Dernière conn.:{' '}
+                                    {lang === 'en' ? 'Last login:' : 'Dernière conn.:'}{' '}
                                     {u.last_login_at && Number(u.last_login_at) > 0
-                                      ? new Date(Number(u.last_login_at) * 1000).toLocaleString('fr-FR')
+                                      ? new Date(Number(u.last_login_at) * 1000).toLocaleString(
+                                          lang === 'en' ? 'en-US' : 'fr-FR'
+                                        )
                                       : '—'}
                                   </div>
                                 </td>
@@ -4464,7 +4747,7 @@ export function App() {
                                         }
                                         className="px-2.5 py-1 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-bold rounded text-[10px]"
                                       >
-                                        Approuver
+                                        {tr(lang, 'Approuver')}
                                       </button>
                                     )}
                                     {status === 'PENDING_APPROVAL' && (
@@ -4480,7 +4763,7 @@ export function App() {
                                         }
                                         className="px-2 py-1 bg-[#F43F5E]/20 hover:bg-[#F43F5E]/30 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[10px]"
                                       >
-                                        Refuser
+                                        {tr(lang, 'Refuser')}
                                       </button>
                                     )}
                                     {!u.is_admin && status === 'APPROVED' && (
@@ -4496,7 +4779,7 @@ export function App() {
                                         }
                                         className="px-2 py-1 bg-[#F59E0B]/20 hover:bg-[#F59E0B]/30 border border-[#F59E0B]/40 text-[#F59E0B] rounded text-[10px]"
                                       >
-                                        Suspendre
+                                        {tr(lang, 'Suspendre')}
                                       </button>
                                     )}
                                     {(status === 'SUSPENDED' || status === 'REJECTED') && (
@@ -4512,7 +4795,7 @@ export function App() {
                                         }
                                         className="px-2 py-1 bg-[#10B981]/20 hover:bg-[#10B981]/30 border border-[#10B981]/40 text-[#10B981] rounded text-[10px]"
                                       >
-                                        Réactiver
+                                        {tr(lang, 'Réactiver')}
                                       </button>
                                     )}
                                     {['tester', 'pro', 'vip'].map((r) => (
@@ -4557,7 +4840,7 @@ export function App() {
                                         }
                                         className="px-2 py-1 bg-[#10B981] text-[#090D16] font-semibold rounded text-[10px]"
                                       >
-                                        Valider Pay
+                                        {tr(lang, 'Valider Pay')}
                                       </button>
                                     )}
                                   </div>
@@ -4577,15 +4860,17 @@ export function App() {
                     <div className="flex items-center justify-between">
                       <h3 className="font-display font-semibold text-base text-[#F1F5F9] flex items-center gap-2">
                         <Shield className="w-4 h-4 text-[#10B981]" />
-                        <span>Journal de Sécurité & Accès</span>
+                        <span>{tr(lang, 'Journal de Sécurité & Accès')}</span>
                       </h3>
                       <span className="text-[10px] font-mono-tabular text-[#64748B]">
-                        {(adminData?.security_events || []).length} événements
+                        {(adminData?.security_events || []).length} {lang === 'en' ? 'events' : 'événements'}
                       </span>
                     </div>
                     <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
                       {(adminData?.security_events || []).length === 0 ? (
-                        <div className="text-xs text-[#64748B]">Aucun événement de sécurité enregistré.</div>
+                        <div className="text-xs text-[#64748B]">
+                          {tr(lang, 'Aucun événement de sécurité enregistré.')}
+                        </div>
                       ) : (
                         (adminData?.security_events || []).map((ev: SecurityEvent) => (
                           <div
@@ -4605,7 +4890,11 @@ export function App() {
                                 {ev.event_type}
                               </span>
                               <span className="text-[10px] text-[#64748B]">
-                                {ev.created_at ? new Date(Number(ev.created_at) * 1000).toLocaleTimeString('fr-FR') : ''}
+                                {ev.created_at
+                                  ? new Date(Number(ev.created_at) * 1000).toLocaleTimeString(
+                                      lang === 'en' ? 'en-US' : 'fr-FR'
+                                    )
+                                  : ''}
                               </span>
                             </div>
                             <div className="text-[#94A3B8]">{ev.details}</div>
@@ -4622,14 +4911,14 @@ export function App() {
 
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
                     <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                      Diagnostic Système (Log Doctor)
+                      {tr(lang, 'Diagnostic Système (Log Doctor)')}
                     </h3>
                     <div className="flex gap-2 text-xs">
                       <input
                         type="text"
                         value={doctorQuestion}
                         onChange={(e) => setDoctorQuestion(e.target.value)}
-                        placeholder="Posez une question diagnostic (ex: erreur Binance, DB, Telegram)..."
+                        placeholder={tr(lang, 'Posez une question diagnostic (ex: erreur Binance, DB, Telegram)...')}
                         className="flex-1 px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
                       />
                       <button
@@ -4641,31 +4930,31 @@ export function App() {
                         }
                         className="px-3.5 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg"
                       >
-                        Analyser
+                        {tr(lang, 'Analyser')}
                       </button>
                     </div>
                     <pre className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] text-[11px] font-mono-tabular text-[#94A3B8] whitespace-pre-wrap max-h-64 overflow-y-auto">
-                      {doctorReport || 'Chargement du diagnostic...'}
+                      {doctorReport || tr(lang, 'Chargement du diagnostic...')}
                     </pre>
                   </div>
 
                   {/* Admin Broadcast */}
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-3">
                     <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                      Diffusion Globale (Broadcast)
+                      {tr(lang, 'Diffusion Globale (Broadcast)')}
                     </h3>
                     <input
                       type="text"
                       value={broadcastTitle}
                       onChange={(e) => setBroadcastTitle(e.target.value)}
-                      placeholder="Titre de l'annonce..."
+                      placeholder={tr(lang, "Titre de l'annonce...")}
                       className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-xs text-[#F1F5F9]"
                     />
                     <textarea
                       rows={2}
                       value={broadcastBody}
                       onChange={(e) => setBroadcastBody(e.target.value)}
-                      placeholder="Message diffusé à tous les utilisateurs..."
+                      placeholder={tr(lang, 'Message diffusé à tous les utilisateurs...')}
                       className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-xs text-[#F1F5F9]"
                     />
                     <button
@@ -4681,7 +4970,7 @@ export function App() {
                       }
                       className="w-full py-2 bg-[#F59E0B] text-[#090D16] font-semibold text-xs rounded-lg"
                     >
-                      Diffuser à tous les comptes
+                      {tr(lang, 'Diffuser à tous les comptes')}
                     </button>
                   </div>
                 </div>
@@ -4694,30 +4983,42 @@ export function App() {
              ========================================================= */}
           {activeTab === 'strategy_lab' && Boolean(user?.is_admin || user?.role === 'admin') && (
             <StrategyLabView
+              lang={lang}
               onShowToast={(type, text) => showToast(text, type)}
             />
           )}
         </main>
 
-        {/* Mobile Bottom Quick Navigation Bar */}
+        {/* Mobile Bottom Consolidated Hub Navigation Bar (4 Hubs for standard users, 5 for Admins) */}
         <nav className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-[#0B101B]/95 backdrop-blur-md border-t border-white/[0.08] flex items-center justify-around py-1.5 px-1">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const active = activeTab === item.id;
+          {mobileHubGroups.map((hub) => {
+            const Icon = hub.icon;
+            const isHubActive = hub.tabs.some((t) => t.id === activeTab);
             return (
               <button
-                key={item.id}
-                onClick={() => setActiveTab(item.id as ActiveTab)}
-                className={`flex flex-col items-center justify-center py-1 px-2 rounded-lg text-[10px] font-medium relative ${
-                  active ? 'text-[#10B981]' : 'text-[#94A3B8]'
+                key={hub.hubId}
+                onClick={() => {
+                  if (!isHubActive) {
+                    setActiveTab(hub.tabs[0].id);
+                  }
+                }}
+                className={`flex flex-col items-center justify-center py-1 px-2 rounded-lg text-[10px] font-medium relative transition-colors ${
+                  isHubActive ? 'text-[#10B981]' : 'text-[#94A3B8]'
                 }`}
               >
                 <Icon className="w-4 h-4 mb-0.5" />
-                <span className="truncate max-w-[60px]">{item.label.split(' ')[0]}</span>
-                {item.id === 'safety' && (
+                <span className="truncate max-w-[68px]">{hub.label}</span>
+                {hub.tabs.length > 1 && (
+                  <span
+                    className={`w-1 h-1 rounded-full mt-0.5 ${
+                      isHubActive ? 'bg-[#10B981]' : 'bg-white/20'
+                    }`}
+                  />
+                )}
+                {hub.hasSafetyDot && (
                   <span
                     className={`absolute top-1 right-2 w-2 h-2 rounded-full ${
-                      item.apiConnected ? 'bg-[#10B981]' : 'bg-[#F43F5E]'
+                      hub.apiConnected ? 'bg-[#10B981]' : 'bg-[#F43F5E]'
                     }`}
                   />
                 )}

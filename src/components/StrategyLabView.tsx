@@ -22,6 +22,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { apiFetch } from '../api';
+import { AppLang, tr } from '../i18n';
 import {
   StrategyLabParams,
   StrategyLabPreset,
@@ -32,13 +33,14 @@ import {
 const EquityAndDrawdownChart: React.FC<{
   data: NonNullable<StrategyLabRun['equity_curve']>;
   initialCapital: number;
-}> = ({ data, initialCapital }) => {
+  lang?: AppLang;
+}> = ({ data, initialCapital, lang = 'fr' }) => {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   if (!data || data.length < 2) {
     return (
       <div className="h-64 flex items-center justify-center text-xs text-[#64748B]">
-        Données d&apos;équité insuffisantes.
+        {tr(lang, "Données d'équité insuffisantes.", 'Insufficient equity data.')}
       </div>
     );
   }
@@ -82,13 +84,13 @@ const EquityAndDrawdownChart: React.FC<{
           Date : <strong className="text-[#F1F5F9]">{String(activePoint.timestamp).slice(0, 16).replace('T', ' ')}</strong>
         </span>
         <span className="text-[#94A3B8]">
-          Équité : <strong className="text-[#10B981]">{activePoint.equity.toLocaleString()} USDT</strong>
+          {tr(lang, 'Équité :', 'Equity:')} <strong className="text-[#10B981]">{activePoint.equity.toLocaleString()} USDT</strong>
         </span>
         <span className="text-[#94A3B8]">
           Drawdown : <strong className="text-[#F43F5E]">{activePoint.drawdown_pct.toFixed(2)}%</strong>
         </span>
         <span className="text-[#94A3B8]">
-          Prix Actif : <strong className="text-[#F1F5F9]">{activePoint.price.toLocaleString()} USDT</strong>
+          {tr(lang, 'Prix Actif :', 'Asset Price:')} <strong className="text-[#F1F5F9]">{activePoint.price.toLocaleString()} USDT</strong>
         </span>
       </div>
 
@@ -184,13 +186,14 @@ const EquityAndDrawdownChart: React.FC<{
 const LabCandlesSignalsChart: React.FC<{
   candles: NonNullable<StrategyLabRun['candles']>;
   params: StrategyLabParams;
-}> = ({ candles, params }) => {
+  lang?: AppLang;
+}> = ({ candles, params, lang = 'fr' }) => {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   if (!candles || candles.length < 2) {
     return (
       <div className="h-80 flex items-center justify-center text-xs text-[#64748B]">
-        Aucune bougie disponible.
+        {lang === 'en' ? 'No candles available.' : 'Aucune bougie disponible.'}
       </div>
     );
   }
@@ -385,11 +388,26 @@ const REJECTION_LABELS: Record<string, string> = {
   direction_disabled: 'Direction Long/Short désactivée',
 };
 
+const REJECTION_LABELS_EN: Record<string, string> = {
+  score_too_low: 'Teddy Score below threshold',
+  low_volatility_atr: 'Insufficient ATR volatility',
+  weak_adx_regime: 'Weak ADX regime (Range)',
+  low_volume: 'Insufficient relative volume',
+  ema_misaligned: 'Fast/Slow EMAs misaligned',
+  macd_divergence: 'Contrary MACD momentum',
+  against_ema200_trend: 'Counter long-term EMA trend',
+  counter_strong_trend: 'Counter strong trend (ADX >= 30)',
+  insufficient_rr: 'Insufficient Risk/Reward ratio',
+  cooldown_or_limits: 'Cooldown or daily trade limit',
+  direction_disabled: 'Long/Short direction disabled',
+};
+
 interface StrategyLabViewProps {
   onShowToast: (type: 'success' | 'error' | 'info', text: string) => void;
+  lang?: AppLang;
 }
 
-export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast }) => {
+export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, lang = 'fr' }) => {
   // Available markets, presets & saved runs
   const [symbols, setSymbols] = useState<string[]>([
     'BTCUSDT',
@@ -463,9 +481,12 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
       }
       if (res.runs) setSavedRuns(res.runs);
     } catch (err: any) {
-      onShowToast('error', err.message || 'Erreur lors du chargement du Strategy Lab.');
+      onShowToast(
+        'error',
+        err.message || (lang === 'en' ? 'Error loading Strategy Lab.' : 'Erreur lors du chargement du Strategy Lab.')
+      );
     }
-  }, [activeRun, onShowToast]);
+  }, [activeRun, onShowToast, lang]);
 
   const executeBacktest = useCallback(
     async (customParams?: StrategyLabParams, isBaselineCompare = false) => {
@@ -488,30 +509,37 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
             params: targetParams,
             save_run: !isBaselineCompare,
             name: isBaselineCompare
-              ? `Référence ${symbol} ${timeframe}`
+              ? `${lang === 'en' ? 'Baseline' : 'Référence'} ${symbol} ${timeframe}`
               : `${symbol} ${timeframe} (${tradingStyle.toUpperCase()}) • Score≥${targetParams.min_teddy_score} • SL ${targetParams.sl_atr_mult}xATR`,
           }),
         });
         if (isBaselineCompare) {
           setCompareRun(res.run);
-          onShowToast('info', 'Scénario de référence (A) calculé pour comparaison A/B.');
+          onShowToast(
+            'info',
+            lang === 'en'
+              ? 'Baseline scenario (A) computed for A/B comparison.'
+              : 'Scénario de référence (A) calculé pour comparaison A/B.'
+          );
         } else {
           setActiveRun(res.run);
           if (res.runs) setSavedRuns(res.runs);
           setSelectedTrade(null);
           onShowToast(
             'success',
-            `Simulation terminée en ${res.run.execution_ms || 0} ms (${res.run.metrics.total_trades} trades sur ${res.run.candles_count} bougies).`
+            lang === 'en'
+              ? `Simulation completed in ${res.run.execution_ms || 0} ms (${res.run.metrics.total_trades} trades over ${res.run.candles_count} candles).`
+              : `Simulation terminée en ${res.run.execution_ms || 0} ms (${res.run.metrics.total_trades} trades sur ${res.run.candles_count} bougies).`
           );
         }
       } catch (err: any) {
-        onShowToast('error', err.message || 'Échec du backtest.');
+        onShowToast('error', err.message || (lang === 'en' ? 'Backtest failed.' : 'Échec du backtest.'));
       } finally {
         setRunningBacktest(false);
         setRunningCompare(false);
       }
     },
-    [symbol, timeframe, tradingStyle, startDate, endDate, maxCandles, params, onShowToast]
+    [symbol, timeframe, tradingStyle, startDate, endDate, maxCandles, params, onShowToast, lang]
   );
 
   // Run initial backtest on mount so the Lab is immediately populated with real data
@@ -531,12 +559,20 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
     setBaselineParams(merged);
     if (preset.timeframe) setTimeframe(preset.timeframe);
     if (preset.trading_style) setTradingStyle(preset.trading_style);
-    onShowToast('info', `Preset « ${preset.name} » chargé. Cliquez sur Lancer le Backtest pour évaluer.`);
+    onShowToast(
+      'info',
+      lang === 'en'
+        ? `Preset "${preset.name}" loaded. Click Run Backtest to evaluate.`
+        : `Preset « ${preset.name} » chargé. Cliquez sur Lancer le Backtest pour évaluer.`
+    );
   };
 
   const handleSavePreset = async () => {
     if (!presetNameInput.trim()) {
-      onShowToast('error', 'Veuillez saisir un nom pour la stratégie.');
+      onShowToast(
+        'error',
+        lang === 'en' ? 'Please enter a name for the strategy.' : 'Veuillez saisir un nom pour la stratégie.'
+      );
       return;
     }
     try {
@@ -558,9 +594,12 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
       setShowSavePresetModal(false);
       setPresetNameInput('');
       setPresetDescInput('');
-      onShowToast('success', 'Stratégie sauvegardée dans les Presets Bitsure.');
+      onShowToast(
+        'success',
+        lang === 'en' ? 'Strategy saved in Bitsure Presets.' : 'Stratégie sauvegardée dans les Presets Bitsure.'
+      );
     } catch (err: any) {
-      onShowToast('error', err.message || 'Erreur lors de la sauvegarde.');
+      onShowToast('error', err.message || (lang === 'en' ? 'Error saving preset.' : 'Erreur lors de la sauvegarde.'));
     }
   };
 
@@ -572,18 +611,34 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
         if (asComparison) {
           setCompareRun(res.run);
           setLabSection('compare');
-          onShowToast('info', `Expérience #${runSummary.id} chargée comme Référence (A).`);
+          onShowToast(
+            'info',
+            lang === 'en'
+              ? `Experiment #${runSummary.id} loaded as Baseline (A).`
+              : `Expérience #${runSummary.id} chargée comme Référence (A).`
+          );
         } else {
           setActiveRun(res.run);
           setParams({ ...DEFAULT_PARAMS, ...res.run.params });
           setSymbol(res.run.symbol);
           setTimeframe(res.run.timeframe);
           setTradingStyle(res.run.trading_style);
-          onShowToast('success', `Expérience #${runSummary.id} restaurée dans l'espace de travail.`);
+          onShowToast(
+            'success',
+            lang === 'en'
+              ? `Experiment #${runSummary.id} restored to workspace.`
+              : `Expérience #${runSummary.id} restaurée dans l'espace de travail.`
+          );
         }
       }
     } catch (err: any) {
-      onShowToast('error', err.message || 'Impossible de charger les détails de cette expérience.');
+      onShowToast(
+        'error',
+        err.message ||
+          (lang === 'en'
+            ? 'Unable to load experiment details.'
+            : 'Impossible de charger les détails de cette expérience.')
+      );
     }
   };
 
@@ -595,7 +650,12 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
         .map((s) => Number(s.trim()))
         .filter((n) => !Number.isNaN(n));
       if (parsedValues.length < 2) {
-        onShowToast('error', 'Indiquez au moins 2 valeurs numériques séparées par des virgules.');
+        onShowToast(
+          'error',
+          lang === 'en'
+            ? 'Provide at least 2 numeric values separated by commas.'
+            : 'Indiquez au moins 2 valeurs numériques séparées par des virgules.'
+        );
         setRunningSweep(false);
         return;
       }
@@ -614,9 +674,17 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
         }),
       });
       setSweepResult(res.sweep);
-      onShowToast('success', `Balayage de sensibilité terminé (${res.sweep.results.length} variantes testées).`);
+      onShowToast(
+        'success',
+        lang === 'en'
+          ? `Sensitivity sweep completed (${res.sweep.results.length} variants tested).`
+          : `Balayage de sensibilité terminé (${res.sweep.results.length} variantes testées).`
+      );
     } catch (err: any) {
-      onShowToast('error', err.message || 'Erreur lors du balayage de paramètres.');
+      onShowToast(
+        'error',
+        err.message || (lang === 'en' ? 'Parameter sweep failed.' : 'Erreur lors du balayage de paramètres.')
+      );
     } finally {
       setRunningSweep(false);
     }
@@ -624,29 +692,51 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
 
   const exportTradesCsv = () => {
     if (!activeRun?.trades || activeRun.trades.length === 0) {
-      onShowToast('info', 'Aucun trade à exporter.');
+      onShowToast('info', lang === 'en' ? 'No trades to export.' : 'Aucun trade à exporter.');
       return;
     }
-    const headers = [
-      'ID',
-      'Symbole',
-      'Direction',
-      'Entree_UTC',
-      'Sortie_UTC',
-      'Prix_Entree',
-      'Prix_Sortie',
-      'SL_Initial',
-      'TP_Initial',
-      'Quantite',
-      'PnL_USDT',
-      'PnL_Pct',
-      'Multiple_R',
-      'Frais_USDT',
-      'MFE_Pct',
-      'MAE_Pct',
-      'Teddy_Score',
-      'Motif_Sortie',
-    ];
+    const headers =
+      lang === 'en'
+        ? [
+            'ID',
+            'Symbol',
+            'Side',
+            'Entry_UTC',
+            'Exit_UTC',
+            'Entry_Price',
+            'Exit_Price',
+            'Initial_SL',
+            'Initial_TP',
+            'Quantity',
+            'PnL_USDT',
+            'PnL_Pct',
+            'R_Multiple',
+            'Fees_USDT',
+            'MFE_Pct',
+            'MAE_Pct',
+            'Teddy_Score',
+            'Exit_Reason',
+          ]
+        : [
+            'ID',
+            'Symbole',
+            'Direction',
+            'Entree_UTC',
+            'Sortie_UTC',
+            'Prix_Entree',
+            'Prix_Sortie',
+            'SL_Initial',
+            'TP_Initial',
+            'Quantite',
+            'PnL_USDT',
+            'PnL_Pct',
+            'Multiple_R',
+            'Frais_USDT',
+            'MFE_Pct',
+            'MAE_Pct',
+            'Teddy_Score',
+            'Motif_Sortie',
+          ];
     const rows = activeRun.trades.map((t) =>
       [
         t.id,
@@ -739,23 +829,27 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
           <div className="flex items-center gap-2.5 flex-wrap">
             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[10px] font-mono-tabular font-bold uppercase bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30">
               <FlaskConical className="w-3.5 h-3.5" />
-              ADMINISTRATION EXCLUSIVE • STRATEGY LAB
+              {tr(lang, 'ADMINISTRATION EXCLUSIVE • STRATEGY LAB', 'EXCLUSIVE ADMIN • STRATEGY LAB')}
             </span>
             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[10px] font-mono-tabular font-semibold bg-[#3B82F6]/15 text-[#60A5FA] border border-[#3B82F6]/30">
               <ShieldCheck className="w-3.5 h-3.5" />
-              100% ISOLÉ DU TRADING RÉEL (ZÉRO ORDRE LIVE)
+              {tr(lang, '100% ISOLÉ DU TRADING RÉEL (ZÉRO ORDRE LIVE)', '100% ISOLATED FROM LIVE TRADING (ZERO LIVE ORDERS)')}
             </span>
             {activeRun && (
               <span className="text-[11px] font-mono-tabular text-[#64748B]">
-                Source : <strong className="text-[#94A3B8]">{activeRun.data_source}</strong> ({activeRun.candles_count} bougies)
+                Source : <strong className="text-[#94A3B8]">{activeRun.data_source}</strong> ({activeRun.candles_count} {tr(lang, 'bougies', 'candles')})
               </span>
             )}
           </div>
           <h1 className="font-display text-xl sm:text-2xl font-bold text-[#F1F5F9]">
-            Laboratoire Quantitatif &amp; Backtesting Interactif Bitsure
+            {tr(lang, 'Laboratoire Quantitatif & Backtesting Interactif Bitsure', 'Bitsure Quantitative Lab & Interactive Backtesting')}
           </h1>
           <p className="text-xs text-[#94A3B8]">
-            Testez, modifiez, comparez (A/B) et diagnostiquez les règles du moteur de signaux Bitsure sur données historiques réelles sans aucun risque d&apos;exécution.
+            {tr(
+              lang,
+              "Testez, modifiez, comparez (A/B) et diagnostiquez les règles du moteur de signaux Bitsure sur données historiques réelles sans aucun risque d'exécution.",
+              'Test, modify, compare (A/B), and diagnose Bitsure signal engine rules on real historical data with zero execution risk.'
+            )}
           </p>
         </div>
 
@@ -766,7 +860,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
             className="px-3.5 py-2 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-xs font-medium text-[#F1F5F9] flex items-center gap-1.5 transition-colors"
           >
             <Save className="w-3.5 h-3.5 text-[#10B981]" />
-            <span>Sauvegarder Preset</span>
+            <span>{tr(lang, 'Sauvegarder Preset', 'Save Preset')}</span>
           </button>
           <button
             type="button"
@@ -784,7 +878,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
             className="px-3.5 py-2 rounded-lg bg-[#1E293B] hover:bg-[#334155] disabled:opacity-40 border border-white/10 text-xs font-medium text-[#F1F5F9] flex items-center gap-1.5 transition-colors"
           >
             <Copy className="w-3.5 h-3.5 text-[#F59E0B]" />
-            <span>Rapport JSON</span>
+            <span>{tr(lang, 'Rapport JSON', 'JSON Report')}</span>
           </button>
           <button
             type="button"
@@ -793,7 +887,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
             className="px-5 py-2.5 rounded-lg bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-semibold text-xs flex items-center gap-2 shadow-lg shadow-[#10B981]/10 transition-all"
           >
             <Play className={`w-4 h-4 fill-current ${runningBacktest ? 'animate-pulse' : ''}`} />
-            <span>{runningBacktest ? 'Simulation en cours...' : 'Lancer le Backtest'}</span>
+            <span>{runningBacktest ? tr(lang, 'Simulation en cours...', 'Simulating...') : tr(lang, 'Lancer le Backtest', 'Run Backtest')}</span>
           </button>
         </div>
       </div>
@@ -804,7 +898,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
       <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3 items-end">
         <div>
           <label className="block text-[11px] font-mono-tabular uppercase text-[#64748B] mb-1">
-            Paire Crypto (Binance)
+            {tr(lang, 'Paire Crypto (Binance)', 'Crypto Pair (Binance)')}
           </label>
           <select
             value={symbol}
@@ -821,7 +915,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
 
         <div>
           <label className="block text-[11px] font-mono-tabular uppercase text-[#64748B] mb-1">
-            Unité de Temps (Timeframe)
+            {tr(lang, 'Unité de Temps (Timeframe)', 'Timeframe')}
           </label>
           <div className="flex bg-[#090D16] border border-white/15 rounded-lg p-0.5">
             {timeframes.map((tf) => (
@@ -843,39 +937,39 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
 
         <div>
           <label className="block text-[11px] font-mono-tabular uppercase text-[#64748B] mb-1">
-            Style de Stratégie
+            {tr(lang, 'Style de Stratégie', 'Strategy Style')}
           </label>
           <select
             value={tradingStyle}
             onChange={(e) => setTradingStyle(e.target.value)}
             className="w-full px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs text-[#F1F5F9]"
           >
-            <option value="scalp">Scalping Réactif</option>
-            <option value="day">Day Trading Officiel</option>
-            <option value="swing">Swing Institutionnel</option>
+            <option value="scalp">{tr(lang, 'Scalping Réactif', 'Reactive Scalping')}</option>
+            <option value="day">{tr(lang, 'Day Trading Officiel', 'Official Day Trading')}</option>
+            <option value="swing">{tr(lang, 'Swing Institutionnel', 'Institutional Swing')}</option>
           </select>
         </div>
 
         <div>
           <label className="block text-[11px] font-mono-tabular uppercase text-[#64748B] mb-1">
-            Profondeur (Bougies)
+            {tr(lang, 'Profondeur (Bougies)', 'Depth (Candles)')}
           </label>
           <select
             value={maxCandles}
             onChange={(e) => setMaxCandles(Number(e.target.value))}
             className="w-full px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs font-mono-tabular text-[#F1F5F9]"
           >
-            <option value={300}>300 bougies (Court terme)</option>
-            <option value={600}>600 bougies (Standard)</option>
-            <option value={1000}>1 000 bougies (Étendu)</option>
-            <option value={1500}>1 500 bougies (Cycle profond)</option>
-            <option value={2000}>2 000 bougies (Stress-test)</option>
+            <option value={300}>{tr(lang, '300 bougies (Court terme)', '300 candles (Short term)')}</option>
+            <option value={600}>{tr(lang, '600 bougies (Standard)', '600 candles (Standard)')}</option>
+            <option value={1000}>{tr(lang, '1 000 bougies (Étendu)', '1,000 candles (Extended)')}</option>
+            <option value={1500}>{tr(lang, '1 500 bougies (Cycle profond)', '1,500 candles (Deep cycle)')}</option>
+            <option value={2000}>{tr(lang, '2 000 bougies (Stress-test)', '2,000 candles (Stress-test)')}</option>
           </select>
         </div>
 
         <div className="xl:col-span-2">
           <label className="block text-[11px] font-mono-tabular uppercase text-[#64748B] mb-1">
-            Charger un Preset Officiel ou Sauvegardé
+            {tr(lang, 'Charger un Preset Officiel ou Sauvegardé', 'Load Official or Saved Preset')}
           </label>
           <div className="flex gap-2">
             <select
@@ -887,7 +981,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
               className="flex-1 px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs text-[#F1F5F9]"
             >
               <option value="" disabled>
-                Sélectionner une configuration pré-enregistrée...
+                {tr(lang, 'Sélectionner une configuration pré-enregistrée...', 'Select a pre-saved configuration...')}
               </option>
               {presets.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -900,9 +994,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
               type="button"
               onClick={() => {
                 setParams(baselineParams);
-                onShowToast('info', 'Paramètres réinitialisés à la valeur de référence.');
+                onShowToast('info', tr(lang, 'Paramètres réinitialisés à la valeur de référence.', 'Parameters reset to baseline.'));
               }}
-              title="Réinitialiser les paramètres modifiés"
+              title={tr(lang, 'Réinitialiser les paramètres modifiés', 'Reset modified parameters')}
               className="px-3 py-2 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#94A3B8] hover:text-[#F1F5F9] flex items-center gap-1"
             >
               <RotateCcw className="w-3.5 h-3.5" />
@@ -926,25 +1020,27 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
             <div className="flex items-center gap-2">
               <Sliders className="w-4 h-4 text-[#10B981]" />
               <h2 className="font-display text-sm font-semibold text-[#F1F5F9]">
-                Éditeur de Règles &amp; Paramètres
+                {tr(lang, 'Éditeur de Règles & Paramètres', 'Rules & Parameters Editor')}
               </h2>
             </div>
             {modifiedParamsKeys.length > 0 ? (
               <span className="px-2 py-0.5 rounded text-[10px] font-mono-tabular bg-[#F59E0B]/15 text-[#F59E0B] border border-[#F59E0B]/30">
-                {modifiedParamsKeys.length} modifié(s)
+                {modifiedParamsKeys.length} {tr(lang, 'modifié(s)', 'modified')}
               </span>
             ) : (
-              <span className="text-[10px] font-mono-tabular text-[#64748B]">Référence active</span>
+              <span className="text-[10px] font-mono-tabular text-[#64748B]">
+                {tr(lang, 'Référence active', 'Baseline active')}
+              </span>
             )}
           </div>
 
           {/* Parameter Category Tabs */}
           <div className="grid grid-cols-4 border-b border-white/[0.07] bg-[#090D16] text-[11px] font-medium">
             {[
-              { id: 'confluence', label: 'Score & Filtres' },
+              { id: 'confluence', label: tr(lang, 'Score & Filtres', 'Score & Filters') },
               { id: 'exits', label: 'SL / TP / Trail' },
-              { id: 'indicators', label: 'Indicateurs' },
-              { id: 'capital', label: 'Capital & Frais' },
+              { id: 'indicators', label: tr(lang, 'Indicateurs', 'Indicators') },
+              { id: 'capital', label: tr(lang, 'Capital & Frais', 'Capital & Fees') },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -967,7 +1063,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
               <div className="space-y-4">
                 <div>
                   <div className="flex justify-between text-xs mb-1">
-                    <span className="text-[#94A3B8]">Score Teddy Minimum d&apos;Entrée</span>
+                    <span className="text-[#94A3B8]">
+                      {tr(lang, "Score Teddy Minimum d'Entrée", 'Minimum Entry Teddy Score')}
+                    </span>
                     <span className="font-mono-tabular font-bold text-[#10B981]">
                       {params.min_teddy_score} / 100
                     </span>
@@ -982,15 +1080,15 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     className="w-full accent-[#10B981]"
                   />
                   <div className="flex justify-between text-[10px] font-mono-tabular text-[#64748B]">
-                    <span>30 (Agressif)</span>
-                    <span>58 (Officiel)</span>
-                    <span>85 (Ultra-Sélectif)</span>
+                    <span>{tr(lang, '30 (Agressif)', '30 (Aggressive)')}</span>
+                    <span>{tr(lang, '58 (Officiel)', '58 (Official)')}</span>
+                    <span>{tr(lang, '85 (Ultra-Sélectif)', '85 (Ultra-Selective)')}</span>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2.5">
                   <label className="flex items-center justify-between p-2.5 rounded-lg bg-[#090D16] border border-white/10 text-xs cursor-pointer">
-                    <span className="text-[#F1F5F9]">Autoriser LONG</span>
+                    <span className="text-[#F1F5F9]">{tr(lang, 'Autoriser LONG', 'Allow LONG')}</span>
                     <input
                       type="checkbox"
                       checked={params.allow_long}
@@ -999,7 +1097,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     />
                   </label>
                   <label className="flex items-center justify-between p-2.5 rounded-lg bg-[#090D16] border border-white/10 text-xs cursor-pointer">
-                    <span className="text-[#F1F5F9]">Autoriser SHORT</span>
+                    <span className="text-[#F1F5F9]">{tr(lang, 'Autoriser SHORT', 'Allow SHORT')}</span>
                     <input
                       type="checkbox"
                       checked={params.allow_short}
@@ -1013,23 +1111,23 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   {[
                     {
                       key: 'require_ema_alignment' as const,
-                      label: 'Exiger alignement EMA rapide / lente',
-                      desc: 'Bloque les achats sous EMA rapide et ventes au-dessus',
+                      label: tr(lang, 'Exiger alignement EMA rapide / lente', 'Require Fast / Slow EMA alignment'),
+                      desc: tr(lang, 'Bloque les achats sous EMA rapide et ventes au-dessus', 'Blocks buys below fast EMA and sells above'),
                     },
                     {
                       key: 'require_macd_confirmation' as const,
-                      label: 'Exiger confirmation impulsion MACD',
-                      desc: 'Filtre les entrées à contre-courant de l’histogramme MACD',
+                      label: tr(lang, 'Exiger confirmation impulsion MACD', 'Require MACD momentum confirmation'),
+                      desc: tr(lang, 'Filtre les entrées à contre-courant de l’histogramme MACD', 'Filters entries against the MACD histogram'),
                     },
                     {
                       key: 'require_trend_filter_ema200' as const,
-                      label: `Filtre directionnel strict EMA ${params.ema_trend}`,
-                      desc: 'LONG uniquement au-dessus de EMA tendance, SHORT en-dessous',
+                      label: tr(lang, `Filtre directionnel strict EMA ${params.ema_trend}`, `Strict directional EMA ${params.ema_trend} filter`),
+                      desc: tr(lang, 'LONG uniquement au-dessus de EMA tendance, SHORT en-dessous', 'LONG only above trend EMA, SHORT only below'),
                     },
                     {
                       key: 'block_against_strong_trend' as const,
-                      label: 'Protection anti contre-tendance forte (ADX ≥ 30)',
-                      desc: 'Interdit de shorter un rallye puissant ou d’acheter un krach',
+                      label: tr(lang, 'Protection anti contre-tendance forte (ADX ≥ 30)', 'Strong counter-trend protection (ADX ≥ 30)'),
+                      desc: tr(lang, 'Interdit de shorter un rallye puissant ou d’acheter un krach', 'Prevents shorting strong rallies or buying sharp crashes'),
                     },
                   ].map((item) => (
                     <label
@@ -1053,7 +1151,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 <div className="grid grid-cols-2 gap-3 pt-1">
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Seuil ADX Min (Tendance)
+                      {tr(lang, 'Seuil ADX Min (Tendance)', 'Min ADX Threshold (Trend)')}
                     </label>
                     <input
                       type="number"
@@ -1067,7 +1165,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   </div>
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Volatilité ATR Min (%)
+                      {tr(lang, 'Volatilité ATR Min (%)', 'Min ATR Volatility (%)')}
                     </label>
                     <input
                       type="number"
@@ -1081,7 +1179,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   </div>
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Ratio Volume Min (vs MA)
+                      {tr(lang, 'Ratio Volume Min (vs MA)', 'Min Volume Ratio (vs MA)')}
                     </label>
                     <input
                       type="number"
@@ -1095,7 +1193,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   </div>
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Cooldown (Bougies)
+                      {tr(lang, 'Cooldown (Bougies)', 'Cooldown (Candles)')}
                     </label>
                     <input
                       type="number"
@@ -1116,20 +1214,22 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">Mode Stop Loss</label>
+                    <label className="block text-[11px] text-[#94A3B8] mb-1">
+                      {tr(lang, 'Mode Stop Loss', 'Stop Loss Mode')}
+                    </label>
                     <select
                       value={params.sl_mode}
                       onChange={(e) => handleParamChange('sl_mode', e.target.value as any)}
                       className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs text-[#F1F5F9]"
                     >
-                      <option value="atr">Dynamique (Multiple ATR)</option>
-                      <option value="fixed_pct">Pourcentage Fixe (%)</option>
+                      <option value="atr">{tr(lang, 'Dynamique (Multiple ATR)', 'Dynamic (ATR Multiple)')}</option>
+                      <option value="fixed_pct">{tr(lang, 'Pourcentage Fixe (%)', 'Fixed Percentage (%)')}</option>
                     </select>
                   </div>
                   {params.sl_mode === 'atr' ? (
                     <div>
                       <label className="block text-[11px] text-[#94A3B8] mb-1">
-                        Multiplicateur SL (ATR)
+                        {tr(lang, 'Multiplicateur SL (ATR)', 'SL Multiplier (ATR)')}
                       </label>
                       <input
                         type="number"
@@ -1144,7 +1244,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   ) : (
                     <div>
                       <label className="block text-[11px] text-[#94A3B8] mb-1">
-                        Distance SL Fixe (%)
+                        {tr(lang, 'Distance SL Fixe (%)', 'Fixed SL Distance (%)')}
                       </label>
                       <input
                         type="number"
@@ -1161,20 +1261,22 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">Mode Take Profit</label>
+                    <label className="block text-[11px] text-[#94A3B8] mb-1">
+                      {tr(lang, 'Mode Take Profit', 'Take Profit Mode')}
+                    </label>
                     <select
                       value={params.tp_mode}
                       onChange={(e) => handleParamChange('tp_mode', e.target.value as any)}
                       className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs text-[#F1F5F9]"
                     >
-                      <option value="rr">Multiple du Risque (R:R)</option>
-                      <option value="atr">Multiple ATR</option>
-                      <option value="fixed_pct">Pourcentage Fixe (%)</option>
+                      <option value="rr">{tr(lang, 'Multiple du Risque (R:R)', 'Risk Multiple (R:R)')}</option>
+                      <option value="atr">{tr(lang, 'Multiple ATR', 'ATR Multiple')}</option>
+                      <option value="fixed_pct">{tr(lang, 'Pourcentage Fixe (%)', 'Fixed Percentage (%)')}</option>
                     </select>
                   </div>
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Ratio R:R Minimum Cible
+                      {tr(lang, 'Ratio R:R Minimum Cible', 'Minimum Target R:R Ratio')}
                     </label>
                     <input
                       type="number"
@@ -1191,7 +1293,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 {/* Partial TP */}
                 <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-2.5">
                   <label className="flex items-center justify-between text-xs font-medium text-[#F1F5F9] cursor-pointer">
-                    <span>Take Profit Partiel (TP1 Automatique)</span>
+                    <span>{tr(lang, 'Take Profit Partiel (TP1 Automatique)', 'Partial Take Profit (Auto TP1)')}</span>
                     <input
                       type="checkbox"
                       checked={params.partial_tp_enabled}
@@ -1202,7 +1304,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   {params.partial_tp_enabled && (
                     <div className="grid grid-cols-2 gap-2.5 pt-1">
                       <div>
-                        <span className="block text-[10px] text-[#64748B]">Déclenchement (en R)</span>
+                        <span className="block text-[10px] text-[#64748B]">
+                          {tr(lang, 'Déclenchement (en R)', 'Trigger (in R)')}
+                        </span>
                         <input
                           type="number"
                           step="0.1"
@@ -1212,7 +1316,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                         />
                       </div>
                       <div>
-                        <span className="block text-[10px] text-[#64748B]">Part clôturée (%)</span>
+                        <span className="block text-[10px] text-[#64748B]">
+                          {tr(lang, 'Part clôturée (%)', 'Closed Portion (%)')}
+                        </span>
                         <input
                           type="number"
                           step="5"
@@ -1228,7 +1334,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 {/* Break-Even */}
                 <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-2.5">
                   <label className="flex items-center justify-between text-xs font-medium text-[#F1F5F9] cursor-pointer">
-                    <span>Mise à Break-Even Automatique</span>
+                    <span>{tr(lang, 'Mise à Break-Even Automatique', 'Automatic Break-Even')}</span>
                     <input
                       type="checkbox"
                       checked={params.breakeven_enabled}
@@ -1239,7 +1345,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   {params.breakeven_enabled && (
                     <div>
                       <span className="block text-[10px] text-[#64748B]">
-                        Seuil d&apos;activation Break-Even (Multiple R)
+                        {tr(lang, "Seuil d'activation Break-Even (Multiple R)", 'Break-Even Activation Threshold (R Multiple)')}
                       </span>
                       <input
                         type="number"
@@ -1255,7 +1361,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 {/* Trailing Stop */}
                 <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-2.5">
                   <label className="flex items-center justify-between text-xs font-medium text-[#F1F5F9] cursor-pointer">
-                    <span>Trailing Stop Dynamique (ATR)</span>
+                    <span>{tr(lang, 'Trailing Stop Dynamique (ATR)', 'Dynamic Trailing Stop (ATR)')}</span>
                     <input
                       type="checkbox"
                       checked={params.trailing_stop_enabled}
@@ -1266,7 +1372,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   {params.trailing_stop_enabled && (
                     <div className="grid grid-cols-2 gap-2.5 pt-1">
                       <div>
-                        <span className="block text-[10px] text-[#64748B]">Activation (en R)</span>
+                        <span className="block text-[10px] text-[#64748B]">
+                          {tr(lang, 'Activation (en R)', 'Activation (in R)')}
+                        </span>
                         <input
                           type="number"
                           step="0.1"
@@ -1276,7 +1384,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                         />
                       </div>
                       <div>
-                        <span className="block text-[10px] text-[#64748B]">Distance suivi (x ATR)</span>
+                        <span className="block text-[10px] text-[#64748B]">
+                          {tr(lang, 'Distance suivi (x ATR)', 'Trailing Distance (x ATR)')}
+                        </span>
                         <input
                           type="number"
                           step="0.1"
@@ -1291,7 +1401,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
 
                 <div className="grid grid-cols-2 gap-3">
                   <label className="flex items-center justify-between p-2.5 rounded-lg bg-[#090D16] border border-white/10 text-xs cursor-pointer">
-                    <span className="text-[#94A3B8]">Sortie signal opposé</span>
+                    <span className="text-[#94A3B8]">{tr(lang, 'Sortie signal opposé', 'Exit on opposite signal')}</span>
                     <input
                       type="checkbox"
                       checked={params.exit_on_opposite_signal}
@@ -1301,7 +1411,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   </label>
                   <div>
                     <label className="block text-[10px] text-[#64748B] mb-1">
-                      Durée Max (Bougies)
+                      {tr(lang, 'Durée Max (Bougies)', 'Max Duration (Candles)')}
                     </label>
                     <input
                       type="number"
@@ -1321,7 +1431,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
               <div className="space-y-3.5">
                 <div className="grid grid-cols-3 gap-2.5">
                   <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">EMA Rapide</label>
+                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'EMA Rapide', 'Fast EMA')}</label>
                     <input
                       type="number"
                       value={params.ema_fast}
@@ -1330,7 +1440,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">EMA Lente</label>
+                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'EMA Lente', 'Slow EMA')}</label>
                     <input
                       type="number"
                       value={params.ema_slow}
@@ -1339,7 +1449,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">EMA Tendance</label>
+                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'EMA Tendance', 'Trend EMA')}</label>
                     <input
                       type="number"
                       value={params.ema_trend}
@@ -1351,7 +1461,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
 
                 <div className="grid grid-cols-3 gap-2.5">
                   <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">Période RSI</label>
+                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'Période RSI', 'RSI Period')}</label>
                     <input
                       type="number"
                       value={params.rsi_period}
@@ -1360,7 +1470,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">RSI Survente</label>
+                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'RSI Survente', 'RSI Oversold')}</label>
                     <input
                       type="number"
                       value={params.rsi_oversold}
@@ -1369,7 +1479,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">RSI Surachat</label>
+                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'RSI Surachat', 'RSI Overbought')}</label>
                     <input
                       type="number"
                       value={params.rsi_overbought}
@@ -1381,7 +1491,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
 
                 <div className="grid grid-cols-3 gap-2.5">
                   <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">Période ATR</label>
+                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'Période ATR', 'ATR Period')}</label>
                     <input
                       type="number"
                       value={params.atr_period}
@@ -1390,7 +1500,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">Période ADX</label>
+                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'Période ADX', 'ADX Period')}</label>
                     <input
                       type="number"
                       value={params.adx_period}
@@ -1399,7 +1509,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">MA Volume</label>
+                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'MA Volume', 'Volume MA')}</label>
                     <input
                       type="number"
                       value={params.volume_ma_period}
@@ -1417,7 +1527,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Capital Initial (USDT)
+                      {tr(lang, 'Capital Initial (USDT)', 'Initial Capital (USDT)')}
                     </label>
                     <input
                       type="number"
@@ -1429,7 +1539,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   </div>
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Levier Simulé (x)
+                      {tr(lang, 'Levier Simulé (x)', 'Simulated Leverage (x)')}
                     </label>
                     <input
                       type="number"
@@ -1445,23 +1555,25 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
 
                 <div>
                   <label className="block text-[11px] text-[#94A3B8] mb-1">
-                    Mode de Dimensionnement (Position Sizing)
+                    {tr(lang, 'Mode de Dimensionnement (Position Sizing)', 'Position Sizing Mode')}
                   </label>
                   <select
                     value={params.position_sizing_mode}
                     onChange={(e) => handleParamChange('position_sizing_mode', e.target.value as any)}
                     className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs text-[#F1F5F9]"
                   >
-                    <option value="risk_pct">Risque en % du Capital par Trade (basé sur distance SL)</option>
-                    <option value="capital_pct">% Fixe du Capital Alloué</option>
-                    <option value="fixed_usdt">Montant Fixe en USDT par Trade</option>
+                    <option value="risk_pct">
+                      {tr(lang, 'Risque en % du Capital par Trade (basé sur distance SL)', 'Risk % of Capital per Trade (based on SL distance)')}
+                    </option>
+                    <option value="capital_pct">{tr(lang, '% Fixe du Capital Alloué', 'Fixed % of Allocated Capital')}</option>
+                    <option value="fixed_usdt">{tr(lang, 'Montant Fixe en USDT par Trade', 'Fixed USDT Amount per Trade')}</option>
                   </select>
                 </div>
 
                 {params.position_sizing_mode === 'risk_pct' && (
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Risque par Trade (% du capital perdu si SL touché)
+                      {tr(lang, 'Risque par Trade (% du capital perdu si SL touché)', 'Risk per Trade (% of capital lost if SL hit)')}
                     </label>
                     <input
                       type="number"
@@ -1478,7 +1590,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 {params.position_sizing_mode === 'capital_pct' && (
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Allocation Capital par Position (%)
+                      {tr(lang, 'Allocation Capital par Position (%)', 'Capital Allocation per Position (%)')}
                     </label>
                     <input
                       type="number"
@@ -1495,7 +1607,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 {params.position_sizing_mode === 'fixed_usdt' && (
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Mise Fixe par Position (USDT)
+                      {tr(lang, 'Mise Fixe par Position (USDT)', 'Fixed Size per Position (USDT)')}
                     </label>
                     <input
                       type="number"
@@ -1510,7 +1622,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Frais Taker (bps, 4 = 0.04%)
+                      {tr(lang, 'Frais Taker (bps, 4 = 0.04%)', 'Taker Fees (bps, 4 = 0.04%)')}
                     </label>
                     <input
                       type="number"
@@ -1524,7 +1636,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   </div>
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Slippage Estimé (bps)
+                      {tr(lang, 'Slippage Estimé (bps)', 'Estimated Slippage (bps)')}
                     </label>
                     <input
                       type="number"
@@ -1538,7 +1650,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   </div>
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Trades Max / Jour
+                      {tr(lang, 'Trades Max / Jour', 'Max Trades / Day')}
                     </label>
                     <input
                       type="number"
@@ -1551,7 +1663,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   </div>
                   <div>
                     <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      Coupe-circuit Pertes Conséc.
+                      {tr(lang, 'Coupe-circuit Pertes Conséc.', 'Max Consecutive Losses')}
                     </label>
                     <input
                       type="number"
@@ -1575,7 +1687,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 className="w-full py-2.5 rounded-lg bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-semibold text-xs flex items-center justify-center gap-2 transition-colors"
               >
                 <Play className="w-3.5 h-3.5 fill-current" />
-                <span>{runningBacktest ? 'Calcul en cours...' : 'Simuler ce Scénario (B)'}</span>
+                <span>{runningBacktest ? tr(lang, 'Calcul en cours...', 'Computing...') : tr(lang, 'Simuler ce Scénario (B)', 'Simulate Scenario (B)')}</span>
               </button>
               <button
                 type="button"
@@ -1586,8 +1698,8 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 <GitCompare className="w-3.5 h-3.5 text-[#60A5FA]" />
                 <span>
                   {runningCompare
-                    ? 'Calcul référence...'
-                    : 'Épingler la Référence Actuelle pour Comparaison A/B'}
+                    ? tr(lang, 'Calcul référence...', 'Computing baseline...')
+                    : tr(lang, 'Épingler la Référence Actuelle pour Comparaison A/B', 'Pin Current Baseline for A/B Comparison')}
                 </span>
               </button>
             </div>
@@ -1599,21 +1711,23 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
           {/* Sub-navigation tabs */}
           <div className="bg-[#111827] border border-white/[0.08] rounded-xl p-1.5 flex flex-wrap gap-1">
             {[
-              { id: 'overview', label: 'Synthèse & Courbe Equity', icon: TrendingUp },
-              { id: 'chart', label: 'Graphique & Signaux', icon: Activity },
+              { id: 'overview', label: tr(lang, 'Synthèse & Courbe Equity', 'Overview & Equity Curve'), icon: TrendingUp },
+              { id: 'chart', label: tr(lang, 'Graphique & Signaux', 'Chart & Signals'), icon: Activity },
               {
                 id: 'trades',
-                label: `Journal des Trades (${activeRun?.trades?.length || 0})`,
+                label: `${tr(lang, 'Journal des Trades', 'Trade Journal')} (${activeRun?.trades?.length || 0})`,
                 icon: Layers,
               },
-              { id: 'diagnostics', label: 'Diagnostic des Filtres', icon: Filter },
+              { id: 'diagnostics', label: tr(lang, 'Diagnostic des Filtres', 'Filter Diagnostics'), icon: Filter },
               {
                 id: 'compare',
-                label: compareRun ? 'Comparateur A/B (Actif)' : 'Comparateur A/B',
+                label: compareRun
+                  ? tr(lang, 'Comparateur A/B (Actif)', 'A/B Comparator (Active)')
+                  : tr(lang, 'Comparateur A/B', 'A/B Comparator'),
                 icon: GitCompare,
               },
-              { id: 'sweep', label: 'Optimisation (Sweep)', icon: Sparkles },
-              { id: 'history', label: `Historique (${savedRuns.length})`, icon: Bookmark },
+              { id: 'sweep', label: tr(lang, 'Optimisation (Sweep)', 'Sensitivity Sweep'), icon: Sparkles },
+              { id: 'history', label: `${tr(lang, 'Historique', 'History')} (${savedRuns.length})`, icon: Bookmark },
             ].map((tab) => {
               const Icon = tab.icon;
               const active = labSection === tab.id;
@@ -1642,7 +1756,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
             <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
               <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-3.5">
                 <div className="text-[10px] font-mono-tabular uppercase text-[#64748B]">
-                  Rendement Net
+                  {tr(lang, 'Rendement Net', 'Net Return')}
                 </div>
                 <div
                   className={`text-lg font-mono-tabular font-bold mt-0.5 ${
@@ -1692,7 +1806,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
 
               <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-3.5">
                 <div className="text-[10px] font-mono-tabular uppercase text-[#64748B]">
-                  Drawdown Max
+                  {tr(lang, 'Drawdown Max', 'Max Drawdown')}
                 </div>
                 <div className="text-lg font-mono-tabular font-bold text-[#F43F5E] mt-0.5">
                   -{m.max_drawdown_pct.toFixed(2)}%
@@ -1704,7 +1818,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
 
               <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-3.5">
                 <div className="text-[10px] font-mono-tabular uppercase text-[#64748B]">
-                  Espérance / Trade
+                  {tr(lang, 'Espérance / Trade', 'Expectancy / Trade')}
                 </div>
                 <div
                   className={`text-lg font-mono-tabular font-bold mt-0.5 ${
@@ -1715,7 +1829,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   {m.expectancy_usdt.toFixed(2)}$
                 </div>
                 <div className="text-[11px] font-mono-tabular text-[#94A3B8]">
-                  Moy : {m.avg_r_multiple >= 0 ? '+' : ''}
+                  {tr(lang, 'Moy :', 'Avg:')} {m.avg_r_multiple >= 0 ? '+' : ''}
                   {m.avg_r_multiple.toFixed(2)} R
                 </div>
               </div>
@@ -1744,7 +1858,13 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 <div className="bg-[#111827] border border-white/[0.08] rounded-xl p-4 space-y-2.5">
                   <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#94A3B8] flex items-center gap-2">
                     <Sparkles className="w-4 h-4 text-[#10B981]" />
-                    <span>Diagnostic Automatique du Comportement de la Stratégie</span>
+                    <span>
+                      {tr(
+                        lang,
+                        'Diagnostic Automatique du Comportement de la Stratégie',
+                        'Automated Strategy Behavior Diagnostics'
+                      )}
+                    </span>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {activeRun.diagnostics.map((d, idx) => (
@@ -1778,10 +1898,15 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h3 className="font-display text-sm font-semibold text-[#F1F5F9]">
-                      Courbe d&apos;Équité du Portefeuille &amp; Drawdown (USDT)
+                      {tr(
+                        lang,
+                        "Courbe d'Équité du Portefeuille & Drawdown (USDT)",
+                        'Portfolio Equity Curve & Drawdown (USDT)'
+                      )}
                     </h3>
                     <p className="text-xs text-[#64748B]">
-                      Capital Initial : {m.initial_capital.toLocaleString()} USDT → Final :{' '}
+                      {tr(lang, 'Capital Initial :', 'Initial Capital:')} {m.initial_capital.toLocaleString()} USDT →{' '}
+                      {tr(lang, 'Final :', 'Final:')}{' '}
                       <strong className="text-[#F1F5F9]">{m.final_capital.toLocaleString()} USDT</strong>{' '}
                       (Benchmark Buy &amp; Hold : {m.buy_hold_return_pct >= 0 ? '+' : ''}
                       {m.buy_hold_return_pct}% | Alpha : {m.alpha_vs_buy_hold_pct >= 0 ? '+' : ''}
@@ -1789,13 +1914,15 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     </p>
                   </div>
                   <div className="text-xs font-mono-tabular text-[#94A3B8]">
-                    Frais totaux déduits : <span className="text-[#F59E0B]">{m.total_fees_usdt.toFixed(2)} USDT</span>
+                    {tr(lang, 'Frais totaux déduits :', 'Total fees deducted:')}{' '}
+                    <span className="text-[#F59E0B]">{m.total_fees_usdt.toFixed(2)} USDT</span>
                   </div>
                 </div>
 
                 <EquityAndDrawdownChart
                   data={activeRun.equity_curve || []}
                   initialCapital={m.initial_capital}
+                  lang={lang}
                 />
               </div>
 
@@ -1803,47 +1930,57 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-[#111827] border border-white/[0.08] rounded-xl p-5 space-y-3">
                   <h4 className="font-display text-xs font-semibold uppercase tracking-wider text-[#94A3B8]">
-                    Statistiques Détaillées Long vs Short &amp; Séries
+                    {tr(lang, 'Statistiques Détaillées Long vs Short & Séries', 'Detailed Long vs Short & Streak Statistics')}
                   </h4>
                   <div className="space-y-2 text-xs font-mono-tabular">
                     <div className="flex justify-between py-1 border-b border-white/[0.05]">
-                      <span className="text-[#94A3B8]">Performance LONG ({m.long_trades} trades)</span>
+                      <span className="text-[#94A3B8]">
+                        {tr(lang, 'Performance LONG', 'LONG Performance')} ({m.long_trades} trades)
+                      </span>
                       <span className={m.long_pnl_usdt >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
                         {m.long_pnl_usdt >= 0 ? '+' : ''}
                         {m.long_pnl_usdt.toFixed(2)} USDT ({m.long_win_rate_pct}% WR)
                       </span>
                     </div>
                     <div className="flex justify-between py-1 border-b border-white/[0.05]">
-                      <span className="text-[#94A3B8]">Performance SHORT ({m.short_trades} trades)</span>
+                      <span className="text-[#94A3B8]">
+                        {tr(lang, 'Performance SHORT', 'SHORT Performance')} ({m.short_trades} trades)
+                      </span>
                       <span className={m.short_pnl_usdt >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
                         {m.short_pnl_usdt >= 0 ? '+' : ''}
                         {m.short_pnl_usdt.toFixed(2)} USDT ({m.short_win_rate_pct}% WR)
                       </span>
                     </div>
                     <div className="flex justify-between py-1 border-b border-white/[0.05]">
-                      <span className="text-[#94A3B8]">Gain Moyen / Perte Moyenne</span>
+                      <span className="text-[#94A3B8]">
+                        {tr(lang, 'Gain Moyen / Perte Moyenne', 'Average Win / Average Loss')}
+                      </span>
                       <span className="text-[#F1F5F9]">
                         <strong className="text-[#10B981]">+{m.avg_win_usdt.toFixed(2)}$</strong> /{' '}
                         <strong className="text-[#F43F5E]">{m.avg_loss_usdt.toFixed(2)}$</strong>
                       </span>
                     </div>
                     <div className="flex justify-between py-1 border-b border-white/[0.05]">
-                      <span className="text-[#94A3B8]">Meilleur / Pire Trade</span>
+                      <span className="text-[#94A3B8]">{tr(lang, 'Meilleur / Pire Trade', 'Best / Worst Trade')}</span>
                       <span className="text-[#F1F5F9]">
                         <strong className="text-[#10B981]">+{m.best_trade_usdt.toFixed(2)}$</strong> /{' '}
                         <strong className="text-[#F43F5E]">{m.worst_trade_usdt.toFixed(2)}$</strong>
                       </span>
                     </div>
                     <div className="flex justify-between py-1 border-b border-white/[0.05]">
-                      <span className="text-[#94A3B8]">Série Max Gains / Pertes consécutifs</span>
+                      <span className="text-[#94A3B8]">
+                        {tr(lang, 'Série Max Gains / Pertes consécutifs', 'Max Consecutive Wins / Losses')}
+                      </span>
                       <span className="text-[#F1F5F9]">
                         {m.max_win_streak} W / {m.max_loss_streak} L
                       </span>
                     </div>
                     <div className="flex justify-between py-1">
-                      <span className="text-[#94A3B8]">Durée moyenne d&apos;exposition</span>
+                      <span className="text-[#94A3B8]">
+                        {tr(lang, "Durée moyenne d'exposition", 'Average holding duration')}
+                      </span>
                       <span className="text-[#F1F5F9]">
-                        {m.avg_bars_held} bougies (~{m.avg_duration_minutes} min)
+                        {m.avg_bars_held} {tr(lang, 'bougies', 'candles')} (~{m.avg_duration_minutes} min)
                       </span>
                     </div>
                   </div>
@@ -1851,7 +1988,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
 
                 <div className="bg-[#111827] border border-white/[0.08] rounded-xl p-5 space-y-3">
                   <h4 className="font-display text-xs font-semibold uppercase tracking-wider text-[#94A3B8]">
-                    Répartition des Sorties par Motif (Exit Breakdown)
+                    {tr(lang, 'Répartition des Sorties par Motif (Exit Breakdown)', 'Exit Breakdown by Reason')}
                   </h4>
                   <div className="space-y-2 text-xs font-mono-tabular">
                     {Object.entries(m.by_exit_reason || {}).map(([reason, stats]) => (
@@ -1862,7 +1999,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                         <div>
                           <span className="font-semibold text-[#F1F5F9]">{reason}</span>
                           <span className="ml-2 text-[11px] text-[#64748B]">
-                            ({stats.count} trades • {stats.wins} gagnants)
+                            ({stats.count} trades • {stats.wins} {tr(lang, 'gagnants', 'winners')})
                           </span>
                         </div>
                         <span
@@ -1876,7 +2013,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                       </div>
                     ))}
                     {Object.keys(m.by_exit_reason || {}).length === 0 && (
-                      <div className="text-[#64748B] py-4 text-center">Aucune sortie enregistrée.</div>
+                      <div className="text-[#64748B] py-4 text-center">
+                        {tr(lang, 'Aucune sortie enregistrée.', 'No exits recorded.')}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1892,10 +2031,18 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="font-display text-sm font-semibold text-[#F1F5F9]">
-                    Graphique Historique {activeRun.symbol} ({activeRun.timeframe}) &amp; Signaux Exécutés
+                    {tr(
+                      lang,
+                      `Graphique Historique ${activeRun.symbol} (${activeRun.timeframe}) & Signaux Exécutés`,
+                      `Historical Chart ${activeRun.symbol} (${activeRun.timeframe}) & Executed Signals`
+                    )}
                   </h3>
                   <p className="text-xs text-[#64748B]">
-                    Superposition Prix Close, EMA Rapide ({activeRun.params.ema_fast}), EMA Lente ({activeRun.params.ema_slow}), EMA Tendance ({activeRun.params.ema_trend}) et marqueurs d&apos;entrée/sortie.
+                    {tr(
+                      lang,
+                      `Superposition Prix Close, EMA Rapide (${activeRun.params.ema_fast}), EMA Lente (${activeRun.params.ema_slow}), EMA Tendance (${activeRun.params.ema_trend}) et marqueurs d'entrée/sortie.`,
+                      `Close Price overlay, Fast EMA (${activeRun.params.ema_fast}), Slow EMA (${activeRun.params.ema_slow}), Trend EMA (${activeRun.params.ema_trend}), and entry/exit markers.`
+                    )}
                   </p>
                 </div>
                 <div className="flex items-center gap-3 text-[11px] font-mono-tabular">
@@ -1924,9 +2071,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     onChange={(e) => setTradeSideFilter(e.target.value as any)}
                     className="px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded-lg text-xs text-[#F1F5F9]"
                   >
-                    <option value="ALL">Toutes Directions (BUY &amp; SELL)</option>
-                    <option value="BUY">LONG (BUY) uniquement</option>
-                    <option value="SELL">SHORT (SELL) uniquement</option>
+                    <option value="ALL">{tr(lang, 'Toutes Directions (BUY & SELL)', 'All Directions (BUY & SELL)')}</option>
+                    <option value="BUY">{tr(lang, 'LONG (BUY) uniquement', 'LONG (BUY) only')}</option>
+                    <option value="SELL">{tr(lang, 'SHORT (SELL) uniquement', 'SHORT (SELL) only')}</option>
                   </select>
 
                   <select
@@ -1934,9 +2081,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     onChange={(e) => setTradeOutcomeFilter(e.target.value as any)}
                     className="px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded-lg text-xs text-[#F1F5F9]"
                   >
-                    <option value="ALL">Tous Résultats (Gains &amp; Pertes)</option>
-                    <option value="WIN">Trades Gagnants uniquement</option>
-                    <option value="LOSS">Trades Perdants uniquement</option>
+                    <option value="ALL">{tr(lang, 'Tous Résultats (Gains & Pertes)', 'All Outcomes (Wins & Losses)')}</option>
+                    <option value="WIN">{tr(lang, 'Trades Gagnants uniquement', 'Winning Trades only')}</option>
+                    <option value="LOSS">{tr(lang, 'Trades Perdants uniquement', 'Losing Trades only')}</option>
                   </select>
 
                   <select
@@ -1944,7 +2091,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     onChange={(e) => setTradeReasonFilter(e.target.value)}
                     className="px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded-lg text-xs text-[#F1F5F9]"
                   >
-                    <option value="ALL">Tous Motifs de Sortie</option>
+                    <option value="ALL">{tr(lang, 'Tous Motifs de Sortie', 'All Exit Reasons')}</option>
                     <option value="TAKE_PROFIT">TAKE_PROFIT</option>
                     <option value="STOP_LOSS">STOP_LOSS</option>
                     <option value="TRAILING_SL">TRAILING_SL</option>
@@ -1955,7 +2102,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 </div>
 
                 <div className="text-xs font-mono-tabular text-[#94A3B8]">
-                  Affichés : <strong className="text-[#F1F5F9]">{filteredTrades.length}</strong> /{' '}
+                  {tr(lang, 'Affichés :', 'Showing:')} <strong className="text-[#F1F5F9]">{filteredTrades.length}</strong> /{' '}
                   {activeRun.trades?.length || 0} trades
                 </div>
               </div>
@@ -1983,19 +2130,19 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                       onClick={() => setSelectedTrade(null)}
                       className="text-xs text-[#94A3B8] hover:text-[#F1F5F9]"
                     >
-                      Fermer l&apos;inspecteur ✕
+                      {tr(lang, "Fermer l'inspecteur ✕", 'Close inspector ✕')}
                     </button>
                   </div>
 
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono-tabular">
                     <div className="p-2.5 rounded bg-[#111827]">
-                      <div className="text-[10px] text-[#64748B]">Entrée → Sortie</div>
+                      <div className="text-[10px] text-[#64748B]">{tr(lang, 'Entrée → Sortie', 'Entry → Exit')}</div>
                       <div className="text-[#F1F5F9] font-semibold">
                         {selectedTrade.entry_price} → {selectedTrade.exit_price}
                       </div>
                     </div>
                     <div className="p-2.5 rounded bg-[#111827]">
-                      <div className="text-[10px] text-[#64748B]">SL Initial / TP Initial</div>
+                      <div className="text-[10px] text-[#64748B]">{tr(lang, 'SL Initial / TP Initial', 'Initial SL / Initial TP')}</div>
                       <div className="text-[#F1F5F9]">
                         {selectedTrade.sl_initial} / {selectedTrade.tp_initial}
                       </div>
@@ -2008,7 +2155,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                       </div>
                     </div>
                     <div className="p-2.5 rounded bg-[#111827]">
-                      <div className="text-[10px] text-[#64748B]">Résultat Net (Multiple R)</div>
+                      <div className="text-[10px] text-[#64748B]">{tr(lang, 'Résultat Net (Multiple R)', 'Net Result (R Multiple)')}</div>
                       <div
                         className={`font-bold ${
                           selectedTrade.pnl_usdt >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
@@ -2022,8 +2169,8 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   </div>
 
                   <div className="text-xs text-[#94A3B8]">
-                    <strong>Règles déclenchées à l&apos;entrée :</strong>{' '}
-                    {selectedTrade.entry_reasons?.join(' • ') || 'Confluence validée'}
+                    <strong>{tr(lang, "Règles déclenchées à l'entrée :", 'Entry rules triggered:')}</strong>{' '}
+                    {selectedTrade.entry_reasons?.join(' • ') || tr(lang, 'Confluence validée', 'Validated confluence')}
                   </div>
                 </div>
               )}
@@ -2035,12 +2182,12 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     <thead>
                       <tr className="border-b border-white/[0.08] bg-[#090D16] text-[10px] uppercase text-[#64748B]">
                         <th className="py-2.5 px-3">#</th>
-                        <th className="py-2.5 px-3">Côté</th>
-                        <th className="py-2.5 px-3">Date Entrée</th>
-                        <th className="py-2.5 px-3">Entrée / Sortie</th>
+                        <th className="py-2.5 px-3">{tr(lang, 'Côté', 'Side')}</th>
+                        <th className="py-2.5 px-3">{tr(lang, 'Date Entrée', 'Entry Time')}</th>
+                        <th className="py-2.5 px-3">{tr(lang, 'Entrée / Sortie', 'Entry / Exit')}</th>
                         <th className="py-2.5 px-3">Score</th>
                         <th className="py-2.5 px-3">MFE / MAE</th>
-                        <th className="py-2.5 px-3">Sortie</th>
+                        <th className="py-2.5 px-3">{tr(lang, 'Sortie', 'Exit')}</th>
                         <th className="py-2.5 px-3 text-right">PnL (USDT)</th>
                         <th className="py-2.5 px-3 text-right">R</th>
                       </tr>
@@ -2101,7 +2248,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                       {filteredTrades.length === 0 && (
                         <tr>
                           <td colSpan={9} className="py-8 text-center text-[#64748B]">
-                            Aucun trade ne correspond aux filtres sélectionnés.
+                            {tr(lang, 'Aucun trade ne correspond aux filtres sélectionnés.', 'No trades match the selected filters.')}
                           </td>
                         </tr>
                       )}
@@ -2119,11 +2266,14 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
             <div className="space-y-6">
               <div className="bg-[#111827] border border-white/[0.08] rounded-xl p-5 space-y-4">
                 <h3 className="font-display text-sm font-semibold text-[#F1F5F9]">
-                  Entonnoir de Sélection &amp; Causes de Rejet des Signaux
+                  {tr(lang, 'Entonnoir de Sélection & Causes de Rejet des Signaux', 'Signal Selection Funnel & Rejection Reasons')}
                 </h3>
                 <p className="text-xs text-[#94A3B8]">
-                  Permet d&apos;identifier immédiatement quel filtre bloque le plus d&apos;opportunités sur{' '}
-                  {activeRun.signals_summary.total_candles_evaluated} bougies analysées.
+                  {tr(
+                    lang,
+                    `Permet d'identifier immédiatement quel filtre bloque le plus d'opportunités sur ${activeRun.signals_summary.total_candles_evaluated} bougies analysées.`,
+                    `Immediately identifies which filter blocks the most opportunities across ${activeRun.signals_summary.total_candles_evaluated} evaluated candles.`
+                  )}
                 </p>
 
                 <div className="space-y-2.5">
@@ -2132,12 +2282,13 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     .map(([key, count]) => {
                       const total = Math.max(1, activeRun.signals_summary!.total_candles_evaluated);
                       const pct = Math.min(100, (count / total) * 100);
+                      const labelMap = lang === 'en' ? REJECTION_LABELS_EN : REJECTION_LABELS;
                       return (
                         <div key={key} className="space-y-1">
                           <div className="flex justify-between text-xs font-mono-tabular">
-                            <span className="text-[#F1F5F9]">{REJECTION_LABELS[key] || key}</span>
+                            <span className="text-[#F1F5F9]">{labelMap[key] || key}</span>
                             <span className="text-[#94A3B8]">
-                              {count} bougies ({pct.toFixed(1)}%)
+                              {count} {tr(lang, 'bougies', 'candles')} ({pct.toFixed(1)}%)
                             </span>
                           </div>
                           <div className="w-full h-2 rounded-full bg-[#090D16] overflow-hidden">
@@ -2154,17 +2305,21 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
 
               <div className="bg-[#111827] border border-white/[0.08] rounded-xl p-5 space-y-3">
                 <h4 className="font-display text-xs font-semibold uppercase tracking-wider text-[#94A3B8]">
-                  Échantillon des Signaux Proches du Seuil mais Filtrés (Near-Misses)
+                  {tr(
+                    lang,
+                    'Échantillon des Signaux Proches du Seuil mais Filtrés (Near-Misses)',
+                    'Sample of Near-Miss Signals Filtered Out'
+                  )}
                 </h4>
                 <div className="overflow-x-auto max-h-80">
                   <table className="w-full text-left text-xs font-mono-tabular">
                     <thead>
                       <tr className="border-b border-white/[0.08] text-[10px] uppercase text-[#64748B]">
-                        <th className="py-2 px-2">Horodatage</th>
-                        <th className="py-2 px-2">Candidat</th>
-                        <th className="py-2 px-2">Prix</th>
+                        <th className="py-2 px-2">{tr(lang, 'Horodatage', 'Timestamp')}</th>
+                        <th className="py-2 px-2">{tr(lang, 'Candidat', 'Candidate')}</th>
+                        <th className="py-2 px-2">{tr(lang, 'Prix', 'Price')}</th>
                         <th className="py-2 px-2">Score</th>
-                        <th className="py-2 px-2">Raison exacte du blocage</th>
+                        <th className="py-2 px-2">{tr(lang, 'Raison exacte du blocage', 'Exact blocking reason')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/[0.05]">
@@ -2202,10 +2357,18 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="font-display text-sm font-semibold text-[#F1F5F9]">
-                    Comparateur Quantitatif A / B (Référence vs Scénario Modifié)
+                    {tr(
+                      lang,
+                      'Comparateur Quantitatif A / B (Référence vs Scénario Modifié)',
+                      'Quantitative A / B Comparator (Baseline vs Modified Scenario)'
+                    )}
                   </h3>
                   <p className="text-xs text-[#94A3B8]">
-                    Comparez objectivement l&apos;impact de vos modifications de paramètres sur la rentabilité et le risque.
+                    {tr(
+                      lang,
+                      "Comparez objectivement l'impact de vos modifications de paramètres sur la rentabilité et le risque.",
+                      'Objectively compare the impact of your parameter modifications on profitability and risk.'
+                    )}
                   </p>
                 </div>
                 {!compareRun && (
@@ -2215,7 +2378,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     disabled={runningCompare}
                     className="px-3.5 py-2 rounded-lg bg-[#3B82F6] hover:bg-[#2563EB] text-xs font-semibold text-white"
                   >
-                    {runningCompare ? 'Calcul...' : 'Générer la Référence (A) Maintenant'}
+                    {runningCompare
+                      ? tr(lang, 'Calcul...', 'Computing...')
+                      : tr(lang, 'Générer la Référence (A) Maintenant', 'Generate Baseline (A) Now')}
                   </button>
                 )}
               </div>
@@ -2225,12 +2390,12 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   <table className="w-full text-left border-collapse text-xs font-mono-tabular">
                     <thead>
                       <tr className="border-b border-white/10 bg-[#090D16] text-[10px] uppercase text-[#64748B]">
-                        <th className="py-3 px-4">Métrique</th>
+                        <th className="py-3 px-4">{tr(lang, 'Métrique', 'Metric')}</th>
                         <th className="py-3 px-4 text-[#60A5FA]">
-                          Stratégie A (Référence • Score≥{compareRun.params.min_teddy_score})
+                          {tr(lang, 'Stratégie A (Référence', 'Strategy A (Baseline')} • Score≥{compareRun.params.min_teddy_score})
                         </th>
                         <th className="py-3 px-4 text-[#10B981]">
-                          Stratégie B (Actuelle • Score≥{activeRun.params.min_teddy_score})
+                          {tr(lang, 'Stratégie B (Actuelle', 'Strategy B (Current')} • Score≥{activeRun.params.min_teddy_score})
                         </th>
                         <th className="py-3 px-4 text-right">Delta (B vs A)</th>
                       </tr>
@@ -2238,14 +2403,14 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     <tbody className="divide-y divide-white/[0.06]">
                       {[
                         {
-                          label: 'Rendement Net (%)',
+                          label: tr(lang, 'Rendement Net (%)', 'Net Return (%)'),
                           a: compareRun.metrics.total_return_pct,
                           b: activeRun.metrics.total_return_pct,
                           suffix: '%',
                           higherIsBetter: true,
                         },
                         {
-                          label: 'Profit Net (USDT)',
+                          label: tr(lang, 'Profit Net (USDT)', 'Net Profit (USDT)'),
                           a: compareRun.metrics.net_profit_usdt,
                           b: activeRun.metrics.net_profit_usdt,
                           suffix: ' USDT',
@@ -2266,28 +2431,28 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                           higherIsBetter: true,
                         },
                         {
-                          label: 'Drawdown Max (%)',
+                          label: tr(lang, 'Drawdown Max (%)', 'Max Drawdown (%)'),
                           a: compareRun.metrics.max_drawdown_pct,
                           b: activeRun.metrics.max_drawdown_pct,
                           suffix: '%',
                           higherIsBetter: false,
                         },
                         {
-                          label: 'Ratio de Sharpe',
+                          label: tr(lang, 'Ratio de Sharpe', 'Sharpe Ratio'),
                           a: compareRun.metrics.sharpe_ratio,
                           b: activeRun.metrics.sharpe_ratio,
                           suffix: '',
                           higherIsBetter: true,
                         },
                         {
-                          label: 'Espérance par Trade ($)',
+                          label: tr(lang, 'Espérance par Trade ($)', 'Expectancy per Trade ($)'),
                           a: compareRun.metrics.expectancy_usdt,
                           b: activeRun.metrics.expectancy_usdt,
                           suffix: '$',
                           higherIsBetter: true,
                         },
                         {
-                          label: 'Nombre de Trades',
+                          label: tr(lang, 'Nombre de Trades', 'Total Trades'),
                           a: compareRun.metrics.total_trades,
                           b: activeRun.metrics.total_trades,
                           suffix: '',
@@ -2328,7 +2493,11 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 </div>
               ) : (
                 <div className="p-8 text-center text-xs text-[#64748B] border border-dashed border-white/10 rounded-xl">
-                  Cliquez sur « Épingler la Référence Actuelle pour Comparaison A/B » ou sélectionnez une expérience dans l&apos;historique pour comparer deux stratégies côte à côte.
+                  {tr(
+                    lang,
+                    "Cliquez sur « Épingler la Référence Actuelle pour Comparaison A/B » ou sélectionnez une expérience dans l'historique pour comparer deux stratégies côte à côte.",
+                    'Click "Pin Current Baseline for A/B Comparison" or select an experiment in History to compare two strategies side by side.'
+                  )}
                 </div>
               )}
             </div>
@@ -2341,17 +2510,21 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
             <div className="bg-[#111827] border border-white/[0.08] rounded-xl p-5 space-y-4">
               <div>
                 <h3 className="font-display text-sm font-semibold text-[#F1F5F9]">
-                  Balayage de Sensibilité (Grid Sweep Contrôlé)
+                  {tr(lang, 'Balayage de Sensibilité (Grid Sweep Contrôlé)', 'Sensitivity Sweep (Controlled Grid Test)')}
                 </h3>
                 <p className="text-xs text-[#94A3B8]">
-                  Testez automatiquement plusieurs valeurs d&apos;un paramètre clé sur le même historique pour vérifier la robustesse de la stratégie sans suroptimisation aveugle.
+                  {tr(
+                    lang,
+                    "Testez automatiquement plusieurs valeurs d'un paramètre clé sur le même historique pour vérifier la robustesse de la stratégie sans suroptimisation aveugle.",
+                    'Automatically test multiple values of a key parameter on the exact same historical data to verify strategy robustness without blind overfitting.'
+                  )}
                 </p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
                 <div>
                   <label className="block text-[11px] text-[#94A3B8] mb-1">
-                    Paramètre à Faire Varier
+                    {tr(lang, 'Paramètre à Faire Varier', 'Parameter to Sweep')}
                   </label>
                   <select
                     value={sweepParamName}
@@ -2365,18 +2538,18 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                     }}
                     className="w-full px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs text-[#F1F5F9]"
                   >
-                    <option value="min_teddy_score">Score Teddy Minimum</option>
-                    <option value="sl_atr_mult">Multiplicateur Stop Loss (ATR)</option>
-                    <option value="min_rr_ratio">Ratio Risque/Rendement (R:R)</option>
-                    <option value="adx_min">Seuil ADX Minimum</option>
-                    <option value="rsi_oversold">Seuil RSI Survente</option>
-                    <option value="cooldown_candles">Cooldown (Bougies)</option>
+                    <option value="min_teddy_score">{tr(lang, 'Score Teddy Minimum', 'Minimum Teddy Score')}</option>
+                    <option value="sl_atr_mult">{tr(lang, 'Multiplicateur Stop Loss (ATR)', 'Stop Loss Multiplier (ATR)')}</option>
+                    <option value="min_rr_ratio">{tr(lang, 'Ratio Risque/Rendement (R:R)', 'Risk/Reward Ratio (R:R)')}</option>
+                    <option value="adx_min">{tr(lang, 'Seuil ADX Minimum', 'Minimum ADX Threshold')}</option>
+                    <option value="rsi_oversold">{tr(lang, 'Seuil RSI Survente', 'RSI Oversold Threshold')}</option>
+                    <option value="cooldown_candles">{tr(lang, 'Cooldown (Bougies)', 'Cooldown (Candles)')}</option>
                   </select>
                 </div>
 
                 <div>
                   <label className="block text-[11px] text-[#94A3B8] mb-1">
-                    Valeurs à Tester (max 8, séparées par virgule)
+                    {tr(lang, 'Valeurs à Tester (max 8, séparées par virgule)', 'Values to Test (max 8, comma-separated)')}
                   </label>
                   <input
                     type="text"
@@ -2393,7 +2566,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   className="py-2 px-4 rounded-lg bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-semibold text-xs flex items-center justify-center gap-2"
                 >
                   <Sparkles className="w-4 h-4" />
-                  <span>{runningSweep ? 'Balayage en cours...' : 'Lancer le Balayage'}</span>
+                  <span>{runningSweep ? tr(lang, 'Balayage en cours...', 'Sweeping...') : tr(lang, 'Lancer le Balayage', 'Run Sweep')}</span>
                 </button>
               </div>
 
@@ -2402,12 +2575,14 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                   {sweepResult.best && (
                     <div className="p-3 rounded-lg bg-[#10B981]/10 border border-[#10B981]/30 text-xs flex items-center justify-between">
                       <div>
-                        <strong className="text-[#10B981]">Meilleure variante identifiée :</strong>{' '}
+                        <strong className="text-[#10B981]">
+                          {tr(lang, 'Meilleure variante identifiée :', 'Best variant identified:')}
+                        </strong>{' '}
                         {sweepResult.param_label} ={' '}
                         <strong className="font-mono-tabular text-[#F1F5F9]">
                           {sweepResult.best.param_value}
                         </strong>{' '}
-                        (Rendement : {sweepResult.best.total_return_pct >= 0 ? '+' : ''}
+                        ({tr(lang, 'Rendement :', 'Return:')} {sweepResult.best.total_return_pct >= 0 ? '+' : ''}
                         {sweepResult.best.total_return_pct}% | Profit Factor :{' '}
                         {sweepResult.best.profit_factor} | Drawdown : -{sweepResult.best.max_drawdown_pct}%)
                       </div>
@@ -2420,12 +2595,16 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                           );
                           onShowToast(
                             'success',
-                            `Valeur ${sweepResult.best.param_value} appliquée dans l'éditeur.`
+                            tr(
+                              lang,
+                              `Valeur ${sweepResult.best.param_value} appliquée dans l'éditeur.`,
+                              `Value ${sweepResult.best.param_value} applied in editor.`
+                            )
                           );
                         }}
                         className="px-3 py-1 rounded bg-[#10B981] text-[#090D16] font-semibold text-[11px]"
                       >
-                        Appliquer cette valeur
+                        {tr(lang, 'Appliquer cette valeur', 'Apply value')}
                       </button>
                     </div>
                   )}
@@ -2438,9 +2617,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                           <th className="py-2.5 px-3">Trades</th>
                           <th className="py-2.5 px-3">Win Rate</th>
                           <th className="py-2.5 px-3">Profit Factor</th>
-                          <th className="py-2.5 px-3">Drawdown Max</th>
+                          <th className="py-2.5 px-3">{tr(lang, 'Drawdown Max', 'Max Drawdown')}</th>
                           <th className="py-2.5 px-3">Sharpe</th>
-                          <th className="py-2.5 px-3 text-right">Rendement Net</th>
+                          <th className="py-2.5 px-3 text-right">{tr(lang, 'Rendement Net', 'Net Return')}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/[0.05]">
@@ -2479,10 +2658,14 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="font-display text-sm font-semibold text-[#F1F5F9]">
-                    Historique des Expériences Sauvegardées ({savedRuns.length})
+                    {tr(lang, 'Historique des Expériences Sauvegardées', 'Saved Experiments History')} ({savedRuns.length})
                   </h3>
                   <p className="text-xs text-[#94A3B8]">
-                    Rechargez une simulation passée ou épinglez-la comme référence A/B.
+                    {tr(
+                      lang,
+                      'Rechargez une simulation passée ou épinglez-la comme référence A/B.',
+                      'Reload a past simulation or pin it as an A/B baseline.'
+                    )}
                   </p>
                 </div>
               </div>
@@ -2504,7 +2687,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                       </div>
                       <div className="text-[11px] font-mono-tabular text-[#64748B] flex flex-wrap gap-3">
                         <span>
-                          Rendement :{' '}
+                          {tr(lang, 'Rendement :', 'Return:')}{' '}
                           <strong
                             className={
                               (run.metrics?.total_return_pct || 0) >= 0
@@ -2530,7 +2713,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                         className="px-2.5 py-1.5 rounded bg-[#1E293B] hover:bg-[#334155] text-[11px] text-[#F1F5F9] flex items-center gap-1"
                       >
                         <Eye className="w-3 h-3 text-[#10B981]" />
-                        <span>Charger</span>
+                        <span>{tr(lang, 'Charger', 'Load')}</span>
                       </button>
                       <button
                         type="button"
@@ -2538,7 +2721,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                         className="px-2.5 py-1.5 rounded bg-[#1E293B] hover:bg-[#334155] text-[11px] text-[#60A5FA] flex items-center gap-1"
                       >
                         <GitCompare className="w-3 h-3" />
-                        <span>Comparer (A)</span>
+                        <span>{tr(lang, 'Comparer (A)', 'Compare (A)')}</span>
                       </button>
                       <button
                         type="button"
@@ -2550,7 +2733,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                           if (res.runs) setSavedRuns(res.runs);
                         }}
                         className="p-1.5 rounded bg-[#F43F5E]/10 hover:bg-[#F43F5E]/20 text-[#FB7185]"
-                        title="Supprimer cette expérience"
+                        title={tr(lang, 'Supprimer cette expérience', 'Delete this experiment')}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -2559,7 +2742,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 ))}
                 {savedRuns.length === 0 && (
                   <div className="py-8 text-center text-xs text-[#64748B]">
-                    Aucune expérience enregistrée pour le moment.
+                    {tr(lang, 'Aucune expérience enregistrée pour le moment.', 'No saved experiments yet.')}
                   </div>
                 )}
               </div>
@@ -2573,24 +2756,30 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
           <div className="bg-[#111827] border border-white/15 rounded-2xl max-w-md w-full p-6 space-y-4">
             <h3 className="font-display text-base font-bold text-[#F1F5F9]">
-              Sauvegarder la Configuration dans les Presets Bitsure
+              {tr(lang, 'Sauvegarder la Configuration dans les Presets Bitsure', 'Save Configuration to Bitsure Presets')}
             </h3>
             <div className="space-y-3">
               <div>
-                <label className="block text-xs text-[#94A3B8] mb-1">Nom du Preset</label>
+                <label className="block text-xs text-[#94A3B8] mb-1">{tr(lang, 'Nom du Preset', 'Preset Name')}</label>
                 <input
                   type="text"
-                  placeholder="Ex: BTC 15m Haute Confluence v2"
+                  placeholder={tr(lang, 'Ex: BTC 15m Haute Confluence v2', 'e.g. BTC 15m High Confluence v2')}
                   value={presetNameInput}
                   onChange={(e) => setPresetNameInput(e.target.value)}
                   className="w-full px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs text-[#F1F5F9]"
                 />
               </div>
               <div>
-                <label className="block text-xs text-[#94A3B8] mb-1">Notes / Hypothèse de recherche</label>
+                <label className="block text-xs text-[#94A3B8] mb-1">
+                  {tr(lang, 'Notes / Hypothèse de recherche', 'Research Notes / Hypothesis')}
+                </label>
                 <textarea
                   rows={3}
-                  placeholder="Décrivez les règles modifiées et l'objectif de ce preset..."
+                  placeholder={tr(
+                    lang,
+                    "Décrivez les règles modifiées et l'objectif de ce preset...",
+                    'Describe the modified rules and objective of this preset...'
+                  )}
                   value={presetDescInput}
                   onChange={(e) => setPresetDescInput(e.target.value)}
                   className="w-full px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs text-[#F1F5F9]"
@@ -2612,14 +2801,14 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast })
                 onClick={() => setShowSavePresetModal(false)}
                 className="px-4 py-2 rounded-lg bg-[#1E293B] text-xs text-[#94A3B8]"
               >
-                Annuler
+                {tr(lang, 'Annuler', 'Cancel')}
               </button>
               <button
                 type="button"
                 onClick={handleSavePreset}
                 className="px-4 py-2 rounded-lg bg-[#10B981] text-[#090D16] font-semibold text-xs"
               >
-                Enregistrer
+                {tr(lang, 'Enregistrer', 'Save')}
               </button>
             </div>
           </div>
