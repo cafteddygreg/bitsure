@@ -99,23 +99,34 @@ async function createServer() {
   // Proxy /api/* and /auth/* directly to the Python Bitsure Teddy engine on 127.0.0.1:8001
   app.use(['/api', '/auth'], (req, res) => {
     const targetPath = `${req.baseUrl}${req.url}`;
+    const fwdHeaders = { ...req.headers };
+    delete fwdHeaders['accept-encoding'];
+    delete fwdHeaders['connection'];
     const options: http.RequestOptions = {
       hostname: '127.0.0.1',
       port: PYTHON_PORT,
       path: targetPath,
       method: req.method,
       headers: {
-        ...req.headers,
+        ...fwdHeaders,
         host: `127.0.0.1:${PYTHON_PORT}`,
+        connection: 'close',
       },
     };
 
     const proxyReq = http.request(options, (proxyRes) => {
       res.status(proxyRes.statusCode || 200);
       Object.entries(proxyRes.headers).forEach(([k, v]) => {
-        if (v !== undefined) res.setHeader(k, v);
+        const lower = k.toLowerCase();
+        if (v !== undefined && lower !== 'connection' && lower !== 'transfer-encoding') {
+          res.setHeader(k, v);
+        }
       });
       proxyRes.pipe(res, { end: true });
+    });
+
+    proxyReq.setTimeout(55000, () => {
+      proxyReq.destroy(new Error('Délai dépassé sur le moteur Python'));
     });
 
     proxyReq.on('error', (err) => {
@@ -123,7 +134,7 @@ async function createServer() {
       if (!res.headersSent) {
         res.status(502).json({
           ok: false,
-          error: `Python backend connecting (${err.message}). Please retry in a moment.`,
+          error: `Moteur Python temporairement indisponible (${err.message}). Veuillez réessayer.`,
         });
       }
     });

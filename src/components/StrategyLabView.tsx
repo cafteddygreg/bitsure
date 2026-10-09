@@ -412,6 +412,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
   const [symbols, setSymbols] = useState<string[]>([
     'BTCUSDT',
     'ETHUSDT',
+    'XAUUSD',
     'SOLUSDT',
     'BNBUSDT',
     'XRPUSDT',

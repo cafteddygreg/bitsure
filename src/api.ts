@@ -59,26 +59,43 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
     headers['X-CSRF-Token'] = csrf;
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-  let response: Response;
-  try {
-    response = await fetch(path, {
-      ...options,
-      credentials: 'include',
-      headers,
-      signal: options.signal || controller.signal,
-    });
-  } catch (err: any) {
-    clearTimeout(timeoutId);
-    if (err?.name === 'AbortError') {
-      throw new ApiError(`Délai d'attente dépassé sur ${path}`, 504, 'TIMEOUT');
+  const attemptFetch = async (isRetry = false): Promise<Response> => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    try {
+      const res = await fetch(path, {
+        ...options,
+        credentials: 'include',
+        headers,
+        signal: options.signal || controller.signal,
+      });
+      clearTimeout(timeoutId);
+      return res;
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      const rawMsg = String(err?.message || err || '');
+      const isTransientNetworkErr =
+        rawMsg.includes('Load failed') ||
+        rawMsg.includes('Failed to fetch') ||
+        rawMsg.includes('NetworkError');
+      if (!isRetry && isTransientNetworkErr) {
+        await new Promise((r) => setTimeout(r, 400));
+        return attemptFetch(true);
+      }
+      if (err?.name === 'AbortError') {
+        throw new ApiError(`Délai d'attente dépassé sur ${path}`, 504, 'TIMEOUT');
+      }
+      throw new ApiError(
+        isTransientNetworkErr
+          ? `Connexion interrompue lors du chargement (${path}). Veuillez réessayer.`
+          : rawMsg || `Serveur inaccessible (${path})`,
+        503,
+        'NETWORK_ERROR'
+      );
     }
-    throw new ApiError(err?.message || `Serveur inaccessible (${path})`, 503, 'NETWORK_ERROR');
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  };
+
+  const response = await attemptFetch(false);
 
   const data = await response.json().catch(() => ({ ok: false, error: `Erreur HTTP ${response.status}` }));
   if (!response.ok || data.ok === false) {

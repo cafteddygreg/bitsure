@@ -2806,7 +2806,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             if path == "/api/admin/strategy-lab/backtest":
                 import strategy_lab
-                symbol = normalize_symbol(body.get("symbol") or "BTCUSDT")
+                symbol = strategy_lab._normalize_lab_symbol(body.get("symbol") or "BTCUSDT")
                 timeframe = body.get("timeframe") or "15m"
                 trading_style = body.get("trading_style") or "day"
                 start_date = body.get("start_date") or None
@@ -2846,7 +2846,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             if path == "/api/admin/strategy-lab/sweep":
                 import strategy_lab
-                symbol = normalize_symbol(body.get("symbol") or "BTCUSDT")
+                symbol = strategy_lab._normalize_lab_symbol(body.get("symbol") or "BTCUSDT")
                 timeframe = body.get("timeframe") or "15m"
                 trading_style = body.get("trading_style") or "day"
                 start_date = body.get("start_date") or None

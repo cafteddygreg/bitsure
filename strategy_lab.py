@@ -37,6 +37,7 @@ SUPPORTED_LAB_MARKETS = ["futures", "spot"]
 SUPPORTED_LAB_SYMBOLS = [
     "BTCUSDT",
     "ETHUSDT",
+    "XAUUSD",
     "SOLUSDT",
     "BNBUSDT",
     "XRPUSDT",
@@ -45,6 +46,21 @@ SUPPORTED_LAB_SYMBOLS = [
     "AVAXUSDT",
     "LINKUSDT",
 ]
+
+
+def _normalize_lab_symbol(raw_symbol: Optional[str]) -> str:
+    """Normalizes symbols for Strategy Lab (supports documented symbols + extended crypto research pairs)."""
+    s = str(raw_symbol or "BTCUSDT").strip().upper().replace("/", "").replace("-", "")
+    if s in ("XAUUSD", "GOLD", "XAUUSDT", "PAXGUSDT"):
+        return "XAUUSD"
+    if s in SUPPORTED_LAB_SYMBOLS:
+        return s
+    try:
+        return normalize_symbol(s)
+    except Exception:
+        if s.endswith("USDT") and len(s) >= 6:
+            return s
+        return "BTCUSDT"
 
 SUPPORTED_LAB_TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"]
 
@@ -477,8 +493,9 @@ def load_historical_candles(
     4. Falls back to local CSV archive (`/scratch/btc_15m.csv`) only if network is unreachable in sandbox.
     Returns (DataFrame, data_source_label, stats_dict).
     """
-    symbol = normalize_symbol(symbol or "BTCUSDT")
-    market_type = "spot" if str(market_type).lower() == "spot" else "futures"
+    symbol = _normalize_lab_symbol(symbol or "BTCUSDT")
+    binance_query_symbol = "PAXGUSDT" if symbol == "XAUUSD" else symbol
+    market_type = "spot" if (str(market_type).lower() == "spot" or symbol == "XAUUSD") else "futures"
     if timeframe not in SUPPORTED_LAB_TIMEFRAMES:
         timeframe = "15m"
     max_candles = max(80, min(2500, int(max_candles or 800)))
@@ -544,16 +561,16 @@ def load_historical_candles(
             fetch_start_ms = start_ms
 
         import requests
-        if market_type == "futures":
+        if market_type == "futures" and symbol != "XAUUSD":
             endpoints = [
                 ("https://fapi.binance.com/fapi/v1/klines", "Binance USD-M Futures API"),
-                ("https://api.binance.com/api/v3/klines", "Binance Spot API (Fallback)"),
                 ("https://data-api.binance.vision/api/v3/klines", "Binance Vision Archive"),
+                ("https://api.binance.com/api/v3/klines", "Binance Spot API (Fallback)"),
             ]
         else:
             endpoints = [
+                ("https://data-api.binance.vision/api/v3/klines", "Binance Spot Vision Archive"),
                 ("https://api.binance.com/api/v3/klines", "Binance Spot API"),
-                ("https://data-api.binance.vision/api/v3/klines", "Binance Vision Archive"),
                 ("https://fapi.binance.com/fapi/v1/klines", "Binance USD-M Futures API (Fallback)"),
             ]
 
@@ -566,7 +583,7 @@ def load_historical_candles(
                     resp = requests.get(
                         url,
                         params={
-                            "symbol": symbol,
+                            "symbol": binance_query_symbol,
                             "interval": timeframe,
                             "startTime": cursor_ms,
                             "endTime": end_ms,
@@ -686,10 +703,12 @@ def load_historical_candles(
     import asyncio
     try:
         loop = asyncio.new_event_loop()
-        df, src = loop.run_until_complete(
-            DataFetcher.get_instance().get_historical_data(symbol, interval=timeframe, limit=min(500, max_candles))
+        fetched_res = loop.run_until_complete(
+            DataFetcher.get_instance().get_historical_data(symbol, timeframe=timeframe)
         )
         loop.close()
+        df = fetched_res[0] if isinstance(fetched_res, tuple) else fetched_res
+        src = fetched_res[1] if isinstance(fetched_res, tuple) and len(fetched_res) > 1 else "DataFetcher Spot"
         if df is not None and not df.empty:
             if getattr(df.index, "tz", None) is None and hasattr(df.index, "tz_localize"):
                 df.index = df.index.tz_localize("UTC")
@@ -1058,7 +1077,7 @@ def run_backtest_experiment(
         })
 
     # Step 1: Configuration verification
-    symbol = normalize_symbol(symbol or "BTCUSDT")
+    symbol = _normalize_lab_symbol(symbol or "BTCUSDT")
     market_type = "spot" if str(market_type).lower() == "spot" else "futures"
     params = normalize_lab_params(raw_params, style=trading_style)
     if market_type == "spot":
@@ -1934,7 +1953,7 @@ def run_parameter_sweep(
     ) if results else None
     return {
         "market_type": market_type,
-        "symbol": normalize_symbol(symbol),
+        "symbol": _normalize_lab_symbol(symbol),
         "timeframe": timeframe,
         "trading_style": trading_style,
         "param_name": param_name,
@@ -2114,7 +2133,7 @@ def save_lab_preset(admin_user_id: int, payload: Dict[str, Any]) -> Dict[str, An
     now = time.time()
     name = (payload.get("name") or "Stratégie Personnalisée").strip()[:120]
     description = (payload.get("description") or "").strip()[:500]
-    symbol = normalize_symbol(payload.get("symbol") or "BTCUSDT")
+    symbol = _normalize_lab_symbol(payload.get("symbol") or "BTCUSDT")
     timeframe = payload.get("timeframe") or "15m"
     style = payload.get("trading_style") or "day"
     params = normalize_lab_params(payload.get("params"), style=style)
