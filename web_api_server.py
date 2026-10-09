@@ -1705,6 +1705,37 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 except Exception as pub_err:
                     public_status = f"Statut public temporairement indisponible : {pub_err}"
 
+                global_trading_stats = {
+                    "active_auto_users": 0,
+                    "open_trades_count": 0,
+                    "closed_trades_count": 0,
+                    "win_rate": 0.0,
+                    "total_pnl_usdt": 0.0,
+                }
+                global_open_trades = []
+                try:
+                    auto_row = db.execute("SELECT COUNT(*) AS c FROM trading_config WHERE auto_trade = 1").fetchone()
+                    open_rows = db.execute(
+                        "SELECT id, user_id, symbol, direction, quantity, entry_price, sl_price, tp_price, market_type, opened_at FROM trades WHERE status = 'open' ORDER BY opened_at DESC LIMIT 30"
+                    ).fetchall()
+                    global_open_trades = [dict(r) for r in open_rows]
+                    closed_rows = db.execute("SELECT pnl_usdt FROM trades WHERE status = 'closed'").fetchall()
+                    closed_cnt = len(closed_rows)
+                    tot_pnl = sum(float(dict(r).get("pnl_usdt") or 0.0) for r in closed_rows)
+                    wins_cnt = sum(1 for r in closed_rows if float(dict(r).get("pnl_usdt") or 0.0) > 0)
+                    global_trading_stats = {
+                        "active_auto_users": int(dict(auto_row).get("c") or 0) if auto_row else 0,
+                        "open_trades_count": len(global_open_trades),
+                        "closed_trades_count": closed_cnt,
+                        "win_rate": round((wins_cnt / closed_cnt * 100.0) if closed_cnt else 0.0, 1),
+                        "total_pnl_usdt": round(tot_pnl, 2),
+                    }
+                except Exception as gt_err:
+                    logger.warning("Global trading stats fallback: %s", gt_err)
+
+                fetcher = DataFetcher.get_instance()
+                active_data_source = getattr(fetcher, "active_source", None) or "binance"
+
                 self._send_json(200, {
                     "ok": True,
                     "users": users_list,
@@ -1712,6 +1743,9 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     "security_events": sec_events,
                     "log_doctor": doctor_report,
                     "public_status": public_status,
+                    "global_trading_stats": global_trading_stats,
+                    "global_open_trades": global_open_trades,
+                    "active_data_source": active_data_source,
                     "pricing": {
                         "pro_usdt": PLAN_PRICES_USDT.get("pro", 19),
                         "vip_usdt": PLAN_PRICES_USDT.get("vip", 49),
@@ -2551,6 +2585,189 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 question = (body.get("question") or "").strip()
                 report = log_doctor.build_log_diagnostic_report(user_id=user_id, user_question=question or None)
                 self._send_json(200, {"ok": True, "report": report})
+                return
+
+            if path == "/api/admin/operations":
+                op = (body.get("operation") or "").strip().lower()
+                db = get_db()
+                um = UserManager.get_instance()
+                hm = HistoryManager.get_instance()
+
+                if op == "find_memo":
+                    memo = (body.get("memo") or "").strip().upper()
+                    if not memo:
+                        self._send_json(400, {"ok": False, "error": "Veuillez saisir un mémo à rechercher."})
+                        return
+                    found_uid = um.find_user_by_memo(memo)
+                    if found_uid:
+                        self._send_json(200, {
+                            "ok": True,
+                            "found_user_id": found_uid,
+                            "message": f"Mémo {memo} trouvé → Utilisateur #{found_uid}",
+                        })
+                    else:
+                        self._send_json(200, {
+                            "ok": False,
+                            "found_user_id": None,
+                            "message": f"Aucun utilisateur trouvé pour le mémo {memo}.",
+                        })
+                    return
+
+                if op == "switch_api":
+                    target = (body.get("source") or "binance").strip().lower()
+                    if target not in ("binance", "twelve", "real"):
+                        self._send_json(400, {"ok": False, "error": "Source invalide (binance, twelve ou real)."})
+                        return
+                    fetcher = DataFetcher.get_instance()
+                    if getattr(fetcher, "ws", None):
+                        try:
+                            fetcher.ws.close()
+                        except Exception:
+                            pass
+                    if target == "twelve" and hasattr(fetcher, "_start_twelve_ws"):
+                        try:
+                            fetcher._start_twelve_ws()
+                        except Exception:
+                            pass
+                        fetcher.active_source = "twelve"
+                    else:
+                        fetcher.active_source = "binance" if target in ("binance", "real") else target
+                    log_security_event("ADMIN_SWITCH_API", user_id=user_id, details=f"Source de données basculée sur {fetcher.active_source}.")
+                    self._send_json(200, {
+                        "ok": True,
+                        "active_data_source": fetcher.active_source,
+                        "message": f"Source de données marché basculée sur {fetcher.active_source.upper()}.",
+                    })
+                    return
+
+                if op == "clean_waits":
+                    cur = db.execute("DELETE FROM signals WHERE direction = 'WAIT'")
+                    deleted = getattr(cur, "rowcount", 0) or 0
+                    self._send_json(200, {
+                        "ok": True,
+                        "message": f"{deleted} signaux WAIT purgés de la base.",
+                    })
+                    return
+
+                if op == "clear_history":
+                    hm.clear_all_signals()
+                    log_security_event("ADMIN_CLEAR_HISTORY", severity="warning", user_id=user_id, details="Historique des signaux purgé.")
+                    self._send_json(200, {
+                        "ok": True,
+                        "message": "Historique complet des signaux purgé.",
+                    })
+                    return
+
+                if op == "refresh_history":
+                    open_sigs = hm.get_open_signals()
+                    fetcher = DataFetcher.get_instance()
+                    updated_cnt = 0
+                    for s in open_sigs:
+                        try:
+                            sym = normalize_symbol(s.get("symbol") or "BTCUSDT")
+                            live_p = _extract_price_float(run_coro(fetcher.get_realtime_price(sym)), 0.0)
+                            if live_p > 0:
+                                direction = (s.get("direction") or "").upper()
+                                sl = float(s.get("sl") or 0.0)
+                                tp = float(s.get("tp") or 0.0)
+                                if direction == "BUY":
+                                    if tp > 0 and live_p >= tp:
+                                        hm.update_signal_outcome(s["id"], "win", live_p)
+                                        updated_cnt += 1
+                                    elif sl > 0 and live_p <= sl:
+                                        hm.update_signal_outcome(s["id"], "loss", live_p)
+                                        updated_cnt += 1
+                                elif direction == "SELL":
+                                    if tp > 0 and live_p <= tp:
+                                        hm.update_signal_outcome(s["id"], "win", live_p)
+                                        updated_cnt += 1
+                                    elif sl > 0 and live_p >= sl:
+                                        hm.update_signal_outcome(s["id"], "loss", live_p)
+                                        updated_cnt += 1
+                        except Exception:
+                            pass
+                    self._send_json(200, {
+                        "ok": True,
+                        "message": f"Vérification terminée : {updated_cnt} signal/signaux mis à jour sur {len(open_sigs)} ouvert(s).",
+                    })
+                    return
+
+                if op == "export_signals_csv":
+                    import csv
+                    import io
+                    signals = hm.get_recent_signals(1000)
+                    out = io.StringIO()
+                    writer = csv.writer(out)
+                    writer.writerow([
+                        "ID", "User_ID", "Symbole", "Direction", "Entree", "SL", "TP", "Score",
+                        "Timeframe", "Validation", "Statut", "Prix_Resultat", "PnL_Pct", "RR", "Classe_Actif", "Created_At"
+                    ])
+                    for s in signals:
+                        writer.writerow([
+                            s.get("id", ""),
+                            s.get("user_id", ""),
+                            s.get("symbol", ""),
+                            s.get("direction", ""),
+                            s.get("entry_price", ""),
+                            s.get("sl", ""),
+                            s.get("tp", ""),
+                            s.get("score", ""),
+                            s.get("timeframe", ""),
+                            s.get("validation_status", ""),
+                            s.get("status", ""),
+                            s.get("result_price", ""),
+                            s.get("result_pct", ""),
+                            s.get("rr_ratio", ""),
+                            s.get("asset_class", ""),
+                            s.get("created_at", ""),
+                        ])
+                    self._send_json(200, {
+                        "ok": True,
+                        "csv": out.getvalue(),
+                        "count": len(signals),
+                        "filename": f"bitsure_signals_export_{int(time.time())}.csv",
+                        "message": f"{len(signals)} signaux exportés en CSV.",
+                    })
+                    return
+
+                if op == "force_close_trade":
+                    trade_id = int(body.get("trade_id") or 0)
+                    if not trade_id:
+                        self._send_json(400, {"ok": False, "error": "ID du trade requis."})
+                        return
+                    row = db.execute("SELECT user_id, symbol FROM trades WHERE id = %s AND status = 'open'", (trade_id,)).fetchone()
+                    if not row:
+                        self._send_json(404, {"ok": False, "error": f"Position ouverte #{trade_id} introuvable."})
+                        return
+                    t_uid = int(dict(row)["user_id"])
+                    res = position_manager.close_trade_manual(trade_id, t_uid)
+                    log_security_event("ADMIN_FORCE_CLOSE", severity="warning", user_id=user_id, details=f"Force close trade #{trade_id} (user #{t_uid}).")
+                    self._send_json(200, {
+                        "ok": True,
+                        "result": res,
+                        "message": f"Position #{trade_id} ({res.get('symbol')}, User #{t_uid}) fermée de force. PnL: {res.get('pnl_usdt', 0.0):+.2f} USDT.",
+                    })
+                    return
+
+                if op == "db_query":
+                    sql = (body.get("sql") or "").strip()
+                    if not sql:
+                        self._send_json(400, {"ok": False, "error": "Requête SQL vide."})
+                        return
+                    if not sql.upper().lstrip().startswith("SELECT"):
+                        self._send_json(400, {"ok": False, "error": "Par sécurité sur l'interface Web, seules les requêtes SELECT d'inspection sont autorisées."})
+                        return
+                    rows = db.execute(sql).fetchall()
+                    serialized = [dict(r) for r in rows[:50]]
+                    self._send_json(200, {
+                        "ok": True,
+                        "rows": serialized,
+                        "total_rows": len(rows),
+                        "message": f"Requête exécutée ({len(rows)} ligne(s)).",
+                    })
+                    return
+
+                self._send_json(400, {"ok": False, "error": f"Opération admin inconnue : {op}"})
                 return
 
             if path == "/api/admin/strategy-lab/backtest":

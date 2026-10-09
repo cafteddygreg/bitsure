@@ -230,6 +230,10 @@ export function App() {
   const [broadcastTitle, setBroadcastTitle] = useState('');
   const [broadcastBody, setBroadcastBody] = useState('');
   const [adminReplyMap, setAdminReplyMap] = useState<Record<number, string>>({});
+  const [adminMemoSearch, setAdminMemoSearch] = useState('');
+  const [adminFoundMemoUid, setAdminFoundMemoUid] = useState<number | null>(null);
+  const [adminSqlQuery, setAdminSqlQuery] = useState('SELECT user_id, role, account_status, created_at FROM users LIMIT 10');
+  const [adminSqlRows, setAdminSqlRows] = useState<any[] | null>(null);
 
   // Toast feedback banner
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
@@ -4337,7 +4341,7 @@ export function App() {
                 <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
                   <div className="flex items-center justify-between">
                     <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                      {tr(lang, 'Code PIN de Sécurité (4 chiffres)')}
+                      {lang === 'en' ? 'Security PIN Code (4-6 digits)' : 'Code PIN de Sécurité (4 à 6 chiffres)'}
                     </h3>
                     <span className="text-xs font-mono-tabular text-[#10B981]">
                       {user.has_pin ? tr(lang, '● PIN Configuré') : tr(lang, '○ Aucun PIN')}
@@ -4349,7 +4353,7 @@ export function App() {
                         <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Ancien Code PIN')}</label>
                         <input
                           type="password"
-                          maxLength={4}
+                          maxLength={6}
                           value={oldPin}
                           onChange={(e) => setOldPin(e.target.value)}
                           className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
@@ -4358,13 +4362,15 @@ export function App() {
                       </div>
                     )}
                     <div>
-                      <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Nouveau Code PIN (4 chiffres)')}</label>
+                      <label className="block text-[#94A3B8] mb-1">
+                        {lang === 'en' ? 'New Security PIN (4 to 6 digits)' : 'Nouveau Code PIN (4 à 6 chiffres)'}
+                      </label>
                       <input
                         type="password"
-                        maxLength={4}
+                        maxLength={6}
                         value={newPin}
                         onChange={(e) => setNewPin(e.target.value)}
-                        placeholder="1234"
+                        placeholder="123456"
                         className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
                         required
                       />
@@ -4838,6 +4844,26 @@ export function App() {
                                         {tr(lang, 'Valider Pay')}
                                       </button>
                                     )}
+                                    {!u.is_admin && (
+                                      <button
+                                        onClick={() =>
+                                          apiFetch('/api/admin/user-role', {
+                                            method: 'POST',
+                                            body: JSON.stringify({
+                                              target_user_id: u.user_id,
+                                              action: 'delete',
+                                            }),
+                                          }).then((res) => {
+                                            showToast(res.message, 'info');
+                                            loadAdminOverview();
+                                          })
+                                        }
+                                        title={lang === 'en' ? 'Delete user account' : 'Supprimer le compte utilisateur'}
+                                        className="px-2 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/30 text-[#FB7185] rounded text-[10px] inline-flex items-center gap-1"
+                                      >
+                                        <Trash2 className="w-3 h-3" />
+                                      </button>
+                                    )}
                                   </div>
                                 </td>
                               </tr>
@@ -4967,6 +4993,407 @@ export function App() {
                     >
                       {tr(lang, 'Diffuser à tous les comptes')}
                     </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* =========================================================
+                  ADMIN OPERATIONS, SUPPORT INBOX, GLOBAL TRADES & TOOLKIT
+                 ========================================================= */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* 1. Admin Support Tickets Inbox & Reply */}
+                <div className="lg:col-span-6 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-display font-semibold text-base text-[#F1F5F9] flex items-center gap-2">
+                      <MessageSquare className="w-4 h-4 text-[#10B981]" />
+                      <span>
+                        {lang === 'en'
+                          ? 'Support Tickets & User Requests'
+                          : 'Boîte de Réception Support & Demandes Utilisateurs'}
+                      </span>
+                    </h3>
+                    <span className="text-xs font-mono-tabular text-[#64748B]">
+                      {tickets.length} {lang === 'en' ? 'ticket(s)' : 'ticket(s)'}
+                    </span>
+                  </div>
+                  <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+                    {tickets.length === 0 ? (
+                      <div className="text-xs text-[#64748B]">
+                        {lang === 'en' ? 'No support tickets opened yet.' : 'Aucun ticket support ouvert pour le moment.'}
+                      </div>
+                    ) : (
+                      tickets.map((t) => (
+                        <div
+                          key={t.id}
+                          className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-2 text-xs"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <span className="font-semibold text-[#F1F5F9]">{t.subject}</span>
+                              <span className="ml-2 text-[11px] font-mono-tabular text-[#64748B]">
+                                {t.username || `#${t.user_id}`} (UID #{t.user_id})
+                              </span>
+                            </div>
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-mono-tabular uppercase ${
+                                t.status === 'answered'
+                                  ? 'bg-[#10B981]/15 text-[#10B981]'
+                                  : 'bg-[#F59E0B]/15 text-[#F59E0B]'
+                              }`}
+                            >
+                              {t.status}
+                            </span>
+                          </div>
+                          <p className="text-[#94A3B8]">{t.message}</p>
+                          {t.admin_reply && (
+                            <div className="p-2 rounded bg-[#10B981]/10 border border-[#10B981]/30 text-[#34D399]">
+                              <strong>{tr(lang, 'Réponse Admin :')}</strong> {t.admin_reply}
+                            </div>
+                          )}
+                          <div className="flex gap-2 pt-1">
+                            <input
+                              type="text"
+                              value={adminReplyMap[t.id] || ''}
+                              onChange={(e) =>
+                                setAdminReplyMap((prev) => ({ ...prev, [t.id]: e.target.value }))
+                              }
+                              placeholder={
+                                lang === 'en' ? 'Write a reply to this user...' : 'Répondre à cet utilisateur...'
+                              }
+                              className="flex-1 px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded text-xs text-[#F1F5F9]"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const replyText = (adminReplyMap[t.id] || '').trim();
+                                if (!replyText) return;
+                                apiFetch('/api/support/tickets', {
+                                  method: 'POST',
+                                  body: JSON.stringify({
+                                    action: 'reply',
+                                    ticket_id: t.id,
+                                    reply: replyText,
+                                  }),
+                                })
+                                  .then((res) => {
+                                    setAdminReplyMap((prev) => ({ ...prev, [t.id]: '' }));
+                                    showToast(res.message, 'success');
+                                    loadTickets();
+                                  })
+                                  .catch((err) => showToast(err.message, 'error'));
+                              }}
+                              className="px-3 py-1.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded text-xs"
+                            >
+                              {lang === 'en' ? 'Reply' : 'Répondre'}
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. Global AutoTrade Supervision, Memo Finder & Signal Maintenance */}
+                <div className="lg:col-span-6 space-y-6">
+                  {/* Global AutoTrade Stats & Open Trades (/trading_stats, /trades, /forceclose) */}
+                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                        {lang === 'en'
+                          ? 'Global AutoTrade Supervision & Force Close'
+                          : 'Supervision Globale AutoTrade & Clôture Forcée'}
+                      </h3>
+                      <span className="text-[11px] font-mono-tabular text-[#10B981]">
+                        {lang === 'en' ? 'Source:' : 'Source :'}{' '}
+                        {(adminData?.active_data_source || 'binance').toUpperCase()}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs font-mono-tabular">
+                      <div className="p-2.5 rounded-lg bg-[#090D16] border border-white/[0.06]">
+                        <div className="text-[10px] text-[#64748B]">
+                          {lang === 'en' ? 'AutoTrade ON' : 'AutoTrade Actifs'}
+                        </div>
+                        <div className="text-sm font-bold text-[#10B981] mt-0.5">
+                          {adminData?.global_trading_stats?.active_auto_users ?? 0}
+                        </div>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-[#090D16] border border-white/[0.06]">
+                        <div className="text-[10px] text-[#64748B]">
+                          {lang === 'en' ? 'Open Trades' : 'Positions Ouvertes'}
+                        </div>
+                        <div className="text-sm font-bold text-[#F1F5F9] mt-0.5">
+                          {adminData?.global_trading_stats?.open_trades_count ?? 0}
+                        </div>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-[#090D16] border border-white/[0.06]">
+                        <div className="text-[10px] text-[#64748B]">Win Rate</div>
+                        <div className="text-sm font-bold text-[#F1F5F9] mt-0.5">
+                          {adminData?.global_trading_stats?.win_rate ?? 0}%
+                        </div>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-[#090D16] border border-white/[0.06]">
+                        <div className="text-[10px] text-[#64748B]">
+                          {lang === 'en' ? 'Realized PnL' : 'PnL Réalisé'}
+                        </div>
+                        <div
+                          className={`text-sm font-bold mt-0.5 ${
+                            (adminData?.global_trading_stats?.total_pnl_usdt || 0) >= 0
+                              ? 'text-[#10B981]'
+                              : 'text-[#FB7185]'
+                          }`}
+                        >
+                          {(adminData?.global_trading_stats?.total_pnl_usdt || 0) >= 0 ? '+' : ''}
+                          {adminData?.global_trading_stats?.total_pnl_usdt ?? 0} USDT
+                        </div>
+                      </div>
+                    </div>
+
+                    {(adminData?.global_open_trades || []).length > 0 && (
+                      <div className="space-y-2 max-h-44 overflow-y-auto">
+                        {(adminData?.global_open_trades || []).map((gt: any) => (
+                          <div
+                            key={gt.id}
+                            className="p-2.5 rounded-lg bg-[#090D16] border border-white/[0.06] flex items-center justify-between text-xs font-mono-tabular"
+                          >
+                            <div>
+                              <span className="text-[#10B981] font-bold">#{gt.id}</span> • UID #{gt.user_id} •{' '}
+                              <span className="text-[#F1F5F9] font-semibold">{gt.symbol}</span> ({gt.direction}){' '}
+                              qty={gt.quantity} @ {gt.entry_price}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                apiFetch('/api/admin/operations', {
+                                  method: 'POST',
+                                  body: JSON.stringify({
+                                    operation: 'force_close_trade',
+                                    trade_id: gt.id,
+                                  }),
+                                })
+                                  .then((res) => {
+                                    showToast(res.message, 'success');
+                                    loadAdminOverview();
+                                  })
+                                  .catch((err) => showToast(err.message, 'error'))
+                              }
+                              className="px-2.5 py-1 bg-[#F43F5E]/20 hover:bg-[#F43F5E]/30 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[10px] font-semibold"
+                            >
+                              {lang === 'en' ? 'Force Close' : 'Forcer Clôture'}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Data Source Switch, Memo Finder & Signal Maintenance Actions */}
+                    <div className="pt-2 border-t border-white/[0.07] space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <span className="text-[#94A3B8]">
+                          {lang === 'en' ? 'Market Data Source (/switchapi):' : 'Source de données marché (/switchapi) :'}
+                        </span>
+                        <div className="flex gap-1.5">
+                          {(['binance', 'twelve', 'real'] as const).map((src) => (
+                            <button
+                              key={src}
+                              type="button"
+                              onClick={() =>
+                                apiFetch('/api/admin/operations', {
+                                  method: 'POST',
+                                  body: JSON.stringify({ operation: 'switch_api', source: src }),
+                                })
+                                  .then((res) => {
+                                    showToast(res.message, 'success');
+                                    loadAdminOverview();
+                                  })
+                                  .catch((err) => showToast(err.message, 'error'))
+                              }
+                              className={`px-2.5 py-1 rounded text-[11px] font-mono-tabular uppercase border ${
+                                (adminData?.active_data_source || 'binance') === src
+                                  ? 'bg-[#10B981]/20 border-[#10B981] text-[#10B981]'
+                                  : 'bg-[#090D16] border-white/10 text-[#94A3B8] hover:text-[#F1F5F9]'
+                              }`}
+                            >
+                              {src}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Find Memo & Confirm Payment (/find_memo, /confirm_payment) */}
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        <input
+                          type="text"
+                          value={adminMemoSearch}
+                          onChange={(e) => setAdminMemoSearch(e.target.value)}
+                          placeholder={
+                            lang === 'en'
+                              ? 'Search Binance Pay Memo (e.g. TEDDY-PRO-...)'
+                              : 'Rechercher un mémo Binance Pay (ex: TEDDY-PRO-...)'
+                          }
+                          className="flex-1 px-3 py-1.5 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            apiFetch('/api/admin/operations', {
+                              method: 'POST',
+                              body: JSON.stringify({ operation: 'find_memo', memo: adminMemoSearch }),
+                            })
+                              .then((res) => {
+                                setAdminFoundMemoUid(res.found_user_id || null);
+                                showToast(res.message, res.ok ? 'success' : 'info');
+                              })
+                              .catch((err) => showToast(err.message, 'error'))
+                          }
+                          className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-[#F1F5F9] font-semibold"
+                        >
+                          {lang === 'en' ? 'Find Memo' : 'Chercher Mémo'}
+                        </button>
+                        {adminFoundMemoUid && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              apiFetch('/api/admin/user-role', {
+                                method: 'POST',
+                                body: JSON.stringify({
+                                  target_user_id: adminFoundMemoUid,
+                                  action: 'confirm_binance',
+                                }),
+                              }).then((res) => {
+                                showToast(res.message, 'success');
+                                setAdminFoundMemoUid(null);
+                                loadAdminOverview();
+                              })
+                            }
+                            className="px-3 py-1.5 bg-[#10B981] text-[#090D16] font-bold rounded-lg"
+                          >
+                            {lang === 'en'
+                              ? `Confirm PRO #${adminFoundMemoUid}`
+                              : `Activer PRO #${adminFoundMemoUid}`}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Signal History Maintenance Buttons (/exportsignals, /refreshhistory, /cleanwaits, /clearhistory) */}
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            apiFetch('/api/admin/operations', {
+                              method: 'POST',
+                              body: JSON.stringify({ operation: 'export_signals_csv' }),
+                            })
+                              .then((res) => {
+                                if (res.csv) {
+                                  const blob = new Blob([res.csv], { type: 'text/csv;charset=utf-8;' });
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement('a');
+                                  a.href = url;
+                                  a.download = res.filename || 'signals_export.csv';
+                                  document.body.appendChild(a);
+                                  a.click();
+                                  document.body.removeChild(a);
+                                  URL.revokeObjectURL(url);
+                                }
+                                showToast(res.message, 'success');
+                              })
+                              .catch((err) => showToast(err.message, 'error'))
+                          }
+                          className="px-3 py-1.5 bg-[#10B981]/15 hover:bg-[#10B981]/25 border border-[#10B981]/40 text-[#10B981] rounded-lg text-xs font-semibold"
+                        >
+                          {lang === 'en' ? 'Export Signals CSV' : 'Exporter Signaux CSV'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            apiFetch('/api/admin/operations', {
+                              method: 'POST',
+                              body: JSON.stringify({ operation: 'refresh_history' }),
+                            })
+                              .then((res) => {
+                                showToast(res.message, 'success');
+                                loadHistoryAndJournal();
+                              })
+                              .catch((err) => showToast(err.message, 'error'))
+                          }
+                          className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] rounded-lg text-xs"
+                        >
+                          {lang === 'en' ? 'Refresh Signal Outcomes' : 'Vérifier Issue Signaux'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            apiFetch('/api/admin/operations', {
+                              method: 'POST',
+                              body: JSON.stringify({ operation: 'clean_waits' }),
+                            })
+                              .then((res) => {
+                                showToast(res.message, 'info');
+                                loadHistoryAndJournal();
+                              })
+                              .catch((err) => showToast(err.message, 'error'))
+                          }
+                          className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#94A3B8] hover:text-[#F1F5F9] rounded-lg text-xs"
+                        >
+                          {lang === 'en' ? 'Purge WAIT Signals' : 'Purger Signaux WAIT'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            apiFetch('/api/admin/operations', {
+                              method: 'POST',
+                              body: JSON.stringify({ operation: 'clear_history' }),
+                            })
+                              .then((res) => {
+                                showToast(res.message, 'info');
+                                loadHistoryAndJournal();
+                              })
+                              .catch((err) => showToast(err.message, 'error'))
+                          }
+                          className="px-3 py-1.5 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/30 text-[#FB7185] rounded-lg text-xs"
+                        >
+                          {lang === 'en' ? 'Clear Signal History' : 'Vider Historique Signaux'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* SQL Inspector (/dbquery) */}
+                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-3">
+                    <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                      {lang === 'en' ? 'Database Inspector (/dbquery SELECT)' : 'Inspecteur Base de Données (/dbquery SELECT)'}
+                    </h3>
+                    <div className="flex gap-2 text-xs">
+                      <input
+                        type="text"
+                        value={adminSqlQuery}
+                        onChange={(e) => setAdminSqlQuery(e.target.value)}
+                        className="flex-1 px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          apiFetch('/api/admin/operations', {
+                            method: 'POST',
+                            body: JSON.stringify({ operation: 'db_query', sql: adminSqlQuery }),
+                          })
+                            .then((res) => {
+                              setAdminSqlRows(res.rows || []);
+                              showToast(res.message, 'success');
+                            })
+                            .catch((err) => showToast(err.message, 'error'))
+                        }
+                        className="px-3.5 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg"
+                      >
+                        {lang === 'en' ? 'Run SQL' : 'Exécuter'}
+                      </button>
+                    </div>
+                    {adminSqlRows && (
+                      <pre className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] text-[11px] font-mono-tabular text-[#94A3B8] max-h-48 overflow-auto">
+                        {JSON.stringify(adminSqlRows, null, 2)}
+                      </pre>
+                    )}
                   </div>
                 </div>
               </div>
