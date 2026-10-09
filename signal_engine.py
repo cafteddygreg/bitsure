@@ -112,8 +112,10 @@ class SignalEngine:
         return "generic", DEFAULT_ASSET_RULE.copy()
 
     @staticmethod
-    def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+    def _normalize_df(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
         """Normalise les noms de colonnes en Capitalize (Open, High, Low, Close, Volume)."""
+        if df is None:
+            return None
         rename = {}
         for c in df.columns:
             if c.lower() in ["open", "high", "low", "close", "volume"]:
