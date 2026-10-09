@@ -1170,6 +1170,8 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     content, mime_type = asset
                     self.send_response(200)
                     self.send_header("Content-Type", mime_type)
+                    if clean_p if 'clean_p' in locals() else path in ("", "/", "/index.html"):
+                        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                     self.send_header("Content-Length", str(len(content)))
                     self.end_headers()
                     self.wfile.write(content)
@@ -1177,12 +1179,32 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 logger.warning("Embedded bundle fallback error: %s", e)
 
+            # Fallback if browser requested an older hashed /assets/index-*.js or /assets/index-*.css
+            if path.startswith("/assets/") and os.path.isdir(os.path.join(dist_dir, "assets")):
+                ext = ".js" if path.endswith(".js") else (".css" if path.endswith(".css") else "")
+                if ext:
+                    for fname in os.listdir(os.path.join(dist_dir, "assets")):
+                        if fname.endswith(ext):
+                            fallback_asset = os.path.join(dist_dir, "assets", fname)
+                            with open(fallback_asset, "rb") as f:
+                                content = f.read()
+                            self.send_response(200)
+                            self.send_header(
+                                "Content-Type",
+                                "application/javascript; charset=utf-8" if ext == ".js" else "text/css; charset=utf-8",
+                            )
+                            self.send_header("Content-Length", str(len(content)))
+                            self.end_headers()
+                            self.wfile.write(content)
+                            return
+
             index_candidate = os.path.join(dist_dir, "index.html")
             if not path.startswith("/assets/") and os.path.isfile(index_candidate):
                 with open(index_candidate, "rb") as f:
                     content = f.read()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)
