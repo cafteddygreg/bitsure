@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import './index.css';
-import { apiFetch, setStoredSession } from './api';
+import { apiFetch, setStoredSession, clearStoredSession, ApiError } from './api';
 import {
   UserProfile,
   MarketAnalysis,
@@ -11,9 +11,11 @@ import {
   TradingConfigState,
   SupportTicket,
   WebNotification,
+  SecurityEvent,
 } from './types';
 import { PriceChart } from './components/PriceChart';
 import { LandingPage } from './components/LandingPage';
+import { StrategyLabView } from './components/StrategyLabView';
 import {
   Activity,
   AlertTriangle,
@@ -25,6 +27,7 @@ import {
   Compass,
   CreditCard,
   DollarSign,
+  FlaskConical,
   Key,
   Layers,
   Lock,
@@ -61,6 +64,7 @@ type ActiveTab =
   | 'safety'
   | 'history'
   | 'account'
+  | 'strategy_lab'
   | 'admin';
 
 const SYMBOLS = [
@@ -85,11 +89,25 @@ export function App() {
 
   // Auth & User State
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [authModal, setAuthModal] = useState<'login' | 'register' | null>(null);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authName, setAuthName] = useState('');
   const [authTelegram, setAuthTelegram] = useState('');
+  const [googleOAuthEnabled, setGoogleOAuthEnabled] = useState(false);
+
+  // Admin Quota Editor State
+  const [editingQuotasUid, setEditingQuotasUid] = useState<number | null>(null);
+  const [quotaForm, setQuotaForm] = useState({
+    daily_analyses: 25,
+    daily_scans: 15,
+    max_alerts: 10,
+    max_paper_trades: 30,
+  });
+  const [adminUserFilter, setAdminUserFilter] = useState<'ALL' | 'PENDING_APPROVAL' | 'APPROVED' | 'SUSPENDED' | 'REJECTED'>('ALL');
 
   // Market Intelligence State
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
@@ -197,7 +215,20 @@ export function App() {
   const loadUserAndCoreData = useCallback(async () => {
     try {
       const meRes = await apiFetch('/api/auth/me');
-      setUser(meRes.user);
+      const currentUser: UserProfile = meRes.user;
+      if (currentUser?.csrf_token) {
+        localStorage.setItem('bitsure_csrf_token', currentUser.csrf_token);
+      }
+      if (currentUser?.google_oauth_enabled !== undefined) {
+        setGoogleOAuthEnabled(Boolean(currentUser.google_oauth_enabled));
+      }
+      setUser(currentUser);
+      setAuthChecking(false);
+
+      // Only load protected terminal data if the account is APPROVED
+      if (!currentUser.approved && currentUser.account_status !== 'APPROVED' && !currentUser.is_admin) {
+        return;
+      }
 
       const [paperRes, alertsRes, cfgRes, notifRes] = await Promise.all([
         apiFetch('/api/paper/overview'),
@@ -215,7 +246,10 @@ export function App() {
       setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
       setNotifications(notifRes.notifications || []);
     } catch (err: any) {
-      console.error('Initial data load error:', err);
+      setAuthChecking(false);
+      if (err instanceof ApiError && err.status === 401) {
+        setUser(null);
+      }
     }
   }, []);
 
@@ -262,7 +296,7 @@ export function App() {
       if (!silent) setLoadingAnalysis(true);
       try {
         const res = await apiFetch(
-          `/api/market/analyze?symbol=${encodeURIComponent(sym)}&timeframe=${encodeURIComponent(tf)}&style=${encodeURIComponent(st)}&lang=${user?.lang || 'fr'}`
+          `/api/market/analyze?symbol=${encodeURIComponent(sym)}&timeframe=${encodeURIComponent(tf)}&style=${encodeURIComponent(st)}&lang=${user?.lang || 'fr'}&silent=${silent ? '1' : '0'}`
         );
         const ana: MarketAnalysis = res.analysis;
         setAnalysis(ana);
@@ -303,7 +337,7 @@ export function App() {
       if (showFeedback) setLoadingScan(true);
       try {
         const res = await apiFetch(
-          `/api/market/multi-scan?timeframe=${encodeURIComponent(tf)}&style=${encodeURIComponent(st)}&lang=${user?.lang || 'fr'}&record=1`
+          `/api/market/multi-scan?timeframe=${encodeURIComponent(tf)}&style=${encodeURIComponent(st)}&lang=${user?.lang || 'fr'}&record=${showFeedback ? '1' : '0'}`
         );
         const scans: MarketAnalysis[] = res.scans || [];
         setMultiScans(scans);
@@ -467,11 +501,39 @@ export function App() {
     };
   }, [updateLiveTick]);
 
-  // 2. Initial bootstrap + continuous live synchronization (Tickers 2.5s, Positions 5s, Candle/Indicators 8s, Multi-Scan 15s)
+  const isApprovedUser = Boolean(user && (user.approved || user.account_status === 'APPROVED' || user.is_admin));
+
+  // Initial session check on mount + Google OAuth postMessage listener
   useEffect(() => {
     loadUserAndCoreData();
-    runAnalysis('BTCUSDT', '1h', 'day', false);
-    runMultiScan('1h', 'day', false);
+
+    const handleOAuthMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || typeof data !== 'object') return;
+      if (data.type === 'OAUTH_AUTH_SUCCESS') {
+        if (data.token) {
+          setStoredSession(data.token, data.csrf_token || '');
+        }
+        setAuthModal(null);
+        setAuthError(null);
+        loadUserAndCoreData();
+        showToast('Authentification Google réussie.', 'success');
+      } else if (data.type === 'OAUTH_AUTH_ERROR') {
+        setAuthError(data.error || 'Échec de la connexion avec Google.');
+        showToast(data.error || 'Échec de la connexion avec Google.', 'error');
+      }
+    };
+
+    window.addEventListener('message', handleOAuthMessage);
+    return () => window.removeEventListener('message', handleOAuthMessage);
+  }, [loadUserAndCoreData, showToast]);
+
+  // 2. Continuous live synchronization ONLY when user is authenticated & APPROVED
+  useEffect(() => {
+    if (!isApprovedUser) return;
+
+    runAnalysis(selectedSymbol, selectedTimeframe, selectedStyle, true);
+    runMultiScan(selectedTimeframe, selectedStyle, false);
 
     // Fetch backend tickers (covers XAUUSD + fallback for BTCUSDT/ETHUSDT) every 2.5s
     const fetchBackendTickers = () => {
@@ -516,10 +578,11 @@ export function App() {
       clearInterval(tickerInterval);
       clearInterval(syncPositionsInterval);
     };
-  }, [loadUserAndCoreData, updateLiveTick]);
+  }, [isApprovedUser, updateLiveTick]);
 
-  // 3. Continuous silent refresh of active symbol analysis (every 8s) and global multi-scan (every 15s)
+  // 3. Continuous silent refresh of active symbol analysis (every 8s) and global multi-scan (every 15s) when APPROVED
   useEffect(() => {
+    if (!isApprovedUser) return;
     const analysisTimer = setInterval(() => {
       runAnalysis(selectedSymbol, selectedTimeframe, selectedStyle, true);
     }, 8000);
@@ -532,11 +595,11 @@ export function App() {
       clearInterval(analysisTimer);
       clearInterval(scanTimer);
     };
-  }, [selectedSymbol, selectedTimeframe, selectedStyle, runAnalysis, runMultiScan]);
+  }, [isApprovedUser, selectedSymbol, selectedTimeframe, selectedStyle, runAnalysis, runMultiScan]);
 
   // 4. Keep Live Binance Account & Open Orders refreshed every 6s when on Safety tab
   useEffect(() => {
-    if (activeTab !== 'safety') return;
+    if (!isApprovedUser || activeTab !== 'safety') return;
     const accTimer = setInterval(() => {
       apiFetch('/api/trading/account')
         .then((accRes) => {
@@ -548,9 +611,10 @@ export function App() {
         .catch(() => {});
     }, 6000);
     return () => clearInterval(accTimer);
-  }, [activeTab]);
+  }, [isApprovedUser, activeTab]);
 
   useEffect(() => {
+    if (!isApprovedUser) return;
     if (activeTab === 'admin' && user && !user.is_admin && user.role !== 'admin') {
       setActiveTab('intelligence');
       return;
@@ -562,31 +626,73 @@ export function App() {
       loadAdminOverview();
       loadTickets();
     }
-  }, [activeTab, user, loadLiveAccountAndOrders, loadHistoryAndJournal, loadTickets, loadAdminOverview]);
+  }, [isApprovedUser, activeTab, user, loadLiveAccountAndOrders, loadHistoryAndJournal, loadTickets, loadAdminOverview]);
 
   // Handlers
-  const handleAuthSubmit = async (e: React.FormEvent) => {
+  const handleAuthSubmit = async (e: React.FormEvent, modeOverride?: 'login' | 'register') => {
     e.preventDefault();
+    setAuthError(null);
+    setAuthSubmitting(true);
+    const activeMode = modeOverride || authModal || 'login';
     try {
-      const endpoint = authModal === 'login' ? '/api/auth/login' : '/api/auth/register';
+      const endpoint = activeMode === 'login' ? '/api/auth/login' : '/api/auth/register';
       const res = await apiFetch(endpoint, {
         method: 'POST',
         body: JSON.stringify({
-          email: authEmail,
+          email: authEmail.trim(),
           password: authPassword,
-          display_name: authName,
-          telegram_handle: authTelegram,
+          display_name: authName.trim(),
+          telegram_handle: authTelegram.trim(),
         }),
       });
-      setStoredSession(res.token, res.user.user_id);
+      setStoredSession(res.token, res.csrf_token || res.user?.csrf_token || '');
       setUser(res.user);
       setAuthModal(null);
+      setAuthPassword('');
       setViewMode('workspace');
       await loadUserAndCoreData();
-      showToast(`Bienvenue sur Bitsure Teddy, ${res.user.display_name}`, 'success');
+      showToast(
+        res.message || `Bienvenue sur Bitsure Teddy, ${res.user.display_name}`,
+        res.user.approved ? 'success' : 'info'
+      );
     } catch (err: any) {
-      showToast(err.message, 'error');
+      setAuthError(err.message || 'Erreur lors de la connexion.');
+      showToast(err.message || 'Erreur lors de la connexion.', 'error');
+    } finally {
+      setAuthSubmitting(false);
     }
+  };
+
+  const handleGoogleLogin = async () => {
+    setAuthError(null);
+    try {
+      const origin = window.location.origin;
+      const res = await apiFetch(`/api/auth/google/url?origin=${encodeURIComponent(origin)}`);
+      if (res.url) {
+        window.location.href = res.url;
+      }
+    } catch (err: any) {
+      setAuthError(err.message || 'Connexion Google indisponible.');
+      showToast(err.message || 'Connexion Google indisponible.', 'error');
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await apiFetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // ignore network error on logout
+    }
+    clearStoredSession();
+    setUser(null);
+    setAdminData(null);
+    setPaperStats(null);
+    setOpenPaper([]);
+    setClosedPaper([]);
+    setAlerts([]);
+    setTradingCfg(null);
+    setAuthModal('login');
+    showToast('Vous êtes déconnecté.', 'info');
   };
 
   const handleOpenPaperOrder = async (e: React.FormEvent) => {
@@ -858,83 +964,374 @@ export function App() {
     }
   };
 
+  const authFormModal = (mode: 'login' | 'register', isFullPage = false) => (
+    <div
+      className={
+        isFullPage
+          ? 'bg-[#111827] border border-white/15 rounded-2xl max-w-md w-full p-6 sm:p-8 space-y-5 shadow-2xl'
+          : 'bg-[#111827] border border-white/15 rounded-xl max-w-md w-full p-6 space-y-5'
+      }
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-[#10B981]/15 border border-[#10B981]/40 flex items-center justify-center text-[#10B981] font-display font-bold">
+            B
+          </div>
+          <div>
+            <h3 className="font-display text-base sm:text-lg font-bold text-[#F1F5F9]">
+              {mode === 'login' ? 'Connexion Bitsure Teddy' : 'Créer un compte Bitsure Teddy'}
+            </h3>
+            <p className="text-[11px] text-[#64748B]">
+              {mode === 'login'
+                ? 'Accès sécurisé au terminal quantitatif'
+                : 'Inscription soumise à validation administrateur'}
+            </p>
+          </div>
+        </div>
+        {!isFullPage && (
+          <button
+            type="button"
+            onClick={() => {
+              setAuthModal(null);
+              setAuthError(null);
+            }}
+            className="text-[#64748B] hover:text-[#F1F5F9]"
+          >
+            <XCircle className="w-5 h-5" />
+          </button>
+        )}
+      </div>
+
+      {/* Mode Switch Tabs */}
+      <div className="grid grid-cols-2 gap-1 p-1 bg-[#090D16] border border-white/10 rounded-lg text-xs">
+        <button
+          type="button"
+          onClick={() => {
+            setAuthModal('login');
+            setAuthError(null);
+          }}
+          className={`py-2 rounded-md font-semibold transition-colors ${
+            mode === 'login' ? 'bg-[#10B981] text-[#090D16]' : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+          }`}
+        >
+          Connexion
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setAuthModal('register');
+            setAuthError(null);
+          }}
+          className={`py-2 rounded-md font-semibold transition-colors ${
+            mode === 'register' ? 'bg-[#10B981] text-[#090D16]' : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+          }`}
+        >
+          Inscription
+        </button>
+      </div>
+
+      {authError && (
+        <div className="p-3 rounded-lg bg-[#F43F5E]/15 border border-[#F43F5E]/40 text-xs text-[#FB7185] flex items-start gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>{authError}</span>
+        </div>
+      )}
+
+      <form onSubmit={(e) => handleAuthSubmit(e, mode)} className="space-y-3.5 text-sm">
+        {mode === 'register' && (
+          <>
+            <div>
+              <label className="block text-xs text-[#94A3B8] mb-1">Nom ou Pseudonyme</label>
+              <input
+                type="text"
+                value={authName}
+                onChange={(e) => setAuthName(e.target.value)}
+                placeholder="Votre nom ou pseudo"
+                className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-[#94A3B8] mb-1">Identifiant Telegram (optionnel)</label>
+              <input
+                type="text"
+                value={authTelegram}
+                onChange={(e) => setAuthTelegram(e.target.value)}
+                placeholder="@votre_pseudo"
+                className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+              />
+            </div>
+          </>
+        )}
+        <div>
+          <label className="block text-xs text-[#94A3B8] mb-1">Adresse Email</label>
+          <input
+            type="email"
+            value={authEmail}
+            onChange={(e) => setAuthEmail(e.target.value)}
+            placeholder="votre@email.com"
+            className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+            required
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-[#94A3B8] mb-1">
+            Mot de passe {mode === 'register' && <span className="text-[#64748B]">(min. 8 caractères)</span>}
+          </label>
+          <input
+            type="password"
+            value={authPassword}
+            onChange={(e) => setAuthPassword(e.target.value)}
+            placeholder="••••••••"
+            minLength={mode === 'register' ? 8 : 1}
+            className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+            required
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={authSubmitting}
+          className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-semibold rounded-lg transition-colors"
+        >
+          {authSubmitting
+            ? 'Vérification en cours...'
+            : mode === 'login'
+            ? 'Se connecter'
+            : "Soumettre ma demande d'accès"}
+        </button>
+      </form>
+
+      <div className="relative flex py-1 items-center">
+        <div className="flex-grow border-t border-white/10" />
+        <span className="flex-shrink mx-3 text-[11px] text-[#64748B] uppercase">ou</span>
+        <div className="flex-grow border-t border-white/10" />
+      </div>
+
+      <button
+        type="button"
+        onClick={handleGoogleLogin}
+        className="w-full py-2.5 px-4 bg-[#1E293B] hover:bg-[#334155] border border-white/15 text-[#F1F5F9] text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
+      >
+        <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            fill="#4285F4"
+            d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"
+          />
+          <path
+            fill="#34A853"
+            d="M12 24c3.3 0 6.08-1.09 8.1-2.96l-3.88-3.05c-1.08.72-2.45 1.16-4.22 1.16-3.24 0-5.99-2.19-6.97-5.14H1.02v3.14C3.03 21.14 7.21 24 12 24z"
+          />
+          <path
+            fill="#FBBC05"
+            d="M5.03 14.01c-.25-.72-.39-1.5-.39-2.31s.14-1.59.39-2.31V6.25H1.02C.37 7.54 0 9.01 0 11.7s.37 4.16 1.02 5.45l4.01-3.14z"
+          />
+          <path
+            fill="#EA4335"
+            d="M12 4.75c1.8 0 3.41.62 4.68 1.84l3.51-3.51C18.07 1.19 15.3 0 12 0 7.21 0 3.03 2.86 1.02 6.25l4.01 3.14c.98-2.95 3.73-5.14 6.97-5.14z"
+          />
+        </svg>
+        <span>Continuer avec Google</span>
+      </button>
+
+      {mode === 'register' && (
+        <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] text-[11px] text-[#94A3B8] leading-relaxed">
+          <strong className="text-[#10B981]">Sécurité & Validation :</strong> Toute nouvelle inscription est placée en
+          statut <code className="text-[#F59E0B]">PENDING_APPROVAL</code> jusqu&apos;à son approbation par
+          l&apos;administrateur Bitsure.
+        </div>
+      )}
+    </div>
+  );
+
   if (viewMode === 'landing') {
     return (
       <>
         <LandingPage
-          onEnterWorkspace={() => setViewMode('workspace')}
-          onOpenAuthModal={(m) => setAuthModal(m)}
+          onEnterWorkspace={() => {
+            if (user) {
+              setViewMode('workspace');
+            } else {
+              setAuthModal('login');
+            }
+          }}
+          onOpenAuthModal={(m) => {
+            setAuthError(null);
+            setAuthModal(m);
+          }}
         />
         {authModal && (
           <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="bg-[#111827] border border-white/15 rounded-xl max-w-md w-full p-6 space-y-5">
-              <div className="flex items-center justify-between">
-                <h3 className="font-display text-lg font-bold text-[#F1F5F9]">
-                  {authModal === 'login' ? 'Connexion Bitsure Teddy' : 'Créer un compte Bitsure Teddy'}
-                </h3>
-                <button onClick={() => setAuthModal(null)} className="text-[#64748B] hover:text-[#F1F5F9]">
-                  <XCircle className="w-5 h-5" />
-                </button>
-              </div>
-              <form onSubmit={handleAuthSubmit} className="space-y-3.5 text-sm">
-                {authModal === 'register' && (
-                  <>
-                    <div>
-                      <label className="block text-xs text-[#94A3B8] mb-1">Nom ou Pseudonyme</label>
-                      <input
-                        type="text"
-                        value={authName}
-                        onChange={(e) => setAuthName(e.target.value)}
-                        placeholder="Alex Quant"
-                        className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-[#94A3B8] mb-1">Identifiant Telegram (optionnel)</label>
-                      <input
-                        type="text"
-                        value={authTelegram}
-                        onChange={(e) => setAuthTelegram(e.target.value)}
-                        placeholder="@votre_pseudo"
-                        className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
-                      />
-                    </div>
-                  </>
-                )}
-                <div>
-                  <label className="block text-xs text-[#94A3B8] mb-1">Adresse Email</label>
-                  <input
-                    type="email"
-                    value={authEmail}
-                    onChange={(e) => setAuthEmail(e.target.value)}
-                    placeholder="pro@bitsure.io"
-                    className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-[#94A3B8] mb-1">Mot de passe</label>
-                  <input
-                    type="password"
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
-                    required
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors"
-                >
-                  {authModal === 'login' ? 'Se connecter' : 'Activer mon compte'}
-                </button>
-              </form>
-            </div>
+            {authFormModal(authModal, false)}
           </div>
         )}
       </>
+    );
+  }
+
+  // Loading state while verifying server session
+  if (authChecking) {
+    return (
+      <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex items-center justify-center p-6">
+        <div className="flex flex-col items-center gap-3">
+          <RefreshCw className="w-6 h-6 text-[#10B981] animate-spin" />
+          <p className="text-xs font-mono-tabular text-[#94A3B8]">Vérification sécurisée de votre session...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Strict Authentication Gate: Unauthenticated visitors must log in or register
+  if (!user) {
+    const activeAuthMode = authModal || 'login';
+    return (
+      <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex flex-col justify-between p-4 sm:p-8">
+        <header className="max-w-6xl w-full mx-auto flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setViewMode('landing')}
+            className="flex items-center gap-2.5 text-left"
+          >
+            <div className="w-8 h-8 rounded-lg bg-[#10B981]/15 border border-[#10B981]/40 flex items-center justify-center text-[#10B981] font-display font-bold">
+              B
+            </div>
+            <div>
+              <div className="font-display font-bold text-sm tracking-tight text-[#F1F5F9]">BITSURE TEDDY</div>
+              <div className="text-[10px] font-mono-tabular text-[#64748B]">TERMINAL QUANTITATIF PROTÉGÉ</div>
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('landing')}
+            className="px-3 py-1.5 rounded-lg bg-[#111827] border border-white/10 text-xs text-[#94A3B8] hover:text-[#F1F5F9]"
+          >
+            Présentation & Tarifs
+          </button>
+        </header>
+
+        <div className="flex-1 flex items-center justify-center py-8">
+          {authFormModal(activeAuthMode, true)}
+        </div>
+
+        <footer className="text-center text-[11px] text-[#64748B] font-mono-tabular">
+          Bitsure Teddy • Authentification serveur obligatoire • Protection des accès & quotas actifs
+        </footer>
+      </div>
+    );
+  }
+
+  // Mandatory Account Approval Gate: PENDING_APPROVAL, REJECTED, or SUSPENDED accounts cannot access the terminal
+  if (!isApprovedUser) {
+    const status = user.account_status || 'PENDING_APPROVAL';
+    const isRejected = status === 'REJECTED';
+    const isSuspended = status === 'SUSPENDED';
+
+    return (
+      <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex flex-col justify-between p-4 sm:p-8">
+        <header className="max-w-4xl w-full mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-[#10B981]/15 border border-[#10B981]/40 flex items-center justify-center text-[#10B981] font-display font-bold">
+              B
+            </div>
+            <div>
+              <div className="font-display font-bold text-sm tracking-tight text-[#F1F5F9]">BITSURE TEDDY</div>
+              <div className="text-[10px] font-mono-tabular text-[#64748B]">CONTRÔLE D&apos;ACCÈS</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => loadUserAndCoreData()}
+              className="px-3 py-1.5 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-xs text-[#F1F5F9] flex items-center gap-1.5"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Vérifier mon statut</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="px-3 py-1.5 rounded-lg bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-xs text-[#FB7185] flex items-center gap-1.5"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Déconnexion</span>
+            </button>
+          </div>
+        </header>
+
+        <div className="flex-1 flex items-center justify-center py-8">
+          <div className="bg-[#111827] border border-white/15 rounded-2xl max-w-lg w-full p-6 sm:p-8 space-y-5 text-center">
+            <div
+              className={`w-14 h-14 rounded-2xl mx-auto flex items-center justify-center border ${
+                isRejected || isSuspended
+                  ? 'bg-[#F43F5E]/15 border-[#F43F5E]/40 text-[#FB7185]'
+                  : 'bg-[#F59E0B]/15 border-[#F59E0B]/40 text-[#F59E0B]'
+              }`}
+            >
+              {isRejected || isSuspended ? <ShieldAlert className="w-7 h-7" /> : <Clock className="w-7 h-7" />}
+            </div>
+
+            <div className="space-y-2">
+              <span
+                className={`inline-block px-2.5 py-0.5 rounded text-[11px] font-mono-tabular font-bold uppercase border ${
+                  isRejected || isSuspended
+                    ? 'bg-[#F43F5E]/15 border-[#F43F5E]/40 text-[#FB7185]'
+                    : 'bg-[#F59E0B]/15 border-[#F59E0B]/40 text-[#F59E0B]'
+                }`}
+              >
+                Statut : {status}
+              </span>
+              <h2 className="font-display text-xl font-bold text-[#F1F5F9]">
+                {isRejected
+                  ? "Demande d'accès refusée"
+                  : isSuspended
+                  ? 'Compte suspendu'
+                  : "Compte en attente d'approbation"}
+              </h2>
+              <p className="text-xs sm:text-sm text-[#94A3B8] leading-relaxed">
+                {isRejected
+                  ? "Votre demande d'accès à Bitsure Teddy a été refusée par l'administrateur. Vous ne pouvez pas accéder aux fonctionnalités d'analyse ou de trading."
+                  : isSuspended
+                  ? "Votre compte a été temporairement suspendu par l'administrateur. Contactez le support Bitsure pour plus d'informations."
+                  : "Votre inscription a bien été enregistrée. Par mesure de sécurité, l'accès aux analyses, scans, alertes et outils de trading est bloqué tant que l'administrateur n'a pas approuvé votre compte."}
+              </p>
+            </div>
+
+            <div className="p-4 rounded-xl bg-[#090D16] border border-white/[0.07] text-left text-xs font-mono-tabular space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-[#64748B]">Compte :</span>
+                <span className="text-[#F1F5F9]">{user.email}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[#64748B]">Nom :</span>
+                <span className="text-[#F1F5F9]">{user.display_name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[#64748B]">ID Utilisateur :</span>
+                <span className="text-[#94A3B8]">#{user.user_id}</span>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => loadUserAndCoreData()}
+                className="flex-1 py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>Actualiser mon statut</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="flex-1 py-2.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Se déconnecter</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div />
+      </div>
     );
   }
 
@@ -956,7 +1353,12 @@ export function App() {
     },
     { id: 'history', label: 'Historique & Journal', icon: BookOpen },
     { id: 'account', label: 'Compte, Plans & PIN', icon: CreditCard },
-    ...(isAdminUser ? [{ id: 'admin', label: 'Admin & Log Doctor', icon: Terminal }] : []),
+    ...(isAdminUser
+      ? [
+          { id: 'strategy_lab', label: 'Strategy Lab (Backtest)', icon: FlaskConical },
+          { id: 'admin', label: 'Admin & Log Doctor', icon: Terminal },
+        ]
+      : []),
   ];
 
   return (
@@ -1135,15 +1537,25 @@ export function App() {
             </div>
           )}
 
-          <button
-            onClick={() => {
-              setViewMode('landing');
-              setMobileMenuOpen(false);
-            }}
-            className="w-full py-1.5 text-xs text-[#94A3B8] hover:text-[#F1F5F9] border border-white/10 rounded hover:bg-white/[0.04] transition-colors"
-          >
-            Présentation & Tarifs
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                setViewMode('landing');
+                setMobileMenuOpen(false);
+              }}
+              className="flex-1 py-1.5 text-xs text-[#94A3B8] hover:text-[#F1F5F9] border border-white/10 rounded hover:bg-white/[0.04] transition-colors"
+            >
+              Présentation
+            </button>
+            <button
+              onClick={handleLogout}
+              className="px-3 py-1.5 text-xs text-[#FB7185] hover:bg-[#F43F5E]/15 border border-[#F43F5E]/30 rounded transition-colors flex items-center gap-1"
+              title="Se déconnecter"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Quitter</span>
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -3667,85 +4079,447 @@ export function App() {
              ========================================================= */}
           {activeTab === 'admin' && isAdminUser && (
             <div className="space-y-6">
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                {/* User Management Table */}
-                <div className="lg:col-span-7 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                      Gestion des Utilisateurs & Validation Binance Pay
-                    </h3>
-                    <button
-                      onClick={loadAdminOverview}
-                      className="text-xs text-[#10B981] hover:underline flex items-center gap-1"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" /> Actualiser
-                    </button>
+              {/* Top Summary Metrics for Admin */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-4">
+                  <div className="text-[11px] text-[#64748B] uppercase font-mono-tabular">Total Comptes</div>
+                  <div className="text-xl font-bold font-mono-tabular text-[#F1F5F9] mt-1">
+                    {(adminData?.users || []).length}
                   </div>
+                </div>
+                <div className="bg-[#111827] border border-[#F59E0B]/30 rounded-xl p-4">
+                  <div className="text-[11px] text-[#F59E0B] uppercase font-mono-tabular">En Attente d&apos;Approbation</div>
+                  <div className="text-xl font-bold font-mono-tabular text-[#F59E0B] mt-1">
+                    {(adminData?.users || []).filter((u: any) => u.account_status === 'PENDING_APPROVAL').length}
+                  </div>
+                </div>
+                <div className="bg-[#111827] border border-[#10B981]/30 rounded-xl p-4">
+                  <div className="text-[11px] text-[#10B981] uppercase font-mono-tabular">Comptes Approuvés</div>
+                  <div className="text-xl font-bold font-mono-tabular text-[#10B981] mt-1">
+                    {(adminData?.users || []).filter((u: any) => u.account_status === 'APPROVED').length}
+                  </div>
+                </div>
+                <div className="bg-[#111827] border border-[#F43F5E]/30 rounded-xl p-4">
+                  <div className="text-[11px] text-[#FB7185] uppercase font-mono-tabular">Suspendus / Refusés</div>
+                  <div className="text-xl font-bold font-mono-tabular text-[#FB7185] mt-1">
+                    {
+                      (adminData?.users || []).filter(
+                        (u: any) => u.account_status === 'SUSPENDED' || u.account_status === 'REJECTED'
+                      ).length
+                    }
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* User Management, Approval & Quotas Table */}
+                <div className="lg:col-span-8 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                        Contrôle des Accès, Approbation des Comptes & Quotas Utilisateurs
+                      </h3>
+                      <p className="text-xs text-[#64748B]">
+                        Approuvez, refusez, suspendez ou ajustez les quotas individuels de chaque utilisateur.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {(
+                        [
+                          { id: 'ALL', label: 'Tous' },
+                          { id: 'PENDING_APPROVAL', label: 'En attente' },
+                          { id: 'APPROVED', label: 'Approuvés' },
+                          { id: 'SUSPENDED', label: 'Suspendus' },
+                          { id: 'REJECTED', label: 'Refusés' },
+                        ] as const
+                      ).map((f) => (
+                        <button
+                          key={f.id}
+                          type="button"
+                          onClick={() => setAdminUserFilter(f.id)}
+                          className={`px-2.5 py-1 rounded text-[11px] font-mono-tabular border transition-colors ${
+                            adminUserFilter === f.id
+                              ? 'bg-[#10B981]/20 border-[#10B981] text-[#10B981]'
+                              : 'bg-[#090D16] border-white/10 text-[#94A3B8] hover:text-[#F1F5F9]'
+                          }`}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                      <button
+                        onClick={loadAdminOverview}
+                        className="px-2.5 py-1 bg-[#1E293B] hover:bg-[#334155] rounded text-xs text-[#10B981] flex items-center gap-1"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" /> Actualiser
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Per-User Quota Editor Modal/Drawer Inline */}
+                  {editingQuotasUid !== null && (
+                    <div className="p-4 rounded-xl bg-[#090D16] border border-[#10B981]/40 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-semibold text-[#10B981]">
+                          Configuration des quotas — Utilisateur #{editingQuotasUid}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setEditingQuotasUid(null)}
+                          className="text-xs text-[#94A3B8] hover:text-[#F1F5F9]"
+                        >
+                          Fermer
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">Analyses / jour</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={quotaForm.daily_analyses}
+                            onChange={(e) =>
+                              setQuotaForm((prev) => ({ ...prev, daily_analyses: parseInt(e.target.value, 10) || 1 }))
+                            }
+                            className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">Scans / jour</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={quotaForm.daily_scans}
+                            onChange={(e) =>
+                              setQuotaForm((prev) => ({ ...prev, daily_scans: parseInt(e.target.value, 10) || 1 }))
+                            }
+                            className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">Alertes actives max</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={quotaForm.max_alerts}
+                            onChange={(e) =>
+                              setQuotaForm((prev) => ({ ...prev, max_alerts: parseInt(e.target.value, 10) || 1 }))
+                            }
+                            className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">Paper Trades / jour</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={quotaForm.max_paper_trades}
+                            onChange={(e) =>
+                              setQuotaForm((prev) => ({ ...prev, max_paper_trades: parseInt(e.target.value, 10) || 1 }))
+                            }
+                            className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            apiFetch('/api/admin/user-quotas', {
+                              method: 'POST',
+                              body: JSON.stringify({
+                                target_user_id: editingQuotasUid,
+                                ...quotaForm,
+                              }),
+                            })
+                              .then((res) => {
+                                showToast(res.message, 'success');
+                                setEditingQuotasUid(null);
+                                loadAdminOverview();
+                              })
+                              .catch((err) => showToast(err.message, 'error'))
+                          }
+                          className="px-4 py-1.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold text-xs rounded-lg"
+                        >
+                          Enregistrer les Quotas
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse text-xs">
                       <thead>
                         <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
-                          <th className="py-2.5 px-3">ID / Pseudo</th>
-                          <th className="py-2.5 px-3">Rôle</th>
-                          <th className="py-2.5 px-3">Mémo Pay</th>
-                          <th className="py-2.5 px-3 text-right">Actions Admin</th>
+                          <th className="py-2.5 px-3">Utilisateur & Email</th>
+                          <th className="py-2.5 px-3">Statut & Rôle</th>
+                          <th className="py-2.5 px-3">Quotas (Utilisé / Max)</th>
+                          <th className="py-2.5 px-3">Inscription / Connexion</th>
+                          <th className="py-2.5 px-3 text-right">Actions d&apos;Approbation & Rôles</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
-                        {(adminData?.users || []).map((u: any) => (
-                          <tr key={u.user_id} className="hover:bg-white/[0.02]">
-                            <td className="py-2.5 px-3">
-                              <div className="font-semibold text-[#F1F5F9]">{u.username || `User #${u.user_id}`}</div>
-                              <div className="text-[10px] text-[#64748B]">{u.user_id}</div>
-                            </td>
-                            <td className="py-2.5 px-3 uppercase text-[#10B981]">{u.role}</td>
-                            <td className="py-2.5 px-3 text-[#F59E0B]">{u.memo || '—'}</td>
-                            <td className="py-2.5 px-3 text-right space-x-1.5">
-                              {['tester', 'pro', 'vip'].map((r) => (
-                                <button
-                                  key={r}
-                                  onClick={() =>
-                                    apiFetch('/api/admin/user-role', {
-                                      method: 'POST',
-                                      body: JSON.stringify({ target_user_id: u.user_id, role: r, action: 'set_role' }),
-                                    }).then((res) => {
-                                      showToast(res.message, 'success');
-                                      loadAdminOverview();
-                                      loadUserAndCoreData();
-                                    })
-                                  }
-                                  className="px-2 py-1 bg-[#1E293B] hover:bg-[#334155] rounded text-[10px] uppercase text-[#F1F5F9]"
-                                >
-                                  {r}
-                                </button>
-                              ))}
-                              {u.memo && (
-                                <button
-                                  onClick={() =>
-                                    apiFetch('/api/admin/user-role', {
-                                      method: 'POST',
-                                      body: JSON.stringify({ target_user_id: u.user_id, action: 'confirm_binance' }),
-                                    }).then((res) => {
-                                      showToast(res.message, 'success');
-                                      loadAdminOverview();
-                                    })
-                                  }
-                                  className="px-2 py-1 bg-[#10B981] text-[#090D16] font-semibold rounded text-[10px]"
-                                >
-                                  Valider Pay
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
+                        {(adminData?.users || [])
+                          .filter((u: any) =>
+                            adminUserFilter === 'ALL' ? true : u.account_status === adminUserFilter
+                          )
+                          .map((u: any) => {
+                            const status: string = u.account_status || 'PENDING_APPROVAL';
+                            const q = u.quotas || {
+                              daily_analyses: 25,
+                              daily_scans: 15,
+                              max_alerts: 10,
+                              max_paper_trades: 30,
+                            };
+                            const qu = u.quota_usage || {
+                              analyses_used: 0,
+                              scans_used: 0,
+                              paper_trades_used: 0,
+                            };
+                            return (
+                              <tr key={u.user_id} className="hover:bg-white/[0.02]">
+                                <td className="py-3 px-3">
+                                  <div className="font-semibold text-[#F1F5F9]">
+                                    {u.display_name || u.username || `Trader #${u.user_id}`}
+                                  </div>
+                                  <div className="text-[11px] text-[#94A3B8]">{u.email || 'Compte Telegram'}</div>
+                                  <div className="text-[10px] text-[#64748B]">
+                                    ID: #{u.user_id} {u.auth_provider ? `• ${u.auth_provider.toUpperCase()}` : ''}
+                                  </div>
+                                </td>
+                                <td className="py-3 px-3 space-y-1">
+                                  <div>
+                                    <span
+                                      className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
+                                        status === 'APPROVED'
+                                          ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#10B981]'
+                                          : status === 'PENDING_APPROVAL'
+                                          ? 'bg-[#F59E0B]/15 border-[#F59E0B]/40 text-[#F59E0B]'
+                                          : 'bg-[#F43F5E]/15 border-[#F43F5E]/40 text-[#FB7185]'
+                                      }`}
+                                    >
+                                      {status}
+                                    </span>
+                                  </div>
+                                  <div className="text-[11px] uppercase text-[#10B981] font-bold">
+                                    Rôle : {u.role} {u.memo ? `• Mémo: ${u.memo}` : ''}
+                                  </div>
+                                </td>
+                                <td className="py-3 px-3 text-[11px] space-y-0.5">
+                                  <div>
+                                    Analyses: <span className="text-[#F1F5F9]">{qu.analyses_used}</span>/{q.daily_analyses}
+                                  </div>
+                                  <div>
+                                    Scans: <span className="text-[#F1F5F9]">{qu.scans_used}</span>/{q.daily_scans}
+                                  </div>
+                                  <div>
+                                    Alertes max: <span className="text-[#F1F5F9]">{q.max_alerts}</span> • Paper:{' '}
+                                    <span className="text-[#F1F5F9]">{qu.paper_trades_used}</span>/{q.max_paper_trades}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingQuotasUid(u.user_id);
+                                      setQuotaForm({
+                                        daily_analyses: q.daily_analyses,
+                                        daily_scans: q.daily_scans,
+                                        max_alerts: q.max_alerts,
+                                        max_paper_trades: q.max_paper_trades,
+                                      });
+                                    }}
+                                    className="text-[10px] text-[#10B981] hover:underline"
+                                  >
+                                    Modifier quotas
+                                  </button>
+                                </td>
+                                <td className="py-3 px-3 text-[10px] text-[#94A3B8] space-y-1">
+                                  <div>
+                                    Créé:{' '}
+                                    {u.created_at
+                                      ? new Date(Number(u.created_at) * 1000).toLocaleDateString('fr-FR')
+                                      : '—'}
+                                  </div>
+                                  <div>
+                                    Dernière conn.:{' '}
+                                    {u.last_login_at && Number(u.last_login_at) > 0
+                                      ? new Date(Number(u.last_login_at) * 1000).toLocaleString('fr-FR')
+                                      : '—'}
+                                  </div>
+                                </td>
+                                <td className="py-3 px-3 text-right">
+                                  <div className="flex flex-wrap justify-end gap-1.5">
+                                    {status !== 'APPROVED' && (
+                                      <button
+                                        onClick={() =>
+                                          apiFetch('/api/admin/user-status', {
+                                            method: 'POST',
+                                            body: JSON.stringify({
+                                              target_user_id: u.user_id,
+                                              action: 'approve',
+                                              role: u.role || 'tester',
+                                            }),
+                                          }).then((res) => {
+                                            showToast(res.message, 'success');
+                                            loadAdminOverview();
+                                          })
+                                        }
+                                        className="px-2.5 py-1 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-bold rounded text-[10px]"
+                                      >
+                                        Approuver
+                                      </button>
+                                    )}
+                                    {status === 'PENDING_APPROVAL' && (
+                                      <button
+                                        onClick={() =>
+                                          apiFetch('/api/admin/user-status', {
+                                            method: 'POST',
+                                            body: JSON.stringify({ target_user_id: u.user_id, action: 'reject' }),
+                                          }).then((res) => {
+                                            showToast(res.message, 'info');
+                                            loadAdminOverview();
+                                          })
+                                        }
+                                        className="px-2 py-1 bg-[#F43F5E]/20 hover:bg-[#F43F5E]/30 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[10px]"
+                                      >
+                                        Refuser
+                                      </button>
+                                    )}
+                                    {!u.is_admin && status === 'APPROVED' && (
+                                      <button
+                                        onClick={() =>
+                                          apiFetch('/api/admin/user-status', {
+                                            method: 'POST',
+                                            body: JSON.stringify({ target_user_id: u.user_id, action: 'suspend' }),
+                                          }).then((res) => {
+                                            showToast(res.message, 'info');
+                                            loadAdminOverview();
+                                          })
+                                        }
+                                        className="px-2 py-1 bg-[#F59E0B]/20 hover:bg-[#F59E0B]/30 border border-[#F59E0B]/40 text-[#F59E0B] rounded text-[10px]"
+                                      >
+                                        Suspendre
+                                      </button>
+                                    )}
+                                    {(status === 'SUSPENDED' || status === 'REJECTED') && (
+                                      <button
+                                        onClick={() =>
+                                          apiFetch('/api/admin/user-status', {
+                                            method: 'POST',
+                                            body: JSON.stringify({ target_user_id: u.user_id, action: 'reactivate' }),
+                                          }).then((res) => {
+                                            showToast(res.message, 'success');
+                                            loadAdminOverview();
+                                          })
+                                        }
+                                        className="px-2 py-1 bg-[#10B981]/20 hover:bg-[#10B981]/30 border border-[#10B981]/40 text-[#10B981] rounded text-[10px]"
+                                      >
+                                        Réactiver
+                                      </button>
+                                    )}
+                                    {['tester', 'pro', 'vip'].map((r) => (
+                                      <button
+                                        key={r}
+                                        onClick={() =>
+                                          apiFetch('/api/admin/user-role', {
+                                            method: 'POST',
+                                            body: JSON.stringify({
+                                              target_user_id: u.user_id,
+                                              role: r,
+                                              action: 'set_role',
+                                            }),
+                                          }).then((res) => {
+                                            showToast(res.message, 'success');
+                                            loadAdminOverview();
+                                            loadUserAndCoreData();
+                                          })
+                                        }
+                                        className={`px-2 py-1 rounded text-[10px] uppercase ${
+                                          u.role === r
+                                            ? 'bg-[#10B981]/25 text-[#10B981] border border-[#10B981]/40'
+                                            : 'bg-[#1E293B] hover:bg-[#334155] text-[#F1F5F9]'
+                                        }`}
+                                      >
+                                        {r}
+                                      </button>
+                                    ))}
+                                    {u.memo && (
+                                      <button
+                                        onClick={() =>
+                                          apiFetch('/api/admin/user-role', {
+                                            method: 'POST',
+                                            body: JSON.stringify({
+                                              target_user_id: u.user_id,
+                                              action: 'confirm_binance',
+                                            }),
+                                          }).then((res) => {
+                                            showToast(res.message, 'success');
+                                            loadAdminOverview();
+                                          })
+                                        }
+                                        className="px-2 py-1 bg-[#10B981] text-[#090D16] font-semibold rounded text-[10px]"
+                                      >
+                                        Valider Pay
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
                       </tbody>
                     </table>
                   </div>
                 </div>
 
-                {/* Log Doctor Diagnostics & Broadcast */}
-                <div className="lg:col-span-5 space-y-6">
+                {/* Log Doctor Diagnostics, Security Audit Log & Broadcast */}
+                <div className="lg:col-span-4 space-y-6">
+                  {/* Security Events Audit Log */}
+                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-display font-semibold text-base text-[#F1F5F9] flex items-center gap-2">
+                        <Shield className="w-4 h-4 text-[#10B981]" />
+                        <span>Journal de Sécurité & Accès</span>
+                      </h3>
+                      <span className="text-[10px] font-mono-tabular text-[#64748B]">
+                        {(adminData?.security_events || []).length} événements
+                      </span>
+                    </div>
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                      {(adminData?.security_events || []).length === 0 ? (
+                        <div className="text-xs text-[#64748B]">Aucun événement de sécurité enregistré.</div>
+                      ) : (
+                        (adminData?.security_events || []).map((ev: SecurityEvent) => (
+                          <div
+                            key={ev.id}
+                            className="p-2.5 rounded-lg bg-[#090D16] border border-white/[0.06] text-[11px] space-y-1"
+                          >
+                            <div className="flex items-center justify-between font-mono-tabular">
+                              <span
+                                className={`font-bold ${
+                                  ev.severity === 'critical'
+                                    ? 'text-[#FB7185]'
+                                    : ev.severity === 'warning'
+                                    ? 'text-[#F59E0B]'
+                                    : 'text-[#10B981]'
+                                }`}
+                              >
+                                {ev.event_type}
+                              </span>
+                              <span className="text-[10px] text-[#64748B]">
+                                {ev.created_at ? new Date(Number(ev.created_at) * 1000).toLocaleTimeString('fr-FR') : ''}
+                              </span>
+                            </div>
+                            <div className="text-[#94A3B8]">{ev.details}</div>
+                            <div className="text-[10px] text-[#64748B] font-mono-tabular">
+                              {ev.email ? `Email: ${ev.email} • ` : ''}
+                              {ev.user_id ? `UID: #${ev.user_id} • ` : ''}
+                              IP: {ev.ip_address || '—'}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
                   <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
                     <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
                       Diagnostic Système (Log Doctor)
@@ -3813,6 +4587,15 @@ export function App() {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* =========================================================
+              TAB 8: STRATEGY LAB & BACKTESTING ENGINE (ADMIN ONLY)
+             ========================================================= */}
+          {activeTab === 'strategy_lab' && Boolean(user?.is_admin || user?.role === 'admin') && (
+            <StrategyLabView
+              onShowToast={(type, text) => showToast(text, type)}
+            />
           )}
         </main>
 

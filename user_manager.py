@@ -12,9 +12,24 @@ from config import (
     MAX_WATCHLIST_SYMBOLS_FREE,
     MAX_WATCHLIST_SYMBOLS_TESTER,
     MAX_WATCHLIST_SYMBOLS_PRO,
+    DEFAULT_DAILY_ANALYSIS_LIMIT,
+    DEFAULT_DAILY_SCAN_LIMIT,
+    DEFAULT_MAX_ALERTS_LIMIT,
+    DEFAULT_MAX_PAPER_TRADES_LIMIT,
 )
 
 from i18n import get_text
+
+ACCOUNT_STATUS_PENDING = "PENDING_APPROVAL"
+ACCOUNT_STATUS_APPROVED = "APPROVED"
+ACCOUNT_STATUS_REJECTED = "REJECTED"
+ACCOUNT_STATUS_SUSPENDED = "SUSPENDED"
+VALID_ACCOUNT_STATUSES = (
+    ACCOUNT_STATUS_PENDING,
+    ACCOUNT_STATUS_APPROVED,
+    ACCOUNT_STATUS_REJECTED,
+    ACCOUNT_STATUS_SUSPENDED,
+)
 
 
 class UserManager:
@@ -44,21 +59,30 @@ class UserManager:
         if row:
             user_dict = dict(row)
             role_norm = str(user_dict.get("role") or "tester").strip().lower()
+            raw_status = str(user_dict.get("account_status") or "").strip().upper()
+            if raw_status in (ACCOUNT_STATUS_REJECTED, ACCOUNT_STATUS_SUSPENDED):
+                user_dict["account_status"] = raw_status
+                user_dict["approved"] = 0
+                return user_dict
+
             is_paid_role = role_norm in ("pro", "paid", "premium", "vip", "admin")
-            is_app = bool(user_dict.get("approved")) or is_paid_role
-            if is_app and (not user_dict.get("approved") or not user_dict.get("terms_accepted")):
+            is_app = bool(user_dict.get("approved")) or is_paid_role or (raw_status == ACCOUNT_STATUS_APPROVED)
+            if is_app and (not user_dict.get("approved") or not user_dict.get("terms_accepted") or raw_status != ACCOUNT_STATUS_APPROVED):
                 canon_role = "pro" if role_norm in ("pro", "paid", "premium", "vip") else ("admin" if role_norm == "admin" else user_dict.get("role", "tester"))
                 try:
                     self.conn.execute(
-                        "UPDATE users SET approved = 1, terms_accepted = 1, role = %s WHERE user_id = %s",
-                        (canon_role, user_id),
+                        "UPDATE users SET approved = 1, terms_accepted = 1, account_status = %s, role = %s WHERE user_id = %s",
+                        (ACCOUNT_STATUS_APPROVED, canon_role, user_id),
                     )
                     self.conn.commit()
                     user_dict["approved"] = 1
                     user_dict["terms_accepted"] = 1
+                    user_dict["account_status"] = ACCOUNT_STATUS_APPROVED
                     user_dict["role"] = canon_role
                 except Exception:
                     pass
+            elif not is_app and not raw_status:
+                user_dict["account_status"] = ACCOUNT_STATUS_PENDING
             return user_dict
 
         # Si l'admin avait pré-autorisé ce @username avant que l'utilisateur ne parle au bot
@@ -73,8 +97,8 @@ class UserManager:
                     pre_dict = dict(pre_row)
                     old_placeholder_id = pre_dict["user_id"]
                     self.conn.execute(
-                        "UPDATE users SET user_id = %s, username = %s, approved = 1, terms_accepted = 1 WHERE user_id = %s",
-                        (user_id, f"@{username.lstrip('@')}", old_placeholder_id),
+                        "UPDATE users SET user_id = %s, username = %s, approved = 1, terms_accepted = 1, account_status = %s WHERE user_id = %s",
+                        (user_id, f"@{username.lstrip('@')}", ACCOUNT_STATUS_APPROVED, old_placeholder_id),
                     )
                     self.conn.commit()
                     return self.get_user(user_id)
@@ -87,11 +111,25 @@ class UserManager:
         now = time.time()
         self.conn.execute(
             """
-            INSERT INTO users (user_id, role, lang, timeframe, risk, terms_accepted, trial_start, created_at, approved, username)
-            VALUES (%s, 'tester', 'fr', '1h', 'medium', 0, %s, %s, 0, %s)
+            INSERT INTO users (
+                user_id, role, lang, timeframe, risk, terms_accepted,
+                trial_start, created_at, approved, account_status, username,
+                quota_daily_analyses, quota_daily_scans, quota_max_alerts, quota_max_paper_trades
+            )
+            VALUES (%s, 'tester', 'fr', '1h', 'medium', 0, %s, %s, 0, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (user_id) DO NOTHING
             """,
-            (user_id, now, now, f"@{username.lstrip('@')}" if username else None)
+            (
+                user_id,
+                now,
+                now,
+                ACCOUNT_STATUS_PENDING,
+                f"@{username.lstrip('@')}" if username else None,
+                DEFAULT_DAILY_ANALYSIS_LIMIT,
+                DEFAULT_DAILY_SCAN_LIMIT,
+                DEFAULT_MAX_ALERTS_LIMIT,
+                DEFAULT_MAX_PAPER_TRADES_LIMIT,
+            )
         )
         self.conn.commit()
         row2 = self.conn.execute("SELECT * FROM users WHERE user_id = %s", (user_id,)).fetchone()
@@ -170,19 +208,48 @@ class UserManager:
                 pass
         return None
 
+    def get_account_status(self, user_id: int, username: Optional[str] = None) -> str:
+        if self.is_admin(user_id, username):
+            return ACCOUNT_STATUS_APPROVED
+        user = self.get_user(user_id, username=username)
+        if not user:
+            return ACCOUNT_STATUS_PENDING
+        raw = str(user.get("account_status") or "").strip().upper()
+        if raw in VALID_ACCOUNT_STATUSES:
+            return raw
+        role_norm = str(user.get("role") or "").strip().lower()
+        if role_norm in ("pro", "paid", "premium", "vip", "admin"):
+            return ACCOUNT_STATUS_APPROVED
+        app_val = user.get("approved", 0)
+        if isinstance(app_val, str):
+            is_app = app_val.strip().lower() in ("1", "true", "yes", "approved", "pro")
+        else:
+            is_app = bool(app_val)
+        return ACCOUNT_STATUS_APPROVED if is_app else ACCOUNT_STATUS_PENDING
+
+    def set_account_status(self, user_id: int, status: str) -> bool:
+        norm = str(status or ACCOUNT_STATUS_PENDING).strip().upper()
+        if norm not in VALID_ACCOUNT_STATUSES:
+            return False
+        self.get_user(user_id)
+        approved_int = 1 if norm == ACCOUNT_STATUS_APPROVED else 0
+        self.conn.execute(
+            """
+            UPDATE users
+            SET account_status = %s,
+                approved = %s,
+                terms_accepted = CASE WHEN %s = 1 THEN 1 ELSE terms_accepted END
+            WHERE user_id = %s
+            """,
+            (norm, approved_int, approved_int, int(user_id)),
+        )
+        self.conn.commit()
+        return True
+
     def is_approved(self, user_id: int, username: Optional[str] = None) -> bool:
         if self.is_admin(user_id, username):
             return True
-        user = self.get_user(user_id, username=username)
-        if not user:
-            return False
-        role_norm = str(user.get("role") or "").strip().lower()
-        if role_norm in ("pro", "paid", "premium", "vip", "admin"):
-            return True
-        app_val = user.get("approved", 0)
-        if isinstance(app_val, str):
-            return app_val.strip().lower() in ("1", "true", "yes", "approved", "pro")
-        return bool(app_val)
+        return self.get_account_status(user_id, username=username) == ACCOUNT_STATUS_APPROVED
 
     def can_access_bot(self, user_id: int, username: Optional[str] = None) -> bool:
         if ACCESS_MODE == "open":
@@ -216,11 +283,12 @@ class UserManager:
             UPDATE users
             SET role = %s,
                 approved = 1,
+                account_status = %s,
                 terms_accepted = 1,
                 trial_start = COALESCE(NULLIF(trial_start, 0), %s)
             WHERE user_id = %s
             """,
-            (norm_role, now, user_id),
+            (norm_role, ACCOUNT_STATUS_APPROVED, now, user_id),
         )
         self.conn.commit()
         return True
@@ -336,6 +404,121 @@ class UserManager:
             return -1
         used = self._get_usage(user_id)
         return max(0, FREE_DAILY_REQUESTS - used)
+
+    # =========================================================
+    # WEB FEATURE QUOTAS (ANALYSES, SCANS, ALERTS, PAPER TRADES)
+    # =========================================================
+
+    def get_user_quotas(self, user_id: int) -> Dict[str, int]:
+        user = self.get_user(user_id) or {}
+        if self.is_admin(user_id):
+            return {
+                "daily_analyses": 999999,
+                "daily_scans": 999999,
+                "max_alerts": 999999,
+                "max_paper_trades": 999999,
+            }
+        role = self.get_role(user_id)
+        default_analyses = 200 if role == "pro" else DEFAULT_DAILY_ANALYSIS_LIMIT
+        default_scans = 100 if role == "pro" else DEFAULT_DAILY_SCAN_LIMIT
+        default_alerts = MAX_ALERTS_PRO if role == "pro" else DEFAULT_MAX_ALERTS_LIMIT
+        default_paper = 100 if role == "pro" else DEFAULT_MAX_PAPER_TRADES_LIMIT
+
+        def _val(col: str, fallback: int) -> int:
+            raw = user.get(col)
+            if raw is None:
+                return fallback
+            try:
+                v = int(raw)
+                return v if v >= 0 else fallback
+            except Exception:
+                return fallback
+
+        return {
+            "daily_analyses": _val("quota_daily_analyses", default_analyses),
+            "daily_scans": _val("quota_daily_scans", default_scans),
+            "max_alerts": _val("quota_max_alerts", default_alerts),
+            "max_paper_trades": _val("quota_max_paper_trades", default_paper),
+        }
+
+    def set_user_quotas(
+        self,
+        user_id: int,
+        daily_analyses: Optional[int] = None,
+        daily_scans: Optional[int] = None,
+        max_alerts: Optional[int] = None,
+        max_paper_trades: Optional[int] = None,
+    ) -> Dict[str, int]:
+        self.get_user(user_id)
+        current = self.get_user_quotas(user_id)
+        q_a = max(0, int(daily_analyses)) if daily_analyses is not None else current["daily_analyses"]
+        q_s = max(0, int(daily_scans)) if daily_scans is not None else current["daily_scans"]
+        q_al = max(0, int(max_alerts)) if max_alerts is not None else current["max_alerts"]
+        q_pt = max(0, int(max_paper_trades)) if max_paper_trades is not None else current["max_paper_trades"]
+        self.conn.execute(
+            """
+            UPDATE users
+            SET quota_daily_analyses = %s,
+                quota_daily_scans = %s,
+                quota_max_alerts = %s,
+                quota_max_paper_trades = %s
+            WHERE user_id = %s
+            """,
+            (q_a, q_s, q_al, q_pt, int(user_id)),
+        )
+        self.conn.commit()
+        return self.get_user_quotas(user_id)
+
+    def get_feature_usage_today(self, user_id: int, feature: str) -> int:
+        today = self._get_today()
+        row = self.conn.execute(
+            "SELECT count FROM user_feature_usage WHERE user_id = %s AND date = %s AND feature = %s",
+            (int(user_id), today, feature),
+        ).fetchone()
+        return int(row["count"]) if row and row["count"] is not None else 0
+
+    def get_all_feature_usage_today(self, user_id: int) -> Dict[str, int]:
+        return {
+            "analyses_used": self.get_feature_usage_today(user_id, "analysis"),
+            "scans_used": self.get_feature_usage_today(user_id, "scan"),
+            "paper_trades_used": self.get_feature_usage_today(user_id, "paper_trade"),
+        }
+
+    def check_and_consume_feature_quota(self, user_id: int, feature: str, consume: bool = True) -> tuple[bool, int, int]:
+        """
+        Vérifie et consomme un quota journalier pour `feature` ('analysis', 'scan', 'paper_trade').
+        Retourne (autorisé: bool, utilisé: int, limite: int).
+        """
+        if self.is_admin(user_id):
+            used = self.get_feature_usage_today(user_id, feature)
+            return True, used, 999999
+
+        quotas = self.get_user_quotas(user_id)
+        limit_map = {
+            "analysis": quotas["daily_analyses"],
+            "scan": quotas["daily_scans"],
+            "paper_trade": quotas["max_paper_trades"],
+        }
+        limit = limit_map.get(feature, DEFAULT_DAILY_ANALYSIS_LIMIT)
+        used = self.get_feature_usage_today(user_id, feature)
+        if used >= limit:
+            return False, used, limit
+
+        if consume:
+            today = self._get_today()
+            new_count = used + 1
+            self.conn.execute(
+                """
+                INSERT INTO user_feature_usage (user_id, date, feature, count)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id, date, feature) DO UPDATE SET count = EXCLUDED.count
+                """,
+                (int(user_id), today, feature, new_count),
+            )
+            self.conn.commit()
+            return True, new_count, limit
+
+        return True, used, limit
 
     # =========================================================
     # WATCHLIST
@@ -470,8 +653,8 @@ class UserManager:
         if not force and not user.get("memo"):
             return False
         self.conn.execute(
-            "UPDATE users SET role = 'pro', approved = 1, terms_accepted = 1, memo = NULL WHERE user_id = %s",
-            (user_id,)
+            "UPDATE users SET role = 'pro', approved = 1, account_status = %s, terms_accepted = 1, memo = NULL WHERE user_id = %s",
+            (ACCOUNT_STATUS_APPROVED, user_id)
         )
         self.conn.commit()
         return True
@@ -487,12 +670,12 @@ class UserManager:
         if not user:
             self.conn.execute(
                 """
-                INSERT INTO users (user_id, role, lang, timeframe, risk, terms_accepted, trial_start, created_at, approved, username)
-                VALUES (%s, %s, 'fr', '1h', 'medium', 1, %s, %s, 1, NULL)
+                INSERT INTO users (user_id, role, lang, timeframe, risk, terms_accepted, trial_start, created_at, approved, account_status, username)
+                VALUES (%s, %s, 'fr', '1h', 'medium', 1, %s, %s, 1, %s, NULL)
                 ON CONFLICT (user_id) DO UPDATE
-                SET role = EXCLUDED.role, approved = 1, terms_accepted = 1, trial_start = EXCLUDED.trial_start
+                SET role = EXCLUDED.role, approved = 1, account_status = EXCLUDED.account_status, terms_accepted = 1, trial_start = EXCLUDED.trial_start
                 """,
-                (user_id, role, now, now),
+                (user_id, role, now, now, ACCOUNT_STATUS_APPROVED),
             )
             self.conn.commit()
             return True
@@ -503,8 +686,8 @@ class UserManager:
         elif current_role == "admin":
             effective_role = "admin"
         self.conn.execute(
-            "UPDATE users SET role = %s, approved = 1, terms_accepted = 1, trial_start = %s WHERE user_id = %s",
-            (effective_role, now, user_id)
+            "UPDATE users SET role = %s, approved = 1, account_status = %s, terms_accepted = 1, trial_start = %s WHERE user_id = %s",
+            (effective_role, ACCOUNT_STATUS_APPROVED, now, user_id)
         )
         self.conn.commit()
         return True
@@ -532,11 +715,17 @@ class UserManager:
             return False
         self.conn.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
         self.conn.execute("DELETE FROM usage WHERE user_id = %s", (user_id,))
+        self.conn.execute("DELETE FROM user_feature_usage WHERE user_id = %s", (user_id,))
         self.conn.execute("DELETE FROM settings WHERE user_id = %s", (user_id,))
         self.conn.execute("DELETE FROM watchlist WHERE user_id = %s", (user_id,))
         self.conn.execute("DELETE FROM alerts WHERE user_id = %s", (user_id,))
         self.conn.execute("DELETE FROM signals WHERE user_id = %s", (user_id,))
         self.conn.execute("DELETE FROM paper_positions WHERE user_id = %s", (user_id,))
         self.conn.execute("DELETE FROM paper_capitals WHERE user_id = %s", (user_id,))
+        try:
+            self.conn.execute("DELETE FROM web_sessions WHERE user_id = %s", (user_id,))
+            self.conn.execute("DELETE FROM web_accounts WHERE user_id = %s", (user_id,))
+        except Exception:
+            pass
         self.conn.commit()
         return True

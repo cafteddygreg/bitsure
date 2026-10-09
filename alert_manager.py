@@ -154,6 +154,11 @@ class AlertManager:
     def get_alert_limit(self, user_id: int) -> int:
         from user_manager import UserManager
         user_mgr = UserManager.get_instance()
+        if user_mgr.is_admin(user_id):
+            return 999999
+        quotas = user_mgr.get_user_quotas(user_id)
+        if quotas and "max_alerts" in quotas:
+            return int(quotas["max_alerts"])
         role = user_mgr.get_role(user_id)
         if role == "pro":
             return MAX_ALERTS_PRO

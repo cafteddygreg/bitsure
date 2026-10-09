@@ -96,9 +96,9 @@ async function createServer() {
 
   const app = express();
 
-  // Proxy /api/* directly to the Python Bitsure Teddy engine on 127.0.0.1:8001
-  app.use('/api', (req, res) => {
-    const targetPath = `/api${req.url}`;
+  // Proxy /api/* and /auth/* directly to the Python Bitsure Teddy engine on 127.0.0.1:8001
+  app.use(['/api', '/auth'], (req, res) => {
+    const targetPath = `${req.baseUrl}${req.url}`;
     const options: http.RequestOptions = {
       hostname: '127.0.0.1',
       port: PYTHON_PORT,

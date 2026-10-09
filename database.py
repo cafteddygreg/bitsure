@@ -455,6 +455,32 @@ def _ensure_schema(conn):
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS memo TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS pin TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS account_status TEXT DEFAULT 'PENDING_APPROVAL'",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_daily_analyses INTEGER DEFAULT 15",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_daily_scans INTEGER DEFAULT 10",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_max_alerts INTEGER DEFAULT 10",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_max_paper_trades INTEGER DEFAULT 25",
+        """
+        CREATE TABLE IF NOT EXISTS user_feature_usage (
+            user_id BIGINT,
+            date TEXT,
+            feature TEXT,
+            count INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, date, feature)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS security_events (
+            id SERIAL PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            severity TEXT DEFAULT 'info',
+            user_id BIGINT,
+            email TEXT,
+            ip_address TEXT,
+            details TEXT,
+            created_at DOUBLE PRECISION DEFAULT 0
+        )
+        """,
         "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS created_at DOUBLE PRECISION DEFAULT 0",
         "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS triggered_at DOUBLE PRECISION DEFAULT 0",
         "ALTER TABLE signals ADD COLUMN IF NOT EXISTS user_id BIGINT",
@@ -567,25 +593,89 @@ def _ensure_schema(conn):
             error_message TEXT
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS strategy_lab_presets (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            symbol TEXT DEFAULT 'BTCUSDT',
+            timeframe TEXT DEFAULT '15m',
+            trading_style TEXT DEFAULT 'day',
+            params_json TEXT NOT NULL,
+            tags TEXT DEFAULT '',
+            is_favorite INTEGER DEFAULT 0,
+            notes TEXT DEFAULT '',
+            created_by BIGINT,
+            created_at DOUBLE PRECISION NOT NULL,
+            updated_at DOUBLE PRECISION NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS strategy_lab_runs (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            preset_id INTEGER,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            trading_style TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            data_source TEXT NOT NULL,
+            candles_count INTEGER DEFAULT 0,
+            params_json TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            trades_json TEXT NOT NULL,
+            equity_json TEXT NOT NULL,
+            signals_summary_json TEXT NOT NULL,
+            tags TEXT DEFAULT '',
+            is_favorite INTEGER DEFAULT 0,
+            notes TEXT DEFAULT '',
+            created_by BIGINT,
+            created_at DOUBLE PRECISION NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS strategy_lab_candles_cache (
+            cache_key TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            start_ts BIGINT NOT NULL,
+            end_ts BIGINT NOT NULL,
+            data_source TEXT NOT NULL,
+            candles_json TEXT NOT NULL,
+            updated_at DOUBLE PRECISION NOT NULL
+        )
+        """,
     ]
     for statement in statements:
         conn.execute(statement)
     conn.commit()
     try:
         # Synchronisation automatique : tout utilisateur PRO / payant ou déjà approuvé
-        # a obligatoirement approved = 1 et terms_accepted = 1 pour ne jamais être bloqué sur /start.
+        # (sauf s'il est explicitement REJECTED ou SUSPENDED) a approved = 1, terms_accepted = 1 et account_status = 'APPROVED'.
         conn.execute(
             """
             UPDATE users
             SET approved = 1,
                 terms_accepted = 1,
+                account_status = 'APPROVED',
                 role = CASE
                     WHEN LOWER(TRIM(COALESCE(role, ''))) IN ('pro', 'paid', 'premium', 'vip') THEN 'pro'
                     WHEN LOWER(TRIM(COALESCE(role, ''))) = 'admin' THEN 'admin'
                     ELSE COALESCE(NULLIF(TRIM(role), ''), 'tester')
                 END
-            WHERE LOWER(TRIM(COALESCE(role, ''))) IN ('pro', 'paid', 'premium', 'vip', 'admin')
-               OR COALESCE(approved, 0) != 0
+            WHERE COALESCE(account_status, '') NOT IN ('REJECTED', 'SUSPENDED')
+              AND (
+                  LOWER(TRIM(COALESCE(role, ''))) IN ('pro', 'paid', 'premium', 'vip', 'admin')
+                  OR COALESCE(approved, 0) != 0
+              )
+            """
+        )
+        conn.execute(
+            """
+            UPDATE users
+            SET account_status = 'PENDING_APPROVAL'
+            WHERE COALESCE(account_status, '') = '' AND COALESCE(approved, 0) = 0
             """
         )
         conn.commit()

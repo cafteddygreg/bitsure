@@ -33,6 +33,25 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_LOG_MODEL = os.environ.get("GEMINI_LOG_MODEL", "gemini-3.1-flash-lite")
 
 # =========================================================
+# 1B. AUTHENTIFICATION WEB, INITIALISATION ADMIN & GOOGLE OAUTH
+# =========================================================
+# Identité explicite de l'administrateur initial du site Web (ne jamais attribuer au 1er visiteur)
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+ADMIN_INITIAL_PASSWORD = os.environ.get("ADMIN_INITIAL_PASSWORD", "").strip()
+SESSION_SECRET = os.environ.get("SESSION_SECRET", "").strip()
+
+# Google OAuth 2.0 (Optionnel)
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+APP_URL = os.environ.get("APP_URL", "").strip().rstrip("/")
+
+# Quotas journaliers par défaut pour les nouveaux comptes Web approuvés
+DEFAULT_DAILY_ANALYSIS_LIMIT = int(os.environ.get("DEFAULT_DAILY_ANALYSIS_LIMIT", "15"))
+DEFAULT_DAILY_SCAN_LIMIT = int(os.environ.get("DEFAULT_DAILY_SCAN_LIMIT", "10"))
+DEFAULT_MAX_ALERTS_LIMIT = int(os.environ.get("DEFAULT_MAX_ALERTS_LIMIT", "10"))
+DEFAULT_MAX_PAPER_TRADES_LIMIT = int(os.environ.get("DEFAULT_MAX_PAPER_TRADES_LIMIT", "25"))
+
+# =========================================================
 # 2. CONFIGURATION PAR DÉFAUT AUTOTRADE & SÉCURITÉ
 # (Tout est géré ici directement en Python, aucune variable Render requise)
 # =========================================================
