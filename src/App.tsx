@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import './index.css';
-import { apiFetch, setStoredSession, clearStoredSession, ApiError } from './api';
+import {
+  apiFetch,
+  setStoredSession,
+  clearStoredSession,
+  ApiError,
+  runCoreApiDiagnostic,
+  CoreApiDiagnosticReport,
+} from './api';
 import { AppLang, getInitialLang, setSavedLang, tr } from './i18n';
 import {
   UserProfile,
@@ -94,6 +101,8 @@ export function App() {
   // Auth & User State
   const [user, setUser] = useState<UserProfile | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
+  const [apiDiag, setApiDiag] = useState<CoreApiDiagnosticReport | null>(null);
+  const [apiDiagChecking, setApiDiagChecking] = useState(true);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authModal, setAuthModal] = useState<'login' | 'register' | null>(null);
@@ -246,7 +255,17 @@ export function App() {
   }, []);
 
   const loadUserAndCoreData = useCallback(async () => {
+    setApiDiagChecking(true);
     try {
+      const diag = await runCoreApiDiagnostic();
+      setApiDiag(diag);
+      setApiDiagChecking(false);
+
+      if (!diag.ok) {
+        setAuthChecking(false);
+        return;
+      }
+
       const meRes = await apiFetch('/api/auth/me');
       const currentUser: UserProfile = meRes.user;
       if (currentUser?.csrf_token) {
@@ -289,6 +308,7 @@ export function App() {
       setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
       setNotifications(notifRes.notifications || []);
     } catch (err: any) {
+      setApiDiagChecking(false);
       setAuthChecking(false);
       if (err instanceof ApiError && err.status === 401) {
         setUser(null);
@@ -1332,15 +1352,110 @@ export function App() {
     );
   }
 
-  // Loading state while verifying server session
-  if (authChecking) {
+  // Pre-render Diagnostic Check & Session Verification Gate
+  if (apiDiagChecking || authChecking) {
     return (
       <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex items-center justify-center p-6">
-        <div className="flex flex-col items-center gap-3">
-          <RefreshCw className="w-6 h-6 text-[#10B981] animate-spin" />
-          <p className="text-xs font-mono-tabular text-[#94A3B8]">
-            {tr(lang, 'Vérification sécurisée de votre session...')}
-          </p>
+        <div className="max-w-md w-full bg-[#111827] border border-white/10 rounded-xl p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <RefreshCw className="w-5 h-5 text-[#10B981] animate-spin shrink-0" />
+            <div>
+              <h2 className="font-display text-sm font-bold text-[#F1F5F9]">
+                {tr(lang, 'Diagnostic de connectivité API en cours...', 'Running core API diagnostic check...')}
+              </h2>
+              <p className="text-[11px] font-mono-tabular text-[#94A3B8]">
+                {tr(
+                  lang,
+                  'Vérification de /api/health et /api/auth/me avant ouverture du terminal',
+                  'Verifying /api/health and /api/auth/me before rendering workspace'
+                )}
+              </p>
+            </div>
+          </div>
+          {apiDiag && (
+            <div className="space-y-1.5 pt-2 border-t border-white/[0.07] text-xs font-mono-tabular">
+              {apiDiag.probes.map((probe) => (
+                <div key={probe.endpoint} className="flex items-center justify-between">
+                  <span className="text-[#94A3B8]">{probe.endpoint}</span>
+                  <span className={probe.reachable ? 'text-[#10B981]' : 'text-[#F59E0B]'}>
+                    {probe.detail}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Diagnostic Gate: If core API endpoints (/api/health or /api/auth/me) are unreachable or unresponsive
+  if (apiDiag && !apiDiag.ok) {
+    return (
+      <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex items-center justify-center p-6">
+        <div className="max-w-lg w-full bg-[#111827] border border-[#F43F5E]/40 rounded-2xl p-6 space-y-5">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-[#F43F5E]/15 border border-[#F43F5E]/40 flex items-center justify-center text-[#FB7185] shrink-0">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="font-display text-base font-bold text-[#F1F5F9]">
+                {tr(
+                  lang,
+                  'Diagnostic API : Serveur principal temporairement indisponible',
+                  'API Diagnostic: Core backend temporarily unreachable'
+                )}
+              </h2>
+              <p className="text-xs text-[#94A3B8] mt-1 leading-relaxed">
+                {tr(
+                  lang,
+                  "Le contrôle préliminaire des points d'accès critiques (/api/health, /api/auth/me) n'a pas reçu de réponse valide.",
+                  'The preflight check for core endpoints (/api/health, /api/auth/me) did not receive a valid response.'
+                )}
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-[#090D16] border border-white/[0.08] rounded-xl p-3.5 space-y-2 text-xs font-mono-tabular">
+            {apiDiag.probes.map((probe) => (
+              <div key={probe.endpoint} className="flex items-center justify-between gap-2">
+                <div>
+                  <span className="text-[#F1F5F9] font-semibold">{probe.endpoint}</span>
+                  <span className="text-[#64748B] ml-2 text-[11px]">{probe.label}</span>
+                </div>
+                <span
+                  className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                    probe.reachable
+                      ? 'bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30'
+                      : 'bg-[#F43F5E]/15 text-[#FB7185] border border-[#F43F5E]/30'
+                  }`}
+                >
+                  {probe.reachable ? `OK (${probe.latencyMs}ms)` : probe.detail}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap gap-2.5">
+            <button
+              type="button"
+              onClick={() => loadUserAndCoreData()}
+              className="flex-1 py-2.5 px-4 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>{tr(lang, 'Relancer le diagnostic API', 'Re-run API diagnostic')}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                clearStoredSession();
+                loadUserAndCoreData();
+              }}
+              className="py-2.5 px-4 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] font-semibold text-xs rounded-lg transition-colors"
+            >
+              {tr(lang, 'Réinitialiser la session', 'Reset local session')}
+            </button>
+          </div>
         </div>
       </div>
     );
