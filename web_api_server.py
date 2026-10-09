@@ -1209,11 +1209,22 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 asset = None
                 if hasattr(web_frontend_bundle, "get_embedded_asset"):
                     asset = web_frontend_bundle.get_embedded_asset(path)
-                elif hasattr(web_frontend_bundle, "EMBEDDED_FRONTEND"):
+                elif hasattr(web_frontend_bundle, "EMBEDDED_FRONTEND") or hasattr(web_frontend_bundle, "FRONTEND_BUNDLE"):
                     import base64
-                    ef = web_frontend_bundle.EMBEDDED_FRONTEND
+                    ef = getattr(web_frontend_bundle, "EMBEDDED_FRONTEND", None) or getattr(web_frontend_bundle, "FRONTEND_BUNDLE", {})
                     clean_p = "/index.html" if path in ("", "/") else path
-                    b64 = ef.get(clean_p) or (ef.get("/index.html") if not clean_p.startswith("/assets/") else None)
+                    b64 = ef.get(clean_p)
+                    if not b64 and clean_p.startswith("/assets/"):
+                        ext = ".js" if clean_p.endswith(".js") else (".css" if clean_p.endswith(".css") else "")
+                        if ext:
+                            for k, v in ef.items():
+                                if k.startswith("/assets/") and k.endswith(ext):
+                                    b64 = v
+                                    clean_p = k
+                                    break
+                    if not b64 and not clean_p.startswith("/assets/"):
+                        b64 = ef.get("/index.html")
+                        clean_p = "/index.html"
                     if b64:
                         m_type = "text/html; charset=utf-8"
                         if clean_p.endswith(".js"):
@@ -1225,7 +1236,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     content, mime_type = asset
                     self.send_response(200)
                     self.send_header("Content-Type", mime_type)
-                    if clean_p if 'clean_p' in locals() else path in ("", "/", "/index.html"):
+                    if path in ("", "/", "/index.html") or not path.startswith("/assets/"):
                         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                     self.send_header("Content-Length", str(len(content)))
                     self.end_headers()

@@ -131,6 +131,34 @@ async function createServer() {
     req.pipe(proxyReq, { end: true });
   });
 
+  const distAssetsDir = path.join(__dirname, 'dist', 'assets');
+  app.use('/assets', (req, res, next) => {
+    const reqFile = req.path.replace(/^\/+/, '');
+    if (!reqFile) return next();
+    const directPath = path.join(distAssetsDir, reqFile);
+    if (directPath.startsWith(distAssetsDir) && path.extname(reqFile)) {
+      res.sendFile(directPath, (err) => {
+        if (!err) return;
+        // Fallback if client requested an older hashed bundle name (e.g. index-OLD.js -> index-NEW.js)
+        import('fs')
+          .then((fs) => {
+            if (!fs.existsSync(distAssetsDir)) return next();
+            const ext = path.extname(reqFile);
+            const match = fs.readdirSync(distAssetsDir).find((f) => f.endsWith(ext));
+            if (match) {
+              res.setHeader('Cache-Control', 'no-cache');
+              res.sendFile(path.join(distAssetsDir, match));
+            } else {
+              next();
+            }
+          })
+          .catch(() => next());
+      });
+      return;
+    }
+    next();
+  });
+
   if (process.env.NODE_ENV === 'production') {
     const distPath = path.join(__dirname, 'dist');
     app.use(express.static(distPath));
