@@ -2049,8 +2049,10 @@ def generate_gemini_lab_analysis(
 def ensure_default_presets(admin_user_id: int) -> None:
     db = get_db()
     row = db.execute("SELECT COUNT(*) AS cnt FROM strategy_lab_presets").fetchone()
-    if row and int(row.get("cnt", 0)) > 0:
-        return
+    if row:
+        rd = dict(row) if hasattr(row, "keys") else {"cnt": row[0]}
+        if int(rd.get("cnt", 0)) > 0:
+            return
     now = time.time()
     for p in DEFAULT_STRATEGY_PRESETS:
         db.execute(
@@ -2082,9 +2084,10 @@ def list_lab_presets(admin_user_id: int) -> List[Dict[str, Any]]:
         "SELECT * FROM strategy_lab_presets ORDER BY is_favorite DESC, updated_at DESC"
     ).fetchall()
     out = []
-    for r in rows:
+    for raw_r in rows:
+        r = dict(raw_r)
         try:
-            params = json.loads(r["params_json"])
+            params = json.loads(r.get("params_json") or "{}")
         except Exception:
             params = {}
         out.append(
@@ -2225,7 +2228,8 @@ def list_lab_runs(limit: int = 35) -> List[Dict[str, Any]]:
         (int(limit),),
     ).fetchall()
     out = []
-    for r in rows:
+    for raw_r in rows:
+        r = dict(raw_r)
         try:
             params = json.loads(r.get("params_json") or "{}")
         except Exception:
@@ -2271,9 +2275,10 @@ def list_lab_runs(limit: int = 35) -> List[Dict[str, Any]]:
 
 def get_lab_run_detail(run_id: int) -> Optional[Dict[str, Any]]:
     db = get_db()
-    r = db.execute("SELECT * FROM strategy_lab_runs WHERE id = %s", (int(run_id),)).fetchone()
-    if not r:
+    raw_r = db.execute("SELECT * FROM strategy_lab_runs WHERE id = %s", (int(run_id),)).fetchone()
+    if not raw_r:
         return None
+    r = dict(raw_r)
     extra = json.loads(r.get("signals_summary_json") or "{}")
     return {
         "id": int(r["id"]),
@@ -2318,12 +2323,13 @@ def update_lab_run_meta(
     is_candidate: Optional[bool] = None,
 ) -> bool:
     db = get_db()
-    row = db.execute(
+    raw_row = db.execute(
         "SELECT id, name, notes, tags, is_favorite, is_candidate FROM strategy_lab_runs WHERE id = %s",
         (int(run_id),),
     ).fetchone()
-    if not row:
+    if not raw_row:
         return False
+    row = dict(raw_row)
     new_name = (name if name is not None else row["name"]).strip()[:140]
     new_notes = (notes if notes is not None else (row.get("notes") or "")).strip()[:2000]
     new_tags = (tags if tags is not None else (row.get("tags") or "")).strip()[:150]

@@ -1586,51 +1586,31 @@ except ImportError:
     class DictCursor:
         pass
 
-    class _DictRow:
-        """Emulates psycopg2.extras.DictRow (supports both integer index row[0] and key lookup row['col'])."""
+    class _DictRow(dict):
+        """Emulates psycopg2.extras.DictRow while inheriting from dict (supports both integer index row[0], row['col'], row.get(), and dict(row))."""
         def __init__(self, cols: List[str], values: Tuple[Any, ...]):
             self._cols = list(cols)
             self._vals = list(values)
             self._map = dict(zip(self._cols, self._vals))
+            super().__init__(self._map)
 
         def __getitem__(self, key):
             if isinstance(key, (int, slice)):
                 return self._vals[key]
-            return self._map[key]
+            return super().__getitem__(key)
 
         def __setitem__(self, key, value):
             if isinstance(key, int):
                 self._vals[key] = value
                 if 0 <= key < len(self._cols):
-                    self._map[self._cols[key]] = value
+                    col_name = self._cols[key]
+                    self._map[col_name] = value
+                    super().__setitem__(col_name, value)
             else:
                 self._map[key] = value
+                super().__setitem__(key, value)
                 if key in self._cols:
                     self._vals[self._cols.index(key)] = value
-
-        def __contains__(self, key):
-            return key in self._map or key in self._vals
-
-        def get(self, key, default=None):
-            return self._map.get(key, default)
-
-        def keys(self):
-            return self._map.keys()
-
-        def values(self):
-            return self._map.values()
-
-        def items(self):
-            return self._map.items()
-
-        def __iter__(self):
-            return iter(self._vals)
-
-        def __len__(self):
-            return len(self._vals)
-
-        def __repr__(self):
-            return repr(self._map)
 
     def _translate_pg_to_sqlite(sql: str, params=None):
         s = sql.strip()

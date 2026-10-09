@@ -1575,31 +1575,53 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 ).fetchall()
                 users_list = []
                 for r in users_rows:
-                    d = dict(r.items())
-                    uid = int(d["user_id"])
-                    d["is_admin"] = _is_strictly_admin(uid, d.get("email"))
-                    d["account_status"] = ACCOUNT_STATUS_APPROVED if d["is_admin"] else um.get_account_status(uid)
-                    d["quotas"] = um.get_user_quotas(uid)
-                    d["quota_usage"] = um.get_all_feature_usage_today(uid)
-                    d["remaining_requests"] = max(0, d["quotas"]["daily_analyses"] - d["quota_usage"]["analyses_used"])
-                    users_list.append(d)
+                    try:
+                        d = dict(r)
+                        uid = int(d["user_id"])
+                        d["is_admin"] = _is_strictly_admin(uid, d.get("email"))
+                        d["account_status"] = ACCOUNT_STATUS_APPROVED if d["is_admin"] else um.get_account_status(uid)
+                        d["quotas"] = um.get_user_quotas(uid)
+                        d["quota_usage"] = um.get_all_feature_usage_today(uid)
+                        d["remaining_requests"] = max(0, d["quotas"]["daily_analyses"] - d["quota_usage"]["analyses_used"])
+                        users_list.append(d)
+                    except Exception as u_err:
+                        logger.warning("Admin overview row skip: %s", u_err)
 
-                pending_payments = db.execute(
-                    "SELECT user_id, role, memo, username, created_at FROM users WHERE memo IS NOT NULL AND memo != ''"
-                ).fetchall()
+                try:
+                    pending_payments = [
+                        dict(r)
+                        for r in db.execute(
+                            "SELECT user_id, role, memo, username, created_at FROM users WHERE memo IS NOT NULL AND memo != ''"
+                        ).fetchall()
+                    ]
+                except Exception:
+                    pending_payments = []
 
-                sec_events = db.execute(
-                    "SELECT id, event_type, severity, user_id, email, ip_address, details, created_at FROM security_events ORDER BY created_at DESC LIMIT 60"
-                ).fetchall()
+                try:
+                    sec_events = [
+                        dict(r)
+                        for r in db.execute(
+                            "SELECT id, event_type, severity, user_id, email, ip_address, details, created_at FROM security_events ORDER BY created_at DESC LIMIT 60"
+                        ).fetchall()
+                    ]
+                except Exception:
+                    sec_events = []
 
-                doctor_report = log_doctor.build_log_diagnostic_report(user_id=user_id, user_question=query.get("question"))
-                public_status = log_doctor.build_public_system_status_page(user_id=user_id)
+                try:
+                    doctor_report = log_doctor.build_log_diagnostic_report(user_id=user_id, user_question=query.get("question"))
+                except Exception as doc_err:
+                    doctor_report = f"Diagnostic temporairement indisponible : {doc_err}"
+
+                try:
+                    public_status = log_doctor.build_public_system_status_page(user_id=user_id)
+                except Exception as pub_err:
+                    public_status = f"Statut public temporairement indisponible : {pub_err}"
 
                 self._send_json(200, {
                     "ok": True,
                     "users": users_list,
-                    "pending_payments": [dict(r.items()) for r in pending_payments],
-                    "security_events": [dict(r.items()) for r in sec_events],
+                    "pending_payments": pending_payments,
+                    "security_events": sec_events,
                     "log_doctor": doctor_report,
                     "public_status": public_status,
                     "pricing": {
@@ -1619,8 +1641,16 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             if path == "/api/admin/strategy-lab/overview":
                 import strategy_lab
-                presets = strategy_lab.list_lab_presets(user_id)
-                runs = strategy_lab.list_lab_runs(limit=35)
+                try:
+                    presets = strategy_lab.list_lab_presets(user_id)
+                except Exception as p_err:
+                    logger.warning("list_lab_presets fallback: %s", p_err)
+                    presets = []
+                try:
+                    runs = strategy_lab.list_lab_runs(limit=35)
+                except Exception as r_err:
+                    logger.warning("list_lab_runs fallback: %s", r_err)
+                    runs = []
                 self._send_json(200, {
                     "ok": True,
                     "symbols": strategy_lab.SUPPORTED_LAB_SYMBOLS,
@@ -1646,7 +1676,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"ok": False, "error": f"Point d'accès inconnu : {path}"})
         except Exception as e:
             logger.error("GET %s error: %s\n%s", path, e, traceback.format_exc())
-            self._send_json(500, {"ok": False, "error": "Une erreur interne est survenue lors du traitement de la requête."})
+            self._send_json(500, {"ok": False, "error": f"Erreur serveur ({path}) : {e}"})
 
     def do_POST(self):
         ensure_web_schema_initialized()
@@ -2537,7 +2567,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"ok": False, "error": f"Point d'accès POST inconnu : {path}"})
         except Exception as e:
             logger.error("POST %s error: %s\n%s", path, e, traceback.format_exc())
-            self._send_json(500, {"ok": False, "error": "Une erreur interne est survenue lors du traitement de la requête."})
+            self._send_json(500, {"ok": False, "error": f"Erreur serveur ({path}) : {e}"})
 
 
 _bg_web_server: Optional[ThreadingHTTPServer] = None

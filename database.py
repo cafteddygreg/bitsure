@@ -6,7 +6,7 @@ from contextlib import contextmanager
 
 try:
     import psycopg2
-    from psycopg2.extras import DictCursor
+    from psycopg2.extras import DictCursor, RealDictCursor
     from psycopg2.pool import ThreadedConnectionPool
     try:
         from psycopg2.pool import PoolError
@@ -21,7 +21,7 @@ except ImportError:
             _mod = _ilu.module_from_spec(_spec)
             _spec.loader.exec_module(_mod)
     import psycopg2
-    from psycopg2.extras import DictCursor
+    from psycopg2.extras import DictCursor, RealDictCursor
     from psycopg2.pool import ThreadedConnectionPool
     PoolError = getattr(psycopg2.pool, "PoolError", Exception)
 
@@ -157,11 +157,49 @@ def pooled_connection():
         _release_conn(conn)
 
 
+class _HybridRow(dict):
+    """
+    Universal row object that inherits from `dict` (so `dict(row)`, `row.get('col')`,
+    `row.items()`, `row.keys()`, `row['col']`, and JSON serialization work natively)
+    AND also supports integer positional indexing `row[0]` and `len(row)` like a tuple/DictRow.
+    """
+
+    def __init__(self, cols, values):
+        col_list = list(cols)
+        val_list = list(values)
+        super().__init__(zip(col_list, val_list))
+        self._vals = val_list
+
+    def __getitem__(self, key):
+        if isinstance(key, (int, slice)):
+            return self._vals[key]
+        return super().__getitem__(key)
+
+
+def _to_hybrid_rows(rows, description):
+    if not rows:
+        return []
+    cols = [d[0] if isinstance(d, (list, tuple)) else getattr(d, "name", str(d)) for d in (description or [])]
+    out = []
+    for r in rows:
+        if isinstance(r, _HybridRow):
+            out.append(r)
+        elif hasattr(r, "_cols") and hasattr(r, "_vals"):
+            out.append(_HybridRow(r._cols, r._vals))
+        elif cols and isinstance(r, (list, tuple)):
+            out.append(_HybridRow(cols, r))
+        elif isinstance(r, dict):
+            out.append(_HybridRow(list(r.keys()), list(r.values())))
+        else:
+            out.append(r)
+    return out
+
+
 class _BufferedCursor:
     """Lightweight cursor adapter that holds fetched rows after the underlying DB connection is returned to the pool."""
 
     def __init__(self, rows, description, rowcount: int):
-        self._rows = list(rows) if rows is not None else []
+        self._rows = _to_hybrid_rows(rows, description) if rows is not None else []
         self._idx = 0
         self.description = description
         self.rowcount = rowcount

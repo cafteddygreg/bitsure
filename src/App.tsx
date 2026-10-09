@@ -1603,27 +1603,14 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex flex-col md:flex-row">
-      {/* Mobile Overlay Backdrop */}
-      {mobileMenuOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/70 backdrop-blur-xs md:hidden"
-          onClick={() => setMobileMenuOpen(false)}
-        />
-      )}
-
-      {/* Left Single Navigation Sidebar (Drawer on mobile, fixed sidebar on desktop) */}
-      <aside
-        className={`fixed inset-y-0 left-0 z-50 w-64 shrink-0 border-r border-white/[0.07] bg-[#0B101B] flex flex-col justify-between transition-transform duration-200 md:static md:translate-x-0 ${
-          mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
-        }`}
-      >
+      {/* Left Single Navigation Sidebar (Hidden on mobile, fixed sidebar on desktop) */}
+      <aside className="hidden md:flex w-64 shrink-0 border-r border-white/[0.07] bg-[#0B101B] flex-col justify-between">
         <div>
           {/* Brand Logo */}
           <div className="h-16 px-5 border-b border-white/[0.07] flex items-center justify-between">
             <button
               onClick={() => {
                 setViewMode('landing');
-                setMobileMenuOpen(false);
               }}
               className="flex items-center gap-2.5 text-left group"
             >
@@ -1636,12 +1623,6 @@ export function App() {
                 </div>
                 <div className="text-[10px] font-mono-tabular text-[#64748B]">QUANT ENGINE v2.0</div>
               </div>
-            </button>
-            <button
-              onClick={() => setMobileMenuOpen(false)}
-              className="md:hidden p-1.5 text-[#94A3B8] hover:text-[#F1F5F9]"
-            >
-              <X className="w-5 h-5" />
             </button>
           </div>
 
@@ -1807,12 +1788,14 @@ export function App() {
         {/* Top Utility & Market Bar */}
         <header className="min-h-14 py-2 px-3 sm:px-6 border-b border-white/[0.07] bg-[#0B101B]/95 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 sm:gap-3 flex-wrap">
+            {/* Compact Brand Badge on Mobile */}
             <button
-              onClick={() => setMobileMenuOpen(true)}
-              className="md:hidden p-2 bg-[#111827] border border-white/10 rounded-lg text-[#F1F5F9]"
-              aria-label={lang === 'en' ? 'Open menu' : 'Ouvrir le menu'}
+              type="button"
+              onClick={() => setViewMode('landing')}
+              className="md:hidden w-8 h-8 rounded-lg bg-[#10B981]/15 border border-[#10B981]/40 flex items-center justify-center text-[#10B981] font-display font-bold text-xs shrink-0"
+              title="Bitsure Teddy"
             >
-              <Menu className="w-4 h-4" />
+              B
             </button>
 
             <select
@@ -1969,13 +1952,9 @@ export function App() {
 
             <button
               onClick={() => {
-                const nextLang: AppLang = lang === 'fr' ? 'en' : 'fr';
                 handleToggleLang();
                 runAnalysis(selectedSymbol, selectedTimeframe, selectedStyle, true);
                 runMultiScan(selectedTimeframe, selectedStyle, false);
-                if (activeLang => activeLang === nextLang) {
-                  // state updated
-                }
               }}
               title={lang === 'en' ? 'Switch language (FR / EN)' : 'Changer de langue (FR / EN)'}
               className="px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded-lg font-mono-tabular uppercase text-[#F1F5F9] hover:border-[#10B981]/50 flex items-center gap-1"
@@ -1984,12 +1963,28 @@ export function App() {
               <span className="text-[#64748B]">/</span>
               <span className={lang === 'en' ? 'text-[#10B981] font-bold' : 'text-[#64748B]'}>EN</span>
             </button>
+
+            <button
+              onClick={handleLogout}
+              className="md:hidden p-1.5 bg-[#F43F5E]/15 border border-[#F43F5E]/30 rounded-lg text-[#FB7185]"
+              title={tr(lang, 'Se déconnecter')}
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
           </div>
         </header>
 
-        {/* Mobile Consolidated Sub-Tab Pill Bar (Only shown on mobile when the active Hub has 2 tabs) */}
+        {/* Mobile Consolidated Sub-Tab Pill Bar (Shown on mobile to switch cleanly within the active Hub) */}
         {currentMobileHub && currentMobileHub.tabs.length > 1 && (
           <div className="md:hidden px-3 pt-2.5">
+            <div className="flex items-center justify-between mb-1.5 px-1">
+              <span className="text-[10px] font-mono-tabular uppercase tracking-wider text-[#64748B]">
+                {lang === 'en' ? `Section: ${currentMobileHub.label}` : `Pôle : ${currentMobileHub.label}`}
+              </span>
+              <span className="text-[10px] font-mono-tabular text-[#10B981]">
+                {currentMobileHub.tabs.findIndex((t) => t.id === activeTab) + 1}/{currentMobileHub.tabs.length}
+              </span>
+            </div>
             <div className="grid grid-cols-2 gap-1.5 p-1 bg-[#111827] border border-white/[0.08] rounded-xl">
               {currentMobileHub.tabs.map((subTab) => {
                 const SubIcon = subTab.icon;
@@ -5000,6 +4995,10 @@ export function App() {
                 onClick={() => {
                   if (!isHubActive) {
                     setActiveTab(hub.tabs[0].id);
+                  } else if (hub.tabs.length > 1) {
+                    const idx = hub.tabs.findIndex((t) => t.id === activeTab);
+                    const nextIdx = (idx + 1) % hub.tabs.length;
+                    setActiveTab(hub.tabs[nextIdx].id);
                   }
                 }}
                 className={`flex flex-col items-center justify-center py-1 px-2 rounded-lg text-[10px] font-medium relative transition-colors ${
