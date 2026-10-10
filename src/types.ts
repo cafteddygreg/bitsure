@@ -454,5 +454,43 @@ export interface StrategyLabRun {
   is_favorite?: boolean;
   notes?: string;
   created_at?: number;
+  selected_models?: string[];
+  config_changes?: StrategyLabParamDiff[];
 }
+
+export interface StrategyLabModelMeta {
+  id: 'confluence' | 'indicators' | 'exits' | 'capital';
+  name: string;
+  name_fr: string;
+  description: string;
+  is_strategy_model: boolean;
+}
+
+export interface StrategyLabParamSpec {
+  model: 'confluence' | 'indicators' | 'exits' | 'capital';
+  type: 'int' | 'float' | 'bool' | 'enum';
+  min?: number;
+  max?: number;
+  choices?: string[];
+  unit?: string;
+  label_fr: string;
+  label_en: string;
+}
+
+export interface StrategyLabParamDiff {
+  param: keyof StrategyLabParams;
+  model: 'confluence' | 'indicators' | 'exits' | 'capital';
+  old_value: number | string | boolean;
+  new_value: number | string | boolean;
+  unit?: string;
+  label_fr?: string;
+  label_en?: string;
+}
+
+export interface StrategyLabSchema {
+  models: StrategyLabModelMeta[];
+  parameters: Record<keyof StrategyLabParams, StrategyLabParamSpec>;
+  default_selected_models: ('confluence' | 'indicators' | 'exits' | 'capital')[];
+}
+
 

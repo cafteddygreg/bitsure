@@ -1813,6 +1813,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     "timeframes": strategy_lab.SUPPORTED_LAB_TIMEFRAMES,
                     "presets": presets,
                     "runs": runs,
+                    "schema": strategy_lab.get_lab_schema_metadata(),
                 })
                 return
 
@@ -2848,19 +2849,135 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"ok": False, "error": f"Opération admin inconnue : {op}"})
                 return
 
-            if path == "/api/admin/strategy-lab/backtest":
+            if path == "/api/admin/strategy-lab/raw-config/validate":
                 import strategy_lab
+                raw_text = str(body.get("raw_config") or "")
+                trading_style = str(body.get("trading_style") or "day").lower()
+                ref_params = body.get("reference_params") if isinstance(body.get("reference_params"), dict) else None
+                selected_models = body.get("selected_models") if isinstance(body.get("selected_models"), list) else None
+                res = strategy_lab.parse_and_validate_raw_config(
+                    raw_text=raw_text,
+                    reference_params=ref_params,
+                    selected_models=selected_models,
+                    trading_style=trading_style,
+                )
+                if not res.get("ok"):
+                    self._send_json(
+                        400,
+                        {
+                            "error": res["errors"][0] if res.get("errors") else "Invalid Raw Config.",
+                            **res,
+                        },
+                    )
+                    return
+                self._send_json(200, res)
+                return
+
+            if path == "/api/admin/strategy-lab/ai-prompt":
+                import strategy_lab
+                trading_style = str(body.get("trading_style") or "day").lower()
+                params = body.get("params") if isinstance(body.get("params"), dict) else {}
+                selected_models = body.get("selected_models") if isinstance(body.get("selected_models"), list) else None
                 symbol = strategy_lab._normalize_lab_symbol(body.get("symbol") or "BTCUSDT")
+                market_type = str(body.get("market_type") or "futures").lower()
                 timeframe = body.get("timeframe") or "15m"
-                trading_style = body.get("trading_style") or "day"
                 start_date = body.get("start_date") or None
                 end_date = body.get("end_date") or None
                 max_candles = int(body.get("max_candles") or 800)
-                raw_params = body.get("params") if isinstance(body.get("params"), dict) else {}
+                run_id = body.get("run_id")
+                active_run = body.get("active_run") if isinstance(body.get("active_run"), dict) else None
+                if not active_run and run_id:
+                    active_run = strategy_lab.get_lab_run_detail(int(run_id))
+                res = strategy_lab.generate_external_ai_prompt(
+                    params=params,
+                    selected_models=selected_models,
+                    symbol=symbol,
+                    market_type=market_type,
+                    timeframe=timeframe,
+                    trading_style=trading_style,
+                    start_date=start_date,
+                    end_date=end_date,
+                    max_candles=max_candles,
+                    active_run=active_run,
+                )
+                self._send_json(200, res)
+                return
+
+            if path == "/api/admin/strategy-lab/backtest":
+                import strategy_lab
+                symbol = strategy_lab._normalize_lab_symbol(body.get("symbol") or "BTCUSDT")
+                market_type = str(body.get("market_type") or "futures").lower()
+                timeframe = body.get("timeframe") or "15m"
+                trading_style = body.get("trading_style") or "day"
+                period_split = str(body.get("period_split") or "full").lower()
+                start_date = body.get("start_date") or None
+                end_date = body.get("end_date") or None
+                max_candles = int(body.get("max_candles") or 800)
+                selected_models = body.get("selected_models") if isinstance(body.get("selected_models"), list) else None
+                ref_params = body.get("reference_params") if isinstance(body.get("reference_params"), dict) else None
+
+                # Both Visual Config and Raw Config converge into the exact same validated parameter dictionary
+                # and the exact same Strategy Lab backtest engine.
+                config_changes = []
+                if isinstance(body.get("raw_config"), str) and body.get("raw_config").strip():
+                    val_res = strategy_lab.parse_and_validate_raw_config(
+                        raw_text=body["raw_config"],
+                        reference_params=ref_params or (body.get("params") if isinstance(body.get("params"), dict) else None),
+                        selected_models=selected_models,
+                        trading_style=trading_style,
+                    )
+                    if not val_res.get("ok"):
+                        self._send_json(
+                            400,
+                            {
+                                "ok": False,
+                                "error": val_res["errors"][0] if val_res.get("errors") else "Invalid Raw Config.",
+                                "validation": val_res,
+                            },
+                        )
+                        return
+                    raw_params = val_res["params"]
+                    config_changes = val_res.get("changes", [])
+                else:
+                    candidate_params = body.get("params") if isinstance(body.get("params"), dict) else {}
+                    if selected_models is not None or ref_params is not None:
+                        val_res = strategy_lab.validate_partial_model_update(
+                            candidate_params=candidate_params,
+                            reference_params=ref_params or candidate_params,
+                            selected_models=selected_models,
+                            trading_style=trading_style,
+                        )
+                        if not val_res.get("ok"):
+                            self._send_json(
+                                400,
+                                {
+                                    "ok": False,
+                                    "error": val_res["errors"][0] if val_res.get("errors") else "Invalid configuration.",
+                                    "validation": val_res,
+                                },
+                            )
+                            return
+                        raw_params = val_res["params"]
+                        config_changes = val_res.get("changes", [])
+                    else:
+                        unknown_keys = [k for k in candidate_params.keys() if k not in strategy_lab.LAB_PARAM_SPECS]
+                        if unknown_keys:
+                            self._send_json(
+                                400,
+                                {
+                                    "ok": False,
+                                    "error": f"Unknown parameter: {unknown_keys[0]}. This parameter is not supported by the selected strategy/model.",
+                                },
+                            )
+                            return
+                        raw_params = candidate_params
+
                 auto_save = bool(body.get("save_run", True))
                 run_name = (body.get("name") or "").strip() or None
                 notes = (body.get("notes") or "").strip()
                 tags = (body.get("tags") or "").strip()
+                preset_id = body.get("preset_id")
+                parent_run_id = body.get("parent_run_id")
 
                 result = strategy_lab.run_backtest_experiment(
                     symbol=symbol,
@@ -2870,7 +2987,13 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     end_date=end_date,
                     raw_params=raw_params,
                     max_candles=max_candles,
+                    market_type=market_type,
+                    period_split=period_split,
                 )
+                result["preset_id"] = preset_id
+                result["parent_run_id"] = parent_run_id
+                result["selected_models"] = selected_models or strategy_lab.ALL_LAB_MODEL_IDS
+                result["config_changes"] = config_changes
                 saved_id = None
                 if auto_save:
                     saved_id = strategy_lab.save_lab_run(
@@ -2879,6 +3002,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         name=run_name,
                         notes=notes,
                         tags=tags,
+                        parent_run_id=parent_run_id,
                     )
                 result["id"] = saved_id
                 self._send_json(200, {

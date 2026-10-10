@@ -28,7 +28,124 @@ import {
   StrategyLabPreset,
   StrategyLabRun,
   StrategyLabTrade,
+  StrategyLabModelMeta,
+  StrategyLabParamSpec,
+  StrategyLabParamDiff,
+  StrategyLabSchema,
 } from '../types';
+
+const DEFAULT_LAB_MODELS: StrategyLabModelMeta[] = [
+  {
+    id: 'confluence',
+    name: 'Signal & Confluence Model',
+    name_fr: 'Modèle Signal & Confluence (Teddy Score)',
+    description:
+      "Gouverne le seuil Teddy Score, les directions autorisées (Long/Short), les filtres d'alignement EMA/MACD/Tendance et les seuils de régime (ADX, ATR%, Volume, Cooldown).",
+    is_strategy_model: true,
+  },
+  {
+    id: 'indicators',
+    name: 'Technical Indicators Model',
+    name_fr: 'Modèle Indicateurs Techniques (EMA / RSI / ADX / ATR / Volume)',
+    description:
+      "Définit les périodes de calcul des moyennes mobiles exponentielles, du RSI (et ses bornes survente/surachat), de l'ADX, de l'ATR et de la moyenne mobile de volume.",
+    is_strategy_model: true,
+  },
+  {
+    id: 'exits',
+    name: 'Exit & Protection Model',
+    name_fr: 'Modèle Sorties & Protection (SL / TP / Break-Even / Trailing)',
+    description:
+      'Contrôle le calcul du Stop Loss, du Take Profit, du ratio R:R minimum, de la prise de profit partielle (TP1), du Break-Even, du Trailing Stop ATR et de la durée maximale en position.',
+    is_strategy_model: true,
+  },
+  {
+    id: 'capital',
+    name: 'Capital, Sizing & Execution Simulation Model',
+    name_fr: 'Modèle Capital, Sizing & Frais de Simulation',
+    description:
+      'Configure le capital initial simulé, le mode de dimensionnement des positions, le levier, les frais Taker, le slippage et les coupe-circuits journaliers.',
+    is_strategy_model: false,
+  },
+];
+
+const DEFAULT_LAB_PARAM_SPECS: Record<keyof StrategyLabParams, StrategyLabParamSpec> = {
+  min_teddy_score: { model: 'confluence', type: 'int', min: 20, max: 95, unit: '/100', label_fr: "Score Teddy Minimum d'Entrée", label_en: 'Minimum Entry Teddy Score' },
+  allow_long: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Autoriser les positions LONG (BUY)', label_en: 'Allow LONG (BUY) positions' },
+  allow_short: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Autoriser les positions SHORT (SELL)', label_en: 'Allow SHORT (SELL) positions' },
+  require_ema_alignment: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Exiger alignement EMA rapide / lente', label_en: 'Require Fast / Slow EMA alignment' },
+  require_macd_confirmation: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Exiger confirmation impulsion MACD', label_en: 'Require MACD momentum confirmation' },
+  require_trend_filter_ema200: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Filtre directionnel strict EMA tendance', label_en: 'Strict directional Trend EMA filter' },
+  block_against_strong_trend: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Protection anti contre-tendance forte (ADX >= 30)', label_en: 'Strong counter-trend protection (ADX >= 30)' },
+  adx_min: { model: 'confluence', type: 'float', min: 5, max: 60, unit: 'pts', label_fr: 'Seuil ADX Minimum (Force de tendance)', label_en: 'Minimum ADX Threshold (Trend strength)' },
+  min_atr_pct: { model: 'confluence', type: 'float', min: 0, max: 5, unit: '%', label_fr: 'Volatilité ATR Minimum (%)', label_en: 'Minimum ATR Volatility (%)' },
+  min_volume_ratio: { model: 'confluence', type: 'float', min: 0, max: 5, unit: 'x', label_fr: 'Ratio Volume Minimum (vs MA)', label_en: 'Minimum Volume Ratio (vs MA)' },
+  cooldown_candles: { model: 'confluence', type: 'int', min: 0, max: 100, unit: 'candles', label_fr: 'Cooldown après clôture (bougies)', label_en: 'Post-trade Cooldown (candles)' },
+
+  ema_fast: { model: 'indicators', type: 'int', min: 3, max: 100, unit: 'bars', label_fr: 'Période EMA Rapide', label_en: 'Fast EMA Period' },
+  ema_slow: { model: 'indicators', type: 'int', min: 5, max: 250, unit: 'bars', label_fr: 'Période EMA Lente', label_en: 'Slow EMA Period' },
+  ema_trend: { model: 'indicators', type: 'int', min: 20, max: 500, unit: 'bars', label_fr: 'Période EMA Tendance', label_en: 'Trend EMA Period' },
+  rsi_period: { model: 'indicators', type: 'int', min: 4, max: 50, unit: 'bars', label_fr: 'Période RSI', label_en: 'RSI Period' },
+  rsi_oversold: { model: 'indicators', type: 'float', min: 10, max: 49, unit: 'pts', label_fr: 'Seuil RSI Survente', label_en: 'RSI Oversold Threshold' },
+  rsi_overbought: { model: 'indicators', type: 'float', min: 51, max: 90, unit: 'pts', label_fr: 'Seuil RSI Surachat', label_en: 'RSI Overbought Threshold' },
+  adx_period: { model: 'indicators', type: 'int', min: 5, max: 50, unit: 'bars', label_fr: 'Période ADX', label_en: 'ADX Period' },
+  atr_period: { model: 'indicators', type: 'int', min: 5, max: 50, unit: 'bars', label_fr: 'Période ATR', label_en: 'ATR Period' },
+  volume_ma_period: { model: 'indicators', type: 'int', min: 5, max: 100, unit: 'bars', label_fr: 'Période Moyenne Mobile Volume', label_en: 'Volume Moving Average Period' },
+
+  sl_mode: { model: 'exits', type: 'enum', choices: ['atr', 'fixed_pct'], unit: '', label_fr: 'Mode de calcul Stop Loss', label_en: 'Stop Loss Calculation Mode' },
+  sl_atr_mult: { model: 'exits', type: 'float', min: 0.3, max: 10, unit: 'xATR', label_fr: 'Multiplicateur Stop Loss (ATR)', label_en: 'Stop Loss ATR Multiplier' },
+  sl_fixed_pct: { model: 'exits', type: 'float', min: 0.1, max: 25, unit: '%', label_fr: 'Distance Stop Loss Fixe (%)', label_en: 'Fixed Stop Loss Distance (%)' },
+  tp_mode: { model: 'exits', type: 'enum', choices: ['rr', 'atr', 'fixed_pct'], unit: '', label_fr: 'Mode de calcul Take Profit', label_en: 'Take Profit Calculation Mode' },
+  min_rr_ratio: { model: 'exits', type: 'float', min: 0.5, max: 10, unit: 'R', label_fr: 'Ratio Risque/Rendement (R:R) Minimum', label_en: 'Minimum Risk/Reward (R:R) Ratio' },
+  tp_atr_mult: { model: 'exits', type: 'float', min: 0.5, max: 20, unit: 'xATR', label_fr: 'Multiplicateur Take Profit (ATR)', label_en: 'Take Profit ATR Multiplier' },
+  tp_fixed_pct: { model: 'exits', type: 'float', min: 0.2, max: 50, unit: '%', label_fr: 'Distance Take Profit Fixe (%)', label_en: 'Fixed Take Profit Distance (%)' },
+  partial_tp_enabled: { model: 'exits', type: 'bool', unit: '', label_fr: 'Activer Take Profit Partiel (TP1)', label_en: 'Enable Partial Take Profit (TP1)' },
+  partial_tp_rr: { model: 'exits', type: 'float', min: 0.3, max: 10, unit: 'R', label_fr: 'Seuil de déclenchement TP Partiel (en R)', label_en: 'Partial TP Trigger (in R)' },
+  partial_tp_close_pct: { model: 'exits', type: 'float', min: 10, max: 90, unit: '%', label_fr: 'Pourcentage clôturé au TP Partiel (%)', label_en: 'Position Closed at Partial TP (%)' },
+  breakeven_enabled: { model: 'exits', type: 'bool', unit: '', label_fr: 'Activer mise à Break-Even automatique', label_en: 'Enable Automatic Break-Even' },
+  breakeven_trigger_rr: { model: 'exits', type: 'float', min: 0.3, max: 10, unit: 'R', label_fr: "Seuil d'activation Break-Even (en R)", label_en: 'Break-Even Activation Threshold (in R)' },
+  trailing_stop_enabled: { model: 'exits', type: 'bool', unit: '', label_fr: 'Activer Trailing Stop Dynamique (ATR)', label_en: 'Enable Dynamic ATR Trailing Stop' },
+  trailing_activation_rr: { model: 'exits', type: 'float', min: 0.4, max: 10, unit: 'R', label_fr: "Seuil d'activation Trailing Stop (en R)", label_en: 'Trailing Stop Activation Threshold (in R)' },
+  trailing_distance_atr: { model: 'exits', type: 'float', min: 0.3, max: 10, unit: 'xATR', label_fr: 'Distance de suivi Trailing Stop (x ATR)', label_en: 'Trailing Stop Distance (x ATR)' },
+  exit_on_opposite_signal: { model: 'exits', type: 'bool', unit: '', label_fr: 'Clôturer sur signal opposé validé', label_en: 'Exit on Validated Opposite Signal' },
+  max_bars_in_trade: { model: 'exits', type: 'int', min: 4, max: 1000, unit: 'candles', label_fr: "Durée maximale d'une position (bougies)", label_en: 'Maximum Bars Held in Trade' },
+
+  initial_capital: { model: 'capital', type: 'float', min: 100, max: 10000000, unit: 'USDT', label_fr: 'Capital Initial Simulé (USDT)', label_en: 'Simulated Initial Capital (USDT)' },
+  position_sizing_mode: { model: 'capital', type: 'enum', choices: ['risk_pct', 'capital_pct', 'fixed_usdt'], unit: '', label_fr: 'Mode de Dimensionnement (Position Sizing)', label_en: 'Position Sizing Mode' },
+  risk_per_trade_pct: { model: 'capital', type: 'float', min: 0.1, max: 25, unit: '%', label_fr: 'Risque par Trade (% du capital)', label_en: 'Risk per Trade (% of capital)' },
+  fixed_position_usdt: { model: 'capital', type: 'float', min: 10, max: 1000000, unit: 'USDT', label_fr: 'Mise Fixe par Position (USDT)', label_en: 'Fixed Position Size (USDT)' },
+  capital_allocation_pct: { model: 'capital', type: 'float', min: 1, max: 100, unit: '%', label_fr: 'Allocation Capital par Position (%)', label_en: 'Capital Allocation per Position (%)' },
+  leverage: { model: 'capital', type: 'float', min: 1, max: 50, unit: 'x', label_fr: 'Levier Simulé (x)', label_en: 'Simulated Leverage (x)' },
+  fee_bps: { model: 'capital', type: 'float', min: 0, max: 100, unit: 'bps', label_fr: 'Frais Taker Simulés (bps)', label_en: 'Simulated Taker Fee (bps)' },
+  slippage_bps: { model: 'capital', type: 'float', min: 0, max: 100, unit: 'bps', label_fr: 'Slippage Estimé par Ordre (bps)', label_en: 'Estimated Slippage per Order (bps)' },
+  max_open_positions: { model: 'capital', type: 'int', min: 1, max: 1, unit: 'pos', label_fr: 'Positions Simultanées Max', label_en: 'Max Simultaneous Open Positions' },
+  max_trades_per_day: { model: 'capital', type: 'int', min: 1, max: 100, unit: 'trades/d', label_fr: 'Nombre Maximum de Trades par Jour', label_en: 'Max Trades per Day' },
+  max_consecutive_losses: { model: 'capital', type: 'int', min: 1, max: 50, unit: 'losses', label_fr: 'Coupe-circuit Pertes Consécutives Max', label_en: 'Max Consecutive Losses Circuit Breaker' },
+};
+
+function formatRawConfigText(
+  params: StrategyLabParams,
+  selectedModels: string[],
+  modelsCatalog: StrategyLabModelMeta[] = DEFAULT_LAB_MODELS,
+  paramSpecs: Record<keyof StrategyLabParams, StrategyLabParamSpec> = DEFAULT_LAB_PARAM_SPECS
+): string {
+  const lines: string[] = [];
+  for (const m of modelsCatalog) {
+    if (!selectedModels.includes(m.id)) continue;
+    const keys = (Object.keys(paramSpecs) as (keyof StrategyLabParams)[]).filter(
+      (k) => paramSpecs[k]?.model === m.id
+    );
+    if (!keys.length) continue;
+    if (lines.length > 0) lines.push('');
+    lines.push(`# [${m.name}]`);
+    for (const k of keys) {
+      const val = params[k];
+      const valStr = typeof val === 'boolean' ? (val ? 'true' : 'false') : String(val);
+      lines.push(`${k}=${valStr}`);
+    }
+  }
+  return lines.join('\n');
+}
 
 const EquityAndDrawdownChart: React.FC<{
   data: NonNullable<StrategyLabRun['equity_curve']>;
@@ -889,17 +1006,206 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
   const [runningSweep, setRunningSweep] = useState<boolean>(false);
   const [sweepResult, setSweepResult] = useState<any | null>(null);
 
+  // =========================================================================
+  // NEW CAPABILITIES: VISUAL CONFIG / RAW CONFIG / MODEL SELECTOR / AI PROMPT
+  // =========================================================================
+  const [labSchema, setLabSchema] = useState<StrategyLabSchema>({
+    models: DEFAULT_LAB_MODELS,
+    parameters: DEFAULT_LAB_PARAM_SPECS,
+    default_selected_models: ['confluence', 'indicators', 'exits', 'capital'],
+  });
+  const [configEditorMode, setConfigEditorMode] = useState<'visual' | 'raw' | 'ai_prompt'>('visual');
+  const [selectedModels, setSelectedModels] = useState<
+    ('confluence' | 'indicators' | 'exits' | 'capital')[]
+  >(['confluence', 'indicators', 'exits', 'capital']);
+  const [rawConfigText, setRawConfigText] = useState<string>(() =>
+    formatRawConfigText(DEFAULT_PARAMS, ['confluence', 'indicators', 'exits', 'capital'])
+  );
+  const [rawConfigValid, setRawConfigValid] = useState<boolean | null>(true);
+  const [rawConfigErrors, setRawConfigErrors] = useState<string[]>([]);
+  const [rawConfigDiff, setRawConfigDiff] = useState<StrategyLabParamDiff[]>([]);
+  const [validatingRawConfig, setValidatingRawConfig] = useState<boolean>(false);
+  const [generatedAiPrompt, setGeneratedAiPrompt] = useState<string>('');
+  const [generatingAiPrompt, setGeneratingAiPrompt] = useState<boolean>(false);
+
+  const editableParamsCount = useMemo(() => {
+    const specs = labSchema.parameters || DEFAULT_LAB_PARAM_SPECS;
+    return (Object.keys(specs) as (keyof StrategyLabParams)[]).filter((k) =>
+      selectedModels.includes(specs[k].model)
+    ).length;
+  }, [labSchema.parameters, selectedModels]);
+
+  // Compute live diff between current params and baselineParams for Visual & Raw preview
+  const liveParamsDiff = useMemo<StrategyLabParamDiff[]>(() => {
+    const specs = labSchema.parameters || DEFAULT_LAB_PARAM_SPECS;
+    const changes: StrategyLabParamDiff[] = [];
+    for (const k of Object.keys(specs) as (keyof StrategyLabParams)[]) {
+      const oldV = baselineParams[k];
+      const newV = params[k];
+      const isDiff =
+        typeof oldV === 'number' && typeof newV === 'number'
+          ? Math.abs(oldV - newV) > 1e-7
+          : oldV !== newV;
+      if (isDiff) {
+        changes.push({
+          param: k,
+          model: specs[k].model,
+          old_value: oldV,
+          new_value: newV,
+          unit: specs[k].unit || '',
+          label_fr: specs[k].label_fr,
+          label_en: specs[k].label_en,
+        });
+      }
+    }
+    return changes;
+  }, [params, baselineParams, labSchema.parameters]);
+
+  const toggleModelSelection = (modelId: 'confluence' | 'indicators' | 'exits' | 'capital') => {
+    setSelectedModels((prev) => {
+      const exists = prev.includes(modelId);
+      const next = exists ? prev.filter((m) => m !== modelId) : [...prev, modelId];
+      // Reset any unsaved edits on unselected model back to baselineParams to guarantee preservation
+      if (exists) {
+        const specs = labSchema.parameters || DEFAULT_LAB_PARAM_SPECS;
+        setParams((curr) => {
+          const copy = { ...curr };
+          for (const k of Object.keys(specs) as (keyof StrategyLabParams)[]) {
+            if (specs[k].model === modelId) {
+              (copy as any)[k] = baselineParams[k];
+            }
+          }
+          return copy;
+        });
+      }
+      // Keep Raw Config synchronized with the newly selected models
+      const nextRaw = formatRawConfigText(
+        params,
+        next,
+        labSchema.models || DEFAULT_LAB_MODELS,
+        labSchema.parameters || DEFAULT_LAB_PARAM_SPECS
+      );
+      setRawConfigText(nextRaw);
+      setRawConfigErrors([]);
+      setRawConfigValid(true);
+      return next;
+    });
+  };
+
+  const handleValidateRawConfig = useCallback(
+    async (textToValidate?: string, silent = false): Promise<{ ok: boolean; params?: StrategyLabParams; changes?: StrategyLabParamDiff[]; errors?: string[] }> => {
+      const targetText = textToValidate !== undefined ? textToValidate : rawConfigText;
+      setValidatingRawConfig(true);
+      try {
+        const res = await apiFetch('/api/admin/strategy-lab/raw-config/validate', {
+          method: 'POST',
+          body: JSON.stringify({
+            raw_config: targetText,
+            reference_params: baselineParams,
+            selected_models: selectedModels,
+            trading_style: tradingStyle,
+          }),
+        });
+        setRawConfigValid(true);
+        setRawConfigErrors([]);
+        setRawConfigDiff(res.changes || []);
+        if (res.params) {
+          setParams({ ...DEFAULT_PARAMS, ...res.params });
+        }
+        if (!silent) {
+          onShowToast(
+            'success',
+            lang === 'en'
+              ? `Raw Config validated (${res.changes_count || 0} parameter change(s)).`
+              : `Raw Config validée (${res.changes_count || 0} paramètre(s) modifié(s)).`
+          );
+        }
+        return { ok: true, params: res.params, changes: res.changes || [] };
+      } catch (err: any) {
+        setRawConfigValid(false);
+        const errMsg = err.message || 'Invalid Raw Config';
+        setRawConfigErrors([errMsg]);
+        if (!silent) {
+          onShowToast('error', errMsg);
+        }
+        return { ok: false, errors: [errMsg] };
+      } finally {
+        setValidatingRawConfig(false);
+      }
+    },
+    [rawConfigText, baselineParams, selectedModels, tradingStyle, onShowToast, lang]
+  );
+
+  const handleGenerateAiPrompt = useCallback(async () => {
+    setGeneratingAiPrompt(true);
+    try {
+      const res = await apiFetch('/api/admin/strategy-lab/ai-prompt', {
+        method: 'POST',
+        body: JSON.stringify({
+          symbol,
+          timeframe,
+          trading_style: tradingStyle,
+          start_date: startDate || undefined,
+          end_date: endDate || undefined,
+          max_candles: maxCandles,
+          params,
+          selected_models: selectedModels,
+          run_id: activeRun?.id,
+          active_run: activeRun
+            ? {
+                start_date: activeRun.start_date,
+                end_date: activeRun.end_date,
+                candles_count: activeRun.candles_count,
+                data_source: activeRun.data_source,
+                metrics: activeRun.metrics,
+                signals_summary: activeRun.signals_summary,
+              }
+            : undefined,
+        }),
+      });
+      if (res.prompt) {
+        setGeneratedAiPrompt(res.prompt);
+      }
+    } catch (err: any) {
+      onShowToast(
+        'error',
+        err.message || (lang === 'en' ? 'Failed to generate AI Prompt.' : 'Impossible de générer le prompt IA.')
+      );
+    } finally {
+      setGeneratingAiPrompt(false);
+    }
+  }, [symbol, timeframe, tradingStyle, startDate, endDate, maxCandles, params, selectedModels, activeRun, onShowToast, lang]);
+
+  // Automatically refresh AI Prompt when opening the AI Prompt tab or when parameters/run change
+  useEffect(() => {
+    if (configEditorMode === 'ai_prompt') {
+      handleGenerateAiPrompt();
+    }
+  }, [configEditorMode, handleGenerateAiPrompt]);
+
   const loadLabOverview = useCallback(async () => {
     try {
       const res = await apiFetch('/api/admin/strategy-lab/overview');
       if (res.symbols) setSymbols(res.symbols);
       if (res.timeframes) setTimeframes(res.timeframes);
+      if (res.schema) {
+        setLabSchema(res.schema);
+      }
       if (res.presets) {
         setPresets(res.presets);
         if (res.presets.length > 0 && !activeRun) {
           const firstPreset = res.presets[0];
-          setParams({ ...DEFAULT_PARAMS, ...firstPreset.params });
-          setBaselineParams({ ...DEFAULT_PARAMS, ...firstPreset.params });
+          const merged = { ...DEFAULT_PARAMS, ...firstPreset.params };
+          setParams(merged);
+          setBaselineParams(merged);
+          setRawConfigText(
+            formatRawConfigText(
+              merged,
+              selectedModels,
+              res.schema?.models || DEFAULT_LAB_MODELS,
+              res.schema?.parameters || DEFAULT_LAB_PARAM_SPECS
+            )
+          );
         }
       }
       if (res.runs) setSavedRuns(res.runs);
@@ -909,32 +1215,53 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
         err.message || (lang === 'en' ? 'Error loading Strategy Lab.' : 'Erreur lors du chargement du Strategy Lab.')
       );
     }
-  }, [activeRun, onShowToast, lang]);
+  }, [activeRun, selectedModels, onShowToast, lang]);
 
   const executeBacktest = useCallback(
-    async (customParams?: StrategyLabParams, isBaselineCompare = false) => {
-      const targetParams = customParams || params;
+    async (customParams?: StrategyLabParams, isBaselineCompare = false, useRawMode = false) => {
+      let targetParams = customParams || params;
+      if (useRawMode && !isBaselineCompare) {
+        const val = await handleValidateRawConfig(rawConfigText, true);
+        if (!val.ok || !val.params) {
+          onShowToast(
+            'error',
+            (val.errors && val.errors[0]) ||
+              (lang === 'en'
+                ? 'Invalid configuration: fix Raw Config errors before running backtest.'
+                : 'Configuration invalide : corrigez les erreurs Raw Config avant de lancer le backtest.')
+          );
+          return;
+        }
+        targetParams = val.params;
+      }
+
       if (isBaselineCompare) {
         setRunningCompare(true);
       } else {
         setRunningBacktest(true);
       }
       try {
+        const payload: Record<string, any> = {
+          symbol,
+          timeframe,
+          trading_style: tradingStyle,
+          start_date: startDate || undefined,
+          end_date: endDate || undefined,
+          max_candles: maxCandles,
+          params: targetParams,
+          reference_params: baselineParams,
+          selected_models: selectedModels,
+          save_run: !isBaselineCompare,
+          name: isBaselineCompare
+            ? `${lang === 'en' ? 'Baseline' : 'Référence'} ${symbol} ${timeframe}`
+            : `${symbol} ${timeframe} (${tradingStyle.toUpperCase()}) • Score≥${targetParams.min_teddy_score} • SL ${targetParams.sl_atr_mult}xATR`,
+        };
+        if (useRawMode && !isBaselineCompare) {
+          payload.raw_config = rawConfigText;
+        }
         const res = await apiFetch('/api/admin/strategy-lab/backtest', {
           method: 'POST',
-          body: JSON.stringify({
-            symbol,
-            timeframe,
-            trading_style: tradingStyle,
-            start_date: startDate || undefined,
-            end_date: endDate || undefined,
-            max_candles: maxCandles,
-            params: targetParams,
-            save_run: !isBaselineCompare,
-            name: isBaselineCompare
-              ? `${lang === 'en' ? 'Baseline' : 'Référence'} ${symbol} ${timeframe}`
-              : `${symbol} ${timeframe} (${tradingStyle.toUpperCase()}) • Score≥${targetParams.min_teddy_score} • SL ${targetParams.sl_atr_mult}xATR`,
-          }),
+          body: JSON.stringify(payload),
         });
         if (isBaselineCompare) {
           setCompareRun(res.run);
@@ -948,6 +1275,18 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           setActiveRun(res.run);
           if (res.runs) setSavedRuns(res.runs);
           setSelectedTrade(null);
+          if (res.run?.params) {
+            const normalizedRunParams = { ...DEFAULT_PARAMS, ...res.run.params };
+            setParams(normalizedRunParams);
+            setRawConfigText(
+              formatRawConfigText(
+                normalizedRunParams,
+                selectedModels,
+                labSchema.models || DEFAULT_LAB_MODELS,
+                labSchema.parameters || DEFAULT_LAB_PARAM_SPECS
+              )
+            );
+          }
           onShowToast(
             'success',
             lang === 'en'
@@ -962,7 +1301,23 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
         setRunningCompare(false);
       }
     },
-    [symbol, timeframe, tradingStyle, startDate, endDate, maxCandles, params, onShowToast, lang]
+    [
+      symbol,
+      timeframe,
+      tradingStyle,
+      startDate,
+      endDate,
+      maxCandles,
+      params,
+      baselineParams,
+      selectedModels,
+      rawConfigText,
+      handleValidateRawConfig,
+      labSchema.models,
+      labSchema.parameters,
+      onShowToast,
+      lang,
+    ]
   );
 
   // Run initial backtest on mount so the Lab is immediately populated with real data
@@ -973,13 +1328,48 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
   }, []);
 
   const handleParamChange = <K extends keyof StrategyLabParams>(key: K, value: StrategyLabParams[K]) => {
-    setParams((prev) => ({ ...prev, [key]: value }));
+    const specs = labSchema.parameters || DEFAULT_LAB_PARAM_SPECS;
+    const paramModel = specs[key]?.model;
+    if (paramModel && !selectedModels.includes(paramModel)) {
+      onShowToast(
+        'info',
+        lang === 'en'
+          ? `Model "${paramModel}" is currently locked. Check its box in the Models selector to edit "${key}".`
+          : `Le modèle « ${paramModel} » est verrouillé. Cochez-le dans la sélection des modèles pour modifier « ${key} ».`
+      );
+      return;
+    }
+    setParams((prev) => {
+      const next = { ...prev, [key]: value };
+      setRawConfigText(
+        formatRawConfigText(
+          next,
+          selectedModels,
+          labSchema.models || DEFAULT_LAB_MODELS,
+          specs
+        )
+      );
+      setRawConfigValid(true);
+      setRawConfigErrors([]);
+      return next;
+    });
   };
 
   const applyPreset = (preset: StrategyLabPreset) => {
     const merged = { ...DEFAULT_PARAMS, ...preset.params };
     setParams(merged);
     setBaselineParams(merged);
+    setRawConfigText(
+      formatRawConfigText(
+        merged,
+        selectedModels,
+        labSchema.models || DEFAULT_LAB_MODELS,
+        labSchema.parameters || DEFAULT_LAB_PARAM_SPECS
+      )
+    );
+    setRawConfigErrors([]);
+    setRawConfigValid(true);
+    setRawConfigDiff([]);
     if (preset.timeframe) setTimeframe(preset.timeframe);
     if (preset.trading_style) setTradingStyle(preset.trading_style);
     onShowToast(
@@ -1042,7 +1432,20 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           );
         } else {
           setActiveRun(res.run);
-          setParams({ ...DEFAULT_PARAMS, ...res.run.params });
+          const restoredParams = { ...DEFAULT_PARAMS, ...res.run.params };
+          setParams(restoredParams);
+          setBaselineParams(restoredParams);
+          setRawConfigText(
+            formatRawConfigText(
+              restoredParams,
+              selectedModels,
+              labSchema.models || DEFAULT_LAB_MODELS,
+              labSchema.parameters || DEFAULT_LAB_PARAM_SPECS
+            )
+          );
+          setRawConfigErrors([]);
+          setRawConfigValid(true);
+          setRawConfigDiff([]);
           setSymbol(res.run.symbol);
           setTimeframe(res.run.timeframe);
           setTradingStyle(res.run.trading_style);
@@ -1417,6 +1820,17 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
               type="button"
               onClick={() => {
                 setParams(baselineParams);
+                setRawConfigText(
+                  formatRawConfigText(
+                    baselineParams,
+                    selectedModels,
+                    labSchema.models || DEFAULT_LAB_MODELS,
+                    labSchema.parameters || DEFAULT_LAB_PARAM_SPECS
+                  )
+                );
+                setRawConfigErrors([]);
+                setRawConfigValid(true);
+                setRawConfigDiff([]);
                 onShowToast('info', tr(lang, 'Paramètres réinitialisés à la valeur de référence.', 'Parameters reset to baseline.'));
               }}
               title={tr(lang, 'Réinitialiser les paramètres modifiés', 'Reset modified parameters')}
@@ -1437,7 +1851,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           MAIN WORKSPACE GRID: LEFT STRATEGY EDITOR (4 COLS) + RIGHT ANALYTICS (8 COLS)
          ===================================================================== */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* LEFT COLUMN: INTERACTIVE STRATEGY PARAMETER EDITOR */}
+        {/* LEFT COLUMN: INTERACTIVE STRATEGY PARAMETER EDITOR (VISUAL / RAW / AI PROMPT) */}
         <div className="lg:col-span-4 bg-[#111827] border border-white/[0.08] rounded-xl overflow-hidden">
           <div className="p-4 border-b border-white/[0.07] flex items-center justify-between bg-[#0B101B]">
             <div className="flex items-center gap-2">
@@ -1446,9 +1860,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                 {tr(lang, 'Éditeur de Règles & Paramètres', 'Rules & Parameters Editor')}
               </h2>
             </div>
-            {modifiedParamsKeys.length > 0 ? (
+            {liveParamsDiff.length > 0 ? (
               <span className="px-2 py-0.5 rounded text-[10px] font-mono-tabular bg-[#F59E0B]/15 text-[#F59E0B] border border-[#F59E0B]/30">
-                {modifiedParamsKeys.length} {tr(lang, 'modifié(s)', 'modified')}
+                {liveParamsDiff.length} {tr(lang, 'modifié(s)', 'modified')}
               </span>
             ) : (
               <span className="text-[10px] font-mono-tabular text-[#64748B]">
@@ -1457,676 +1871,1260 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
             )}
           </div>
 
-          {/* Parameter Category Tabs */}
-          <div className="grid grid-cols-4 border-b border-white/[0.07] bg-[#090D16] text-[11px] font-medium">
+          {/* =================================================================
+              MODE SWITCHER: VISUAL CONFIG / RAW CONFIG / AI PROMPT
+             ================================================================= */}
+          <div className="grid grid-cols-3 border-b border-white/[0.07] bg-[#090D16] p-1 gap-1 text-xs font-medium">
             {[
-              { id: 'confluence', label: tr(lang, 'Score & Filtres', 'Score & Filters') },
-              { id: 'exits', label: 'SL / TP / Trail' },
-              { id: 'indicators', label: tr(lang, 'Indicateurs', 'Indicators') },
-              { id: 'capital', label: tr(lang, 'Capital & Frais', 'Capital & Fees') },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setParamCategory(tab.id as any)}
-                className={`py-2.5 px-2 text-center border-b-2 transition-colors ${
-                  paramCategory === tab.id
-                    ? 'border-[#10B981] text-[#10B981] bg-[#10B981]/5 font-semibold'
-                    : 'border-transparent text-[#94A3B8] hover:text-[#F1F5F9]'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+              { id: 'visual', label: 'Visual Config', icon: Sliders },
+              { id: 'raw', label: 'Raw Config', icon: Copy },
+              { id: 'ai_prompt', label: 'AI Prompt', icon: Sparkles },
+            ].map((modeTab) => {
+              const MIcon = modeTab.icon;
+              const isAct = configEditorMode === modeTab.id;
+              return (
+                <button
+                  key={modeTab.id}
+                  type="button"
+                  onClick={() => {
+                    setConfigEditorMode(modeTab.id as any);
+                    if (modeTab.id === 'raw') {
+                      setRawConfigText(
+                        formatRawConfigText(
+                          params,
+                          selectedModels,
+                          labSchema.models || DEFAULT_LAB_MODELS,
+                          labSchema.parameters || DEFAULT_LAB_PARAM_SPECS
+                        )
+                      );
+                    }
+                  }}
+                  className={`py-2 px-2 rounded-lg flex items-center justify-center gap-1.5 transition-colors ${
+                    isAct
+                      ? 'bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30 font-semibold'
+                      : 'text-[#94A3B8] hover:text-[#F1F5F9] hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <MIcon className="w-3.5 h-3.5" />
+                  <span>{modeTab.label}</span>
+                </button>
+              );
+            })}
           </div>
 
-          <div className="p-4 space-y-4 max-h-[680px] overflow-y-auto">
-            {/* CATEGORY 1: CONFLUENCE, TEDDY SCORE & FILTERS */}
-            {paramCategory === 'confluence' && (
-              <div className="space-y-4">
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-[#94A3B8]">
-                      {tr(lang, "Score Teddy Minimum d'Entrée", 'Minimum Entry Teddy Score')}
-                    </span>
-                    <span className="font-mono-tabular font-bold text-[#10B981]">
-                      {params.min_teddy_score} / 100
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={30}
-                    max={88}
-                    step={1}
-                    value={params.min_teddy_score}
-                    onChange={(e) => handleParamChange('min_teddy_score', Number(e.target.value))}
-                    className="w-full accent-[#10B981]"
-                  />
-                  <div className="flex justify-between text-[10px] font-mono-tabular text-[#64748B]">
-                    <span>{tr(lang, '30 (Agressif)', '30 (Aggressive)')}</span>
-                    <span>{tr(lang, '58 (Officiel)', '58 (Official)')}</span>
-                    <span>{tr(lang, '85 (Ultra-Sélectif)', '85 (Ultra-Selective)')}</span>
-                  </div>
-                </div>
+          {/* =================================================================
+              MODELS / COMPONENTS SELECTOR (PARTIAL MODEL MODIFICATION)
+             ================================================================= */}
+          <div className="p-3.5 border-b border-white/[0.07] bg-[#0B101B]/70 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-mono-tabular uppercase tracking-wider text-[#94A3B8] font-semibold">
+                {tr(lang, 'Modèles / Composants Ciblés', 'Selected Strategy Models')}
+              </span>
+              <span className="px-2 py-0.5 rounded bg-[#10B981]/10 border border-[#10B981]/25 text-[10px] font-mono-tabular text-[#10B981] font-semibold">
+                {selectedModels.length} {tr(lang, 'modèle(s) sélectionné(s)', 'models selected')} • {editableParamsCount}{' '}
+                {tr(lang, 'paramètres éditables', 'parameters editable')}
+              </span>
+            </div>
 
-                <div className="grid grid-cols-2 gap-2.5">
-                  <label className="flex items-center justify-between p-2.5 rounded-lg bg-[#090D16] border border-white/10 text-xs cursor-pointer">
-                    <span className="text-[#F1F5F9]">{tr(lang, 'Autoriser LONG', 'Allow LONG')}</span>
-                    <input
-                      type="checkbox"
-                      checked={params.allow_long}
-                      onChange={(e) => handleParamChange('allow_long', e.target.checked)}
-                      className="accent-[#10B981]"
-                    />
-                  </label>
-                  <label className="flex items-center justify-between p-2.5 rounded-lg bg-[#090D16] border border-white/10 text-xs cursor-pointer">
-                    <span className="text-[#F1F5F9]">{tr(lang, 'Autoriser SHORT', 'Allow SHORT')}</span>
-                    <input
-                      type="checkbox"
-                      checked={params.allow_short}
-                      onChange={(e) => handleParamChange('allow_short', e.target.checked)}
-                      className="accent-[#10B981]"
-                    />
-                  </label>
-                </div>
-
-                <div className="space-y-2">
-                  {[
-                    {
-                      key: 'require_ema_alignment' as const,
-                      label: tr(lang, 'Exiger alignement EMA rapide / lente', 'Require Fast / Slow EMA alignment'),
-                      desc: tr(lang, 'Bloque les achats sous EMA rapide et ventes au-dessus', 'Blocks buys below fast EMA and sells above'),
-                    },
-                    {
-                      key: 'require_macd_confirmation' as const,
-                      label: tr(lang, 'Exiger confirmation impulsion MACD', 'Require MACD momentum confirmation'),
-                      desc: tr(lang, 'Filtre les entrées à contre-courant de l’histogramme MACD', 'Filters entries against the MACD histogram'),
-                    },
-                    {
-                      key: 'require_trend_filter_ema200' as const,
-                      label: tr(lang, `Filtre directionnel strict EMA ${params.ema_trend}`, `Strict directional EMA ${params.ema_trend} filter`),
-                      desc: tr(lang, 'LONG uniquement au-dessus de EMA tendance, SHORT en-dessous', 'LONG only above trend EMA, SHORT only below'),
-                    },
-                    {
-                      key: 'block_against_strong_trend' as const,
-                      label: tr(lang, 'Protection anti contre-tendance forte (ADX ≥ 30)', 'Strong counter-trend protection (ADX ≥ 30)'),
-                      desc: tr(lang, 'Interdit de shorter un rallye puissant ou d’acheter un krach', 'Prevents shorting strong rallies or buying sharp crashes'),
-                    },
-                  ].map((item) => (
-                    <label
-                      key={item.key}
-                      className="flex items-start justify-between gap-3 p-2.5 rounded-lg bg-[#090D16] border border-white/[0.07] hover:border-white/15 cursor-pointer transition-colors"
-                    >
-                      <div>
-                        <div className="text-xs font-medium text-[#F1F5F9]">{item.label}</div>
-                        <div className="text-[11px] text-[#64748B]">{item.desc}</div>
-                      </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              {(labSchema.models || DEFAULT_LAB_MODELS).map((mMeta) => {
+                const checked = selectedModels.includes(mMeta.id);
+                const modelParamCount = (
+                  Object.keys(labSchema.parameters || DEFAULT_LAB_PARAM_SPECS) as (keyof StrategyLabParams)[]
+                ).filter((k) => (labSchema.parameters || DEFAULT_LAB_PARAM_SPECS)[k]?.model === mMeta.id).length;
+                return (
+                  <label
+                    key={mMeta.id}
+                    className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border text-[11px] cursor-pointer transition-colors ${
+                      checked
+                        ? 'bg-[#10B981]/10 border-[#10B981]/35 text-[#F1F5F9]'
+                        : 'bg-[#090D16]/70 border-white/[0.06] text-[#64748B] hover:text-[#94A3B8]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
                       <input
                         type="checkbox"
-                        checked={Boolean(params[item.key])}
-                        onChange={(e) => handleParamChange(item.key, e.target.checked)}
-                        className="mt-1 accent-[#10B981]"
+                        checked={checked}
+                        onChange={() => toggleModelSelection(mMeta.id)}
+                        className="accent-[#10B981] shrink-0"
                       />
-                    </label>
-                  ))}
-                </div>
-
-                <div className="grid grid-cols-2 gap-3 pt-1">
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Seuil ADX Min (Tendance)', 'Min ADX Threshold (Trend)')}
-                    </label>
-                    <input
-                      type="number"
-                      step="1"
-                      min={5}
-                      max={50}
-                      value={params.adx_min}
-                      onChange={(e) => handleParamChange('adx_min', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Volatilité ATR Min (%)', 'Min ATR Volatility (%)')}
-                    </label>
-                    <input
-                      type="number"
-                      step="0.02"
-                      min={0}
-                      max={3}
-                      value={params.min_atr_pct}
-                      onChange={(e) => handleParamChange('min_atr_pct', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Ratio Volume Min (vs MA)', 'Min Volume Ratio (vs MA)')}
-                    </label>
-                    <input
-                      type="number"
-                      step="0.05"
-                      min={0}
-                      max={3}
-                      value={params.min_volume_ratio}
-                      onChange={(e) => handleParamChange('min_volume_ratio', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Cooldown (Bougies)', 'Cooldown (Candles)')}
-                    </label>
-                    <input
-                      type="number"
-                      step="1"
-                      min={0}
-                      max={30}
-                      value={params.cooldown_candles}
-                      onChange={(e) => handleParamChange('cooldown_candles', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* CATEGORY 2: STOP LOSS, TAKE PROFIT, BREAK-EVEN & TRAILING */}
-            {paramCategory === 'exits' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Mode Stop Loss', 'Stop Loss Mode')}
-                    </label>
-                    <select
-                      value={params.sl_mode}
-                      onChange={(e) => handleParamChange('sl_mode', e.target.value as any)}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs text-[#F1F5F9]"
-                    >
-                      <option value="atr">{tr(lang, 'Dynamique (Multiple ATR)', 'Dynamic (ATR Multiple)')}</option>
-                      <option value="fixed_pct">{tr(lang, 'Pourcentage Fixe (%)', 'Fixed Percentage (%)')}</option>
-                    </select>
-                  </div>
-                  {params.sl_mode === 'atr' ? (
-                    <div>
-                      <label className="block text-[11px] text-[#94A3B8] mb-1">
-                        {tr(lang, 'Multiplicateur SL (ATR)', 'SL Multiplier (ATR)')}
-                      </label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min={0.4}
-                        max={8}
-                        value={params.sl_atr_mult}
-                        onChange={(e) => handleParamChange('sl_atr_mult', Number(e.target.value))}
-                        className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
-                      />
-                    </div>
-                  ) : (
-                    <div>
-                      <label className="block text-[11px] text-[#94A3B8] mb-1">
-                        {tr(lang, 'Distance SL Fixe (%)', 'Fixed SL Distance (%)')}
-                      </label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min={0.2}
-                        max={15}
-                        value={params.sl_fixed_pct}
-                        onChange={(e) => handleParamChange('sl_fixed_pct', Number(e.target.value))}
-                        className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
-                      />
-                    </div>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Mode Take Profit', 'Take Profit Mode')}
-                    </label>
-                    <select
-                      value={params.tp_mode}
-                      onChange={(e) => handleParamChange('tp_mode', e.target.value as any)}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs text-[#F1F5F9]"
-                    >
-                      <option value="rr">{tr(lang, 'Multiple du Risque (R:R)', 'Risk Multiple (R:R)')}</option>
-                      <option value="atr">{tr(lang, 'Multiple ATR', 'ATR Multiple')}</option>
-                      <option value="fixed_pct">{tr(lang, 'Pourcentage Fixe (%)', 'Fixed Percentage (%)')}</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Ratio R:R Minimum Cible', 'Minimum Target R:R Ratio')}
-                    </label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      min={0.8}
-                      max={8}
-                      value={params.min_rr_ratio}
-                      onChange={(e) => handleParamChange('min_rr_ratio', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
-                    />
-                  </div>
-                </div>
-
-                {/* Partial TP */}
-                <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-2.5">
-                  <label className="flex items-center justify-between text-xs font-medium text-[#F1F5F9] cursor-pointer">
-                    <span>{tr(lang, 'Take Profit Partiel (TP1 Automatique)', 'Partial Take Profit (Auto TP1)')}</span>
-                    <input
-                      type="checkbox"
-                      checked={params.partial_tp_enabled}
-                      onChange={(e) => handleParamChange('partial_tp_enabled', e.target.checked)}
-                      className="accent-[#10B981]"
-                    />
-                  </label>
-                  {params.partial_tp_enabled && (
-                    <div className="grid grid-cols-2 gap-2.5 pt-1">
-                      <div>
-                        <span className="block text-[10px] text-[#64748B]">
-                          {tr(lang, 'Déclenchement (en R)', 'Trigger (in R)')}
-                        </span>
-                        <input
-                          type="number"
-                          step="0.1"
-                          value={params.partial_tp_rr}
-                          onChange={(e) => handleParamChange('partial_tp_rr', Number(e.target.value))}
-                          className="w-full mt-0.5 px-2 py-1 bg-[#111827] border border-white/10 rounded text-xs font-mono-tabular"
-                        />
-                      </div>
-                      <div>
-                        <span className="block text-[10px] text-[#64748B]">
-                          {tr(lang, 'Part clôturée (%)', 'Closed Portion (%)')}
-                        </span>
-                        <input
-                          type="number"
-                          step="5"
-                          value={params.partial_tp_close_pct}
-                          onChange={(e) => handleParamChange('partial_tp_close_pct', Number(e.target.value))}
-                          className="w-full mt-0.5 px-2 py-1 bg-[#111827] border border-white/10 rounded text-xs font-mono-tabular"
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Break-Even */}
-                <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-2.5">
-                  <label className="flex items-center justify-between text-xs font-medium text-[#F1F5F9] cursor-pointer">
-                    <span>{tr(lang, 'Mise à Break-Even Automatique', 'Automatic Break-Even')}</span>
-                    <input
-                      type="checkbox"
-                      checked={params.breakeven_enabled}
-                      onChange={(e) => handleParamChange('breakeven_enabled', e.target.checked)}
-                      className="accent-[#10B981]"
-                    />
-                  </label>
-                  {params.breakeven_enabled && (
-                    <div>
-                      <span className="block text-[10px] text-[#64748B]">
-                        {tr(lang, "Seuil d'activation Break-Even (Multiple R)", 'Break-Even Activation Threshold (R Multiple)')}
+                      <span className="truncate font-medium">
+                        {mMeta.id === 'confluence'
+                          ? 'Signal & Confluence'
+                          : mMeta.id === 'indicators'
+                          ? 'Indicators & RSI'
+                          : mMeta.id === 'exits'
+                          ? 'Exit & SL/TP Model'
+                          : 'Capital & Execution'}
                       </span>
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={params.breakeven_trigger_rr}
-                        onChange={(e) => handleParamChange('breakeven_trigger_rr', Number(e.target.value))}
-                        className="w-full mt-0.5 px-2 py-1 bg-[#111827] border border-white/10 rounded text-xs font-mono-tabular"
-                      />
                     </div>
-                  )}
-                </div>
-
-                {/* Trailing Stop */}
-                <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-2.5">
-                  <label className="flex items-center justify-between text-xs font-medium text-[#F1F5F9] cursor-pointer">
-                    <span>{tr(lang, 'Trailing Stop Dynamique (ATR)', 'Dynamic Trailing Stop (ATR)')}</span>
-                    <input
-                      type="checkbox"
-                      checked={params.trailing_stop_enabled}
-                      onChange={(e) => handleParamChange('trailing_stop_enabled', e.target.checked)}
-                      className="accent-[#10B981]"
-                    />
+                    <span className="text-[10px] font-mono-tabular text-[#64748B] shrink-0">
+                      {modelParamCount}p
+                    </span>
                   </label>
-                  {params.trailing_stop_enabled && (
-                    <div className="grid grid-cols-2 gap-2.5 pt-1">
-                      <div>
-                        <span className="block text-[10px] text-[#64748B]">
-                          {tr(lang, 'Activation (en R)', 'Activation (in R)')}
-                        </span>
-                        <input
-                          type="number"
-                          step="0.1"
-                          value={params.trailing_activation_rr}
-                          onChange={(e) => handleParamChange('trailing_activation_rr', Number(e.target.value))}
-                          className="w-full mt-0.5 px-2 py-1 bg-[#111827] border border-white/10 rounded text-xs font-mono-tabular"
-                        />
-                      </div>
-                      <div>
-                        <span className="block text-[10px] text-[#64748B]">
-                          {tr(lang, 'Distance suivi (x ATR)', 'Trailing Distance (x ATR)')}
-                        </span>
-                        <input
-                          type="number"
-                          step="0.1"
-                          value={params.trailing_distance_atr}
-                          onChange={(e) => handleParamChange('trailing_distance_atr', Number(e.target.value))}
-                          className="w-full mt-0.5 px-2 py-1 bg-[#111827] border border-white/10 rounded text-xs font-mono-tabular"
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="flex items-center justify-between p-2.5 rounded-lg bg-[#090D16] border border-white/10 text-xs cursor-pointer">
-                    <span className="text-[#94A3B8]">{tr(lang, 'Sortie signal opposé', 'Exit on opposite signal')}</span>
-                    <input
-                      type="checkbox"
-                      checked={params.exit_on_opposite_signal}
-                      onChange={(e) => handleParamChange('exit_on_opposite_signal', e.target.checked)}
-                      className="accent-[#10B981]"
-                    />
-                  </label>
-                  <div>
-                    <label className="block text-[10px] text-[#64748B] mb-1">
-                      {tr(lang, 'Durée Max (Bougies)', 'Max Duration (Candles)')}
-                    </label>
-                    <input
-                      type="number"
-                      min={4}
-                      max={500}
-                      value={params.max_bars_in_trade}
-                      onChange={(e) => handleParamChange('max_bars_in_trade', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* CATEGORY 3: TECHNICAL INDICATORS PARAMETERS */}
-            {paramCategory === 'indicators' && (
-              <div className="space-y-3.5">
-                <div className="grid grid-cols-3 gap-2.5">
-                  <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'EMA Rapide', 'Fast EMA')}</label>
-                    <input
-                      type="number"
-                      value={params.ema_fast}
-                      onChange={(e) => handleParamChange('ema_fast', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'EMA Lente', 'Slow EMA')}</label>
-                    <input
-                      type="number"
-                      value={params.ema_slow}
-                      onChange={(e) => handleParamChange('ema_slow', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'EMA Tendance', 'Trend EMA')}</label>
-                    <input
-                      type="number"
-                      value={params.ema_trend}
-                      onChange={(e) => handleParamChange('ema_trend', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2.5">
-                  <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'Période RSI', 'RSI Period')}</label>
-                    <input
-                      type="number"
-                      value={params.rsi_period}
-                      onChange={(e) => handleParamChange('rsi_period', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'RSI Survente', 'RSI Oversold')}</label>
-                    <input
-                      type="number"
-                      value={params.rsi_oversold}
-                      onChange={(e) => handleParamChange('rsi_oversold', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'RSI Surachat', 'RSI Overbought')}</label>
-                    <input
-                      type="number"
-                      value={params.rsi_overbought}
-                      onChange={(e) => handleParamChange('rsi_overbought', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2.5">
-                  <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'Période ATR', 'ATR Period')}</label>
-                    <input
-                      type="number"
-                      value={params.atr_period}
-                      onChange={(e) => handleParamChange('atr_period', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'Période ADX', 'ADX Period')}</label>
-                    <input
-                      type="number"
-                      value={params.adx_period}
-                      onChange={(e) => handleParamChange('adx_period', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-[#94A3B8] mb-1">{tr(lang, 'MA Volume', 'Volume MA')}</label>
-                    <input
-                      type="number"
-                      value={params.volume_ma_period}
-                      onChange={(e) => handleParamChange('volume_ma_period', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* CATEGORY 4: CAPITAL, POSITION SIZING, FEES & SLIPPAGE */}
-            {paramCategory === 'capital' && (
-              <div className="space-y-3.5">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Capital Initial (USDT)', 'Initial Capital (USDT)')}
-                    </label>
-                    <input
-                      type="number"
-                      step="500"
-                      value={params.initial_capital}
-                      onChange={(e) => handleParamChange('initial_capital', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Levier Simulé (x)', 'Simulated Leverage (x)')}
-                    </label>
-                    <input
-                      type="number"
-                      step="1"
-                      min={1}
-                      max={25}
-                      value={params.leverage}
-                      onChange={(e) => handleParamChange('leverage', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] text-[#94A3B8] mb-1">
-                    {tr(lang, 'Mode de Dimensionnement (Position Sizing)', 'Position Sizing Mode')}
-                  </label>
-                  <select
-                    value={params.position_sizing_mode}
-                    onChange={(e) => handleParamChange('position_sizing_mode', e.target.value as any)}
-                    className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs text-[#F1F5F9]"
-                  >
-                    <option value="risk_pct">
-                      {tr(lang, 'Risque en % du Capital par Trade (basé sur distance SL)', 'Risk % of Capital per Trade (based on SL distance)')}
-                    </option>
-                    <option value="capital_pct">{tr(lang, '% Fixe du Capital Alloué', 'Fixed % of Allocated Capital')}</option>
-                    <option value="fixed_usdt">{tr(lang, 'Montant Fixe en USDT par Trade', 'Fixed USDT Amount per Trade')}</option>
-                  </select>
-                </div>
-
-                {params.position_sizing_mode === 'risk_pct' && (
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Risque par Trade (% du capital perdu si SL touché)', 'Risk per Trade (% of capital lost if SL hit)')}
-                    </label>
-                    <input
-                      type="number"
-                      step="0.25"
-                      min={0.1}
-                      max={10}
-                      value={params.risk_per_trade_pct}
-                      onChange={(e) => handleParamChange('risk_per_trade_pct', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
+                );
+              })}
+            </div>
+            <div className="text-[10px] text-[#64748B] flex items-center justify-between">
+              <span>
+                {tr(
+                  lang,
+                  'Les modèles non cochés restent verrouillés sur la configuration de référence.',
+                  'Unchecked models remain locked to the reference configuration.'
                 )}
-
-                {params.position_sizing_mode === 'capital_pct' && (
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Allocation Capital par Position (%)', 'Capital Allocation per Position (%)')}
-                    </label>
-                    <input
-                      type="number"
-                      step="1"
-                      min={1}
-                      max={100}
-                      value={params.capital_allocation_pct}
-                      onChange={(e) => handleParamChange('capital_allocation_pct', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                )}
-
-                {params.position_sizing_mode === 'fixed_usdt' && (
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Mise Fixe par Position (USDT)', 'Fixed Size per Position (USDT)')}
-                    </label>
-                    <input
-                      type="number"
-                      step="100"
-                      value={params.fixed_position_usdt}
-                      onChange={(e) => handleParamChange('fixed_position_usdt', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                )}
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Frais Taker (bps, 4 = 0.04%)', 'Taker Fees (bps, 4 = 0.04%)')}
-                    </label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      min={0}
-                      max={50}
-                      value={params.fee_bps}
-                      onChange={(e) => handleParamChange('fee_bps', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Slippage Estimé (bps)', 'Estimated Slippage (bps)')}
-                    </label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      min={0}
-                      max={50}
-                      value={params.slippage_bps}
-                      onChange={(e) => handleParamChange('slippage_bps', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Trades Max / Jour', 'Max Trades / Day')}
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={50}
-                      value={params.max_trades_per_day}
-                      onChange={(e) => handleParamChange('max_trades_per_day', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-[#94A3B8] mb-1">
-                      {tr(lang, 'Coupe-circuit Pertes Conséc.', 'Max Consecutive Losses')}
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={20}
-                      value={params.max_consecutive_losses}
-                      onChange={(e) => handleParamChange('max_consecutive_losses', Number(e.target.value))}
-                      className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Action Buttons inside Parameter Editor */}
-            <div className="pt-3 border-t border-white/[0.07] flex flex-col gap-2">
+              </span>
               <button
                 type="button"
-                onClick={() => executeBacktest(params, false)}
-                disabled={runningBacktest}
-                className="w-full py-2.5 rounded-lg bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-semibold text-xs flex items-center justify-center gap-2 transition-colors"
+                onClick={() => {
+                  const allIds: ('confluence' | 'indicators' | 'exits' | 'capital')[] = [
+                    'confluence',
+                    'indicators',
+                    'exits',
+                    'capital',
+                  ];
+                  setSelectedModels(allIds);
+                  setRawConfigText(
+                    formatRawConfigText(
+                      params,
+                      allIds,
+                      labSchema.models || DEFAULT_LAB_MODELS,
+                      labSchema.parameters || DEFAULT_LAB_PARAM_SPECS
+                    )
+                  );
+                }}
+                className="text-[#60A5FA] hover:underline font-mono-tabular shrink-0 ml-2"
               >
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>{runningBacktest ? tr(lang, 'Calcul en cours...', 'Computing...') : tr(lang, 'Simuler ce Scénario (B)', 'Simulate Scenario (B)')}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => executeBacktest(baselineParams, true)}
-                disabled={runningCompare}
-                className="w-full py-2 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-xs text-[#F1F5F9] flex items-center justify-center gap-2 transition-colors"
-              >
-                <GitCompare className="w-3.5 h-3.5 text-[#60A5FA]" />
-                <span>
-                  {runningCompare
-                    ? tr(lang, 'Calcul référence...', 'Computing baseline...')
-                    : tr(lang, 'Épingler la Référence Actuelle pour Comparaison A/B', 'Pin Current Baseline for A/B Comparison')}
-                </span>
+                {tr(lang, 'Tout cocher', 'Select all')}
               </button>
             </div>
           </div>
+
+          {/* =================================================================
+              MODE 1: VISUAL CONFIG
+             ================================================================= */}
+          {configEditorMode === 'visual' && (
+            <>
+              {/* Parameter Category Tabs */}
+              <div className="grid grid-cols-4 border-b border-white/[0.07] bg-[#090D16] text-[11px] font-medium">
+                {[
+                  { id: 'confluence', label: tr(lang, 'Score & Filtres', 'Score & Filters') },
+                  { id: 'exits', label: 'SL / TP / Trail' },
+                  { id: 'indicators', label: tr(lang, 'Indicateurs', 'Indicators') },
+                  { id: 'capital', label: tr(lang, 'Capital & Frais', 'Capital & Fees') },
+                ].map((tab) => {
+                  const isModelLocked = !selectedModels.includes(tab.id as any);
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setParamCategory(tab.id as any)}
+                      className={`py-2.5 px-2 text-center border-b-2 transition-colors ${
+                        paramCategory === tab.id
+                          ? 'border-[#10B981] text-[#10B981] bg-[#10B981]/5 font-semibold'
+                          : 'border-transparent text-[#94A3B8] hover:text-[#F1F5F9]'
+                      } ${isModelLocked ? 'opacity-60' : ''}`}
+                    >
+                      {tab.label} {isModelLocked ? '🔒' : ''}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="p-4 space-y-4 max-h-[680px] overflow-y-auto">
+                {/* Lock notice when current tab's model is unselected */}
+                {!selectedModels.includes(paramCategory) && (
+                  <div className="p-3 rounded-lg bg-[#F59E0B]/10 border border-[#F59E0B]/30 text-xs text-[#FBBF24] flex items-center justify-between gap-2">
+                    <span>
+                      {tr(
+                        lang,
+                        'Ce modèle est non sélectionné : ses paramètres sont préservés tels quels depuis la référence.',
+                        'This model is unselected: its parameters are preserved unchanged from baseline.'
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => toggleModelSelection(paramCategory)}
+                      className="px-2.5 py-1 rounded bg-[#F59E0B]/20 hover:bg-[#F59E0B]/30 text-[#FDE68A] font-mono-tabular text-[11px] shrink-0"
+                    >
+                      {tr(lang, 'Déverrouiller', 'Unlock')}
+                    </button>
+                  </div>
+                )}
+
+                <fieldset
+                  disabled={!selectedModels.includes(paramCategory)}
+                  className={!selectedModels.includes(paramCategory) ? 'opacity-50 pointer-events-none space-y-4' : 'space-y-4'}
+                >
+                  {/* CATEGORY 1: CONFLUENCE, TEDDY SCORE & FILTERS */}
+                  {paramCategory === 'confluence' && (
+                    <div className="space-y-4">
+                      <div>
+                        <div className="flex justify-between text-xs mb-1">
+                          <span className="text-[#94A3B8]">
+                            {tr(lang, "Score Teddy Minimum d'Entrée", 'Minimum Entry Teddy Score')}{' '}
+                            <span className="text-[10px] font-mono-tabular text-[#64748B]">(min_teddy_score • int [20..95])</span>
+                          </span>
+                          <span className="font-mono-tabular font-bold text-[#10B981]">
+                            {params.min_teddy_score} / 100
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={20}
+                          max={95}
+                          step={1}
+                          value={params.min_teddy_score}
+                          onChange={(e) => handleParamChange('min_teddy_score', Number(e.target.value))}
+                          className="w-full accent-[#10B981]"
+                        />
+                        <div className="flex justify-between text-[10px] font-mono-tabular text-[#64748B]">
+                          <span>{tr(lang, '20 (Min)', '20 (Min)')}</span>
+                          <span>{tr(lang, '58 (Officiel)', '58 (Official)')}</span>
+                          <span>{tr(lang, '95 (Max)', '95 (Max)')}</span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <label className="flex items-center justify-between p-2.5 rounded-lg bg-[#090D16] border border-white/10 text-xs cursor-pointer">
+                          <div>
+                            <div className="text-[#F1F5F9]">{tr(lang, 'Autoriser LONG', 'Allow LONG')}</div>
+                            <div className="text-[10px] font-mono-tabular text-[#64748B]">allow_long (bool)</div>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={params.allow_long}
+                            onChange={(e) => handleParamChange('allow_long', e.target.checked)}
+                            className="accent-[#10B981]"
+                          />
+                        </label>
+                        <label className="flex items-center justify-between p-2.5 rounded-lg bg-[#090D16] border border-white/10 text-xs cursor-pointer">
+                          <div>
+                            <div className="text-[#F1F5F9]">{tr(lang, 'Autoriser SHORT', 'Allow SHORT')}</div>
+                            <div className="text-[10px] font-mono-tabular text-[#64748B]">allow_short (bool)</div>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={params.allow_short}
+                            onChange={(e) => handleParamChange('allow_short', e.target.checked)}
+                            className="accent-[#10B981]"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="space-y-2">
+                        {[
+                          {
+                            key: 'require_ema_alignment' as const,
+                            label: tr(lang, 'Exiger alignement EMA rapide / lente', 'Require Fast / Slow EMA alignment'),
+                            desc: tr(lang, 'Bloque les achats sous EMA rapide et ventes au-dessus', 'Blocks buys below fast EMA and sells above'),
+                          },
+                          {
+                            key: 'require_macd_confirmation' as const,
+                            label: tr(lang, 'Exiger confirmation impulsion MACD', 'Require MACD momentum confirmation'),
+                            desc: tr(lang, 'Filtre les entrées à contre-courant de l’histogramme MACD', 'Filters entries against the MACD histogram'),
+                          },
+                          {
+                            key: 'require_trend_filter_ema200' as const,
+                            label: tr(lang, `Filtre directionnel strict EMA ${params.ema_trend}`, `Strict directional EMA ${params.ema_trend} filter`),
+                            desc: tr(lang, 'LONG uniquement au-dessus de EMA tendance, SHORT en-dessous', 'LONG only above trend EMA, SHORT only below'),
+                          },
+                          {
+                            key: 'block_against_strong_trend' as const,
+                            label: tr(lang, 'Protection anti contre-tendance forte (ADX ≥ 30)', 'Strong counter-trend protection (ADX ≥ 30)'),
+                            desc: tr(lang, 'Interdit de shorter un rallye puissant ou d’acheter un krach', 'Prevents shorting strong rallies or buying sharp crashes'),
+                          },
+                        ].map((item) => (
+                          <label
+                            key={item.key}
+                            className="flex items-start justify-between gap-3 p-2.5 rounded-lg bg-[#090D16] border border-white/[0.07] hover:border-white/15 cursor-pointer transition-colors"
+                          >
+                            <div>
+                              <div className="text-xs font-medium text-[#F1F5F9]">{item.label}</div>
+                              <div className="text-[10px] font-mono-tabular text-[#64748B]">{item.key} (bool)</div>
+                              <div className="text-[11px] text-[#64748B]">{item.desc}</div>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={Boolean(params[item.key])}
+                              onChange={(e) => handleParamChange(item.key, e.target.checked)}
+                              className="mt-1 accent-[#10B981]"
+                            />
+                          </label>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3 pt-1">
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Seuil ADX Min (Tendance)', 'Min ADX Threshold (Trend)')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">adx_min • float [5..60] pts</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="1"
+                            min={5}
+                            max={60}
+                            value={params.adx_min}
+                            onChange={(e) => handleParamChange('adx_min', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Volatilité ATR Min (%)', 'Min ATR Volatility (%)')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">min_atr_pct • float [0..5] %</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="0.02"
+                            min={0}
+                            max={5}
+                            value={params.min_atr_pct}
+                            onChange={(e) => handleParamChange('min_atr_pct', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Ratio Volume Min (vs MA)', 'Min Volume Ratio (vs MA)')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">min_volume_ratio • float [0..5] x</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="0.05"
+                            min={0}
+                            max={5}
+                            value={params.min_volume_ratio}
+                            onChange={(e) => handleParamChange('min_volume_ratio', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Cooldown (Bougies)', 'Cooldown (Candles)')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">cooldown_candles • int [0..100]</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="1"
+                            min={0}
+                            max={100}
+                            value={params.cooldown_candles}
+                            onChange={(e) => handleParamChange('cooldown_candles', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* CATEGORY 2: STOP LOSS, TAKE PROFIT, BREAK-EVEN & TRAILING */}
+                  {paramCategory === 'exits' && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Mode Stop Loss', 'Stop Loss Mode')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">sl_mode • enum [atr, fixed_pct]</span>
+                          </label>
+                          <select
+                            value={params.sl_mode}
+                            onChange={(e) => handleParamChange('sl_mode', e.target.value as any)}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs text-[#F1F5F9]"
+                          >
+                            <option value="atr">{tr(lang, 'Dynamique (Multiple ATR)', 'Dynamic (ATR Multiple)')}</option>
+                            <option value="fixed_pct">{tr(lang, 'Pourcentage Fixe (%)', 'Fixed Percentage (%)')}</option>
+                          </select>
+                        </div>
+                        {params.sl_mode === 'atr' ? (
+                          <div>
+                            <label className="block text-[11px] text-[#94A3B8] mb-1">
+                              {tr(lang, 'Multiplicateur SL (ATR)', 'SL Multiplier (ATR)')}
+                              <span className="block text-[10px] font-mono-tabular text-[#64748B]">sl_atr_mult • float [0.3..10] xATR</span>
+                            </label>
+                            <input
+                              type="number"
+                              step="0.1"
+                              min={0.3}
+                              max={10}
+                              value={params.sl_atr_mult}
+                              onChange={(e) => handleParamChange('sl_atr_mult', Number(e.target.value))}
+                              className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
+                            />
+                          </div>
+                        ) : (
+                          <div>
+                            <label className="block text-[11px] text-[#94A3B8] mb-1">
+                              {tr(lang, 'Distance SL Fixe (%)', 'Fixed SL Distance (%)')}
+                              <span className="block text-[10px] font-mono-tabular text-[#64748B]">sl_fixed_pct • float [0.1..25] %</span>
+                            </label>
+                            <input
+                              type="number"
+                              step="0.1"
+                              min={0.1}
+                              max={25}
+                              value={params.sl_fixed_pct}
+                              onChange={(e) => handleParamChange('sl_fixed_pct', Number(e.target.value))}
+                              className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Mode Take Profit', 'Take Profit Mode')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">tp_mode • enum [rr, atr, fixed_pct]</span>
+                          </label>
+                          <select
+                            value={params.tp_mode}
+                            onChange={(e) => handleParamChange('tp_mode', e.target.value as any)}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs text-[#F1F5F9]"
+                          >
+                            <option value="rr">{tr(lang, 'Multiple du Risque (R:R)', 'Risk Multiple (R:R)')}</option>
+                            <option value="atr">{tr(lang, 'Multiple ATR', 'ATR Multiple')}</option>
+                            <option value="fixed_pct">{tr(lang, 'Pourcentage Fixe (%)', 'Fixed Percentage (%)')}</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Ratio R:R Minimum Cible', 'Minimum Target R:R Ratio')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">min_rr_ratio • float [0.5..10] R</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min={0.5}
+                            max={10}
+                            value={params.min_rr_ratio}
+                            onChange={(e) => handleParamChange('min_rr_ratio', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
+                          />
+                        </div>
+                      </div>
+
+                      {params.tp_mode === 'atr' && (
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Multiplicateur Take Profit (ATR)', 'Take Profit ATR Multiplier')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">tp_atr_mult • float [0.5..20] xATR</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min={0.5}
+                            max={20}
+                            value={params.tp_atr_mult}
+                            onChange={(e) => handleParamChange('tp_atr_mult', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
+                          />
+                        </div>
+                      )}
+
+                      {params.tp_mode === 'fixed_pct' && (
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Distance Take Profit Fixe (%)', 'Fixed Take Profit Distance (%)')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">tp_fixed_pct • float [0.2..50] %</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min={0.2}
+                            max={50}
+                            value={params.tp_fixed_pct}
+                            onChange={(e) => handleParamChange('tp_fixed_pct', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular text-[#F1F5F9]"
+                          />
+                        </div>
+                      )}
+
+                      {/* Partial TP */}
+                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-2.5">
+                        <label className="flex items-center justify-between text-xs font-medium text-[#F1F5F9] cursor-pointer">
+                          <div>
+                            <span>{tr(lang, 'Take Profit Partiel (TP1 Automatique)', 'Partial Take Profit (Auto TP1)')}</span>
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">partial_tp_enabled (bool)</span>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={params.partial_tp_enabled}
+                            onChange={(e) => handleParamChange('partial_tp_enabled', e.target.checked)}
+                            className="accent-[#10B981]"
+                          />
+                        </label>
+                        {params.partial_tp_enabled && (
+                          <div className="grid grid-cols-2 gap-2.5 pt-1">
+                            <div>
+                              <span className="block text-[10px] text-[#64748B]">
+                                {tr(lang, 'Déclenchement (en R)', 'Trigger (in R)')} (partial_tp_rr [0.3..10])
+                              </span>
+                              <input
+                                type="number"
+                                step="0.1"
+                                min={0.3}
+                                max={10}
+                                value={params.partial_tp_rr}
+                                onChange={(e) => handleParamChange('partial_tp_rr', Number(e.target.value))}
+                                className="w-full mt-0.5 px-2 py-1 bg-[#111827] border border-white/10 rounded text-xs font-mono-tabular"
+                              />
+                            </div>
+                            <div>
+                              <span className="block text-[10px] text-[#64748B]">
+                                {tr(lang, 'Part clôturée (%)', 'Closed Portion (%)')} (partial_tp_close_pct [10..90])
+                              </span>
+                              <input
+                                type="number"
+                                step="5"
+                                min={10}
+                                max={90}
+                                value={params.partial_tp_close_pct}
+                                onChange={(e) => handleParamChange('partial_tp_close_pct', Number(e.target.value))}
+                                className="w-full mt-0.5 px-2 py-1 bg-[#111827] border border-white/10 rounded text-xs font-mono-tabular"
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Break-Even */}
+                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-2.5">
+                        <label className="flex items-center justify-between text-xs font-medium text-[#F1F5F9] cursor-pointer">
+                          <div>
+                            <span>{tr(lang, 'Mise à Break-Even Automatique', 'Automatic Break-Even')}</span>
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">breakeven_enabled (bool)</span>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={params.breakeven_enabled}
+                            onChange={(e) => handleParamChange('breakeven_enabled', e.target.checked)}
+                            className="accent-[#10B981]"
+                          />
+                        </label>
+                        {params.breakeven_enabled && (
+                          <div>
+                            <span className="block text-[10px] text-[#64748B]">
+                              {tr(lang, "Seuil d'activation Break-Even (Multiple R)", 'Break-Even Activation Threshold (R Multiple)')} (breakeven_trigger_rr [0.3..10])
+                            </span>
+                            <input
+                              type="number"
+                              step="0.1"
+                              min={0.3}
+                              max={10}
+                              value={params.breakeven_trigger_rr}
+                              onChange={(e) => handleParamChange('breakeven_trigger_rr', Number(e.target.value))}
+                              className="w-full mt-0.5 px-2 py-1 bg-[#111827] border border-white/10 rounded text-xs font-mono-tabular"
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Trailing Stop */}
+                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-2.5">
+                        <label className="flex items-center justify-between text-xs font-medium text-[#F1F5F9] cursor-pointer">
+                          <div>
+                            <span>{tr(lang, 'Trailing Stop Dynamique (ATR)', 'Dynamic Trailing Stop (ATR)')}</span>
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">trailing_stop_enabled (bool)</span>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={params.trailing_stop_enabled}
+                            onChange={(e) => handleParamChange('trailing_stop_enabled', e.target.checked)}
+                            className="accent-[#10B981]"
+                          />
+                        </label>
+                        {params.trailing_stop_enabled && (
+                          <div className="grid grid-cols-2 gap-2.5 pt-1">
+                            <div>
+                              <span className="block text-[10px] text-[#64748B]">
+                                {tr(lang, 'Activation (en R)', 'Activation (in R)')} (trailing_activation_rr [0.4..10])
+                              </span>
+                              <input
+                                type="number"
+                                step="0.1"
+                                min={0.4}
+                                max={10}
+                                value={params.trailing_activation_rr}
+                                onChange={(e) => handleParamChange('trailing_activation_rr', Number(e.target.value))}
+                                className="w-full mt-0.5 px-2 py-1 bg-[#111827] border border-white/10 rounded text-xs font-mono-tabular"
+                              />
+                            </div>
+                            <div>
+                              <span className="block text-[10px] text-[#64748B]">
+                                {tr(lang, 'Distance suivi (x ATR)', 'Trailing Distance (x ATR)')} (trailing_distance_atr [0.3..10])
+                              </span>
+                              <input
+                                type="number"
+                                step="0.1"
+                                min={0.3}
+                                max={10}
+                                value={params.trailing_distance_atr}
+                                onChange={(e) => handleParamChange('trailing_distance_atr', Number(e.target.value))}
+                                className="w-full mt-0.5 px-2 py-1 bg-[#111827] border border-white/10 rounded text-xs font-mono-tabular"
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <label className="flex items-center justify-between p-2.5 rounded-lg bg-[#090D16] border border-white/10 text-xs cursor-pointer">
+                          <div>
+                            <span className="text-[#94A3B8]">{tr(lang, 'Sortie signal opposé', 'Exit on opposite signal')}</span>
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">exit_on_opposite_signal</span>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={params.exit_on_opposite_signal}
+                            onChange={(e) => handleParamChange('exit_on_opposite_signal', e.target.checked)}
+                            className="accent-[#10B981]"
+                          />
+                        </label>
+                        <div>
+                          <label className="block text-[10px] text-[#64748B] mb-1">
+                            {tr(lang, 'Durée Max (Bougies)', 'Max Duration (Candles)')} (max_bars_in_trade [4..1000])
+                          </label>
+                          <input
+                            type="number"
+                            min={4}
+                            max={1000}
+                            value={params.max_bars_in_trade}
+                            onChange={(e) => handleParamChange('max_bars_in_trade', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* CATEGORY 3: TECHNICAL INDICATORS PARAMETERS */}
+                  {paramCategory === 'indicators' && (
+                    <div className="space-y-3.5">
+                      <div className="grid grid-cols-3 gap-2.5">
+                        <div>
+                          <label className="block text-[10px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'EMA Rapide', 'Fast EMA')}
+                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">ema_fast [3..100]</span>
+                          </label>
+                          <input
+                            type="number"
+                            min={3}
+                            max={100}
+                            value={params.ema_fast}
+                            onChange={(e) => handleParamChange('ema_fast', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'EMA Lente', 'Slow EMA')}
+                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">ema_slow [5..250]</span>
+                          </label>
+                          <input
+                            type="number"
+                            min={5}
+                            max={250}
+                            value={params.ema_slow}
+                            onChange={(e) => handleParamChange('ema_slow', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'EMA Tendance', 'Trend EMA')}
+                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">ema_trend [20..500]</span>
+                          </label>
+                          <input
+                            type="number"
+                            min={20}
+                            max={500}
+                            value={params.ema_trend}
+                            onChange={(e) => handleParamChange('ema_trend', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2.5">
+                        <div>
+                          <label className="block text-[10px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Période RSI', 'RSI Period')}
+                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">rsi_period [4..50]</span>
+                          </label>
+                          <input
+                            type="number"
+                            min={4}
+                            max={50}
+                            value={params.rsi_period}
+                            onChange={(e) => handleParamChange('rsi_period', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'RSI Survente', 'RSI Oversold')}
+                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">rsi_oversold [10..49]</span>
+                          </label>
+                          <input
+                            type="number"
+                            min={10}
+                            max={49}
+                            value={params.rsi_oversold}
+                            onChange={(e) => handleParamChange('rsi_oversold', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'RSI Surachat', 'RSI Overbought')}
+                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">rsi_overbought [51..90]</span>
+                          </label>
+                          <input
+                            type="number"
+                            min={51}
+                            max={90}
+                            value={params.rsi_overbought}
+                            onChange={(e) => handleParamChange('rsi_overbought', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2.5">
+                        <div>
+                          <label className="block text-[10px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Période ATR', 'ATR Period')}
+                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">atr_period [5..50]</span>
+                          </label>
+                          <input
+                            type="number"
+                            min={5}
+                            max={50}
+                            value={params.atr_period}
+                            onChange={(e) => handleParamChange('atr_period', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Période ADX', 'ADX Period')}
+                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">adx_period [5..50]</span>
+                          </label>
+                          <input
+                            type="number"
+                            min={5}
+                            max={50}
+                            value={params.adx_period}
+                            onChange={(e) => handleParamChange('adx_period', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'MA Volume', 'Volume MA')}
+                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">volume_ma_period [5..100]</span>
+                          </label>
+                          <input
+                            type="number"
+                            min={5}
+                            max={100}
+                            value={params.volume_ma_period}
+                            onChange={(e) => handleParamChange('volume_ma_period', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* CATEGORY 4: CAPITAL, POSITION SIZING, FEES & SLIPPAGE */}
+                  {paramCategory === 'capital' && (
+                    <div className="space-y-3.5">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Capital Initial (USDT)', 'Initial Capital (USDT)')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">initial_capital [100..10M]</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="500"
+                            min={100}
+                            max={10000000}
+                            value={params.initial_capital}
+                            onChange={(e) => handleParamChange('initial_capital', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Levier Simulé (x)', 'Simulated Leverage (x)')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">leverage [1..50] x</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="1"
+                            min={1}
+                            max={50}
+                            value={params.leverage}
+                            onChange={(e) => handleParamChange('leverage', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] text-[#94A3B8] mb-1">
+                          {tr(lang, 'Mode de Dimensionnement (Position Sizing)', 'Position Sizing Mode')}
+                          <span className="block text-[10px] font-mono-tabular text-[#64748B]">position_sizing_mode • enum [risk_pct, capital_pct, fixed_usdt]</span>
+                        </label>
+                        <select
+                          value={params.position_sizing_mode}
+                          onChange={(e) => handleParamChange('position_sizing_mode', e.target.value as any)}
+                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs text-[#F1F5F9]"
+                        >
+                          <option value="risk_pct">
+                            {tr(lang, 'Risque en % du Capital par Trade (basé sur distance SL)', 'Risk % of Capital per Trade (based on SL distance)')}
+                          </option>
+                          <option value="capital_pct">{tr(lang, '% Fixe du Capital Alloué', 'Fixed % of Allocated Capital')}</option>
+                          <option value="fixed_usdt">{tr(lang, 'Montant Fixe en USDT par Trade', 'Fixed USDT Amount per Trade')}</option>
+                        </select>
+                      </div>
+
+                      {params.position_sizing_mode === 'risk_pct' && (
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Risque par Trade (% du capital perdu si SL touché)', 'Risk per Trade (% of capital lost if SL hit)')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">risk_per_trade_pct [0.1..25] %</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="0.25"
+                            min={0.1}
+                            max={25}
+                            value={params.risk_per_trade_pct}
+                            onChange={(e) => handleParamChange('risk_per_trade_pct', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                      )}
+
+                      {params.position_sizing_mode === 'capital_pct' && (
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Allocation Capital par Position (%)', 'Capital Allocation per Position (%)')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">capital_allocation_pct [1..100] %</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="1"
+                            min={1}
+                            max={100}
+                            value={params.capital_allocation_pct}
+                            onChange={(e) => handleParamChange('capital_allocation_pct', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                      )}
+
+                      {params.position_sizing_mode === 'fixed_usdt' && (
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Mise Fixe par Position (USDT)', 'Fixed Size per Position (USDT)')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">fixed_position_usdt [10..1M] USDT</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="100"
+                            min={10}
+                            max={1000000}
+                            value={params.fixed_position_usdt}
+                            onChange={(e) => handleParamChange('fixed_position_usdt', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Frais Taker (bps, 4 = 0.04%)', 'Taker Fees (bps, 4 = 0.04%)')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">fee_bps [0..100] bps</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="0.5"
+                            min={0}
+                            max={100}
+                            value={params.fee_bps}
+                            onChange={(e) => handleParamChange('fee_bps', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Slippage Estimé (bps)', 'Estimated Slippage (bps)')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">slippage_bps [0..100] bps</span>
+                          </label>
+                          <input
+                            type="number"
+                            step="0.5"
+                            min={0}
+                            max={100}
+                            value={params.slippage_bps}
+                            onChange={(e) => handleParamChange('slippage_bps', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Trades Max / Jour', 'Max Trades / Day')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">max_trades_per_day [1..100]</span>
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={100}
+                            value={params.max_trades_per_day}
+                            onChange={(e) => handleParamChange('max_trades_per_day', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                            {tr(lang, 'Coupe-circuit Pertes Conséc.', 'Max Consecutive Losses')}
+                            <span className="block text-[10px] font-mono-tabular text-[#64748B]">max_consecutive_losses [1..50]</span>
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={50}
+                            value={params.max_consecutive_losses}
+                            onChange={(e) => handleParamChange('max_consecutive_losses', Number(e.target.value))}
+                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </fieldset>
+
+                {/* Live Configuration Changes Summary before Backtest */}
+                <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px] font-mono-tabular">
+                    <span className="uppercase text-[#94A3B8] font-semibold">
+                      {tr(lang, 'Changements de Configuration (Diff)', 'Configuration Changes')}
+                    </span>
+                    <span className={liveParamsDiff.length > 0 ? 'text-[#F59E0B] font-bold' : 'text-[#64748B]'}>
+                      {liveParamsDiff.length > 0
+                        ? `${liveParamsDiff.length} ${tr(lang, 'paramètre(s) modifié(s)', 'parameters changed')}`
+                        : tr(lang, 'Aucun changement détecté', 'No configuration changes detected.')}
+                    </span>
+                  </div>
+                  {liveParamsDiff.length > 0 && (
+                    <div className="space-y-1 max-h-28 overflow-y-auto pt-1">
+                      {liveParamsDiff.map((chg) => (
+                        <div
+                          key={chg.param}
+                          className="flex items-center justify-between text-[11px] font-mono-tabular bg-[#111827] px-2 py-1 rounded border border-white/[0.05]"
+                        >
+                          <span className="text-[#F1F5F9] font-semibold">{chg.param}</span>
+                          <span className="text-[#94A3B8]">
+                            <span className="text-[#64748B]">{String(chg.old_value)}</span>
+                            <span className="mx-1.5 text-[#10B981]">→</span>
+                            <span className="text-[#10B981] font-bold">{String(chg.new_value)}</span>
+                          </span>
+                        </div>
+                      ))}
+                      <div className="text-[10px] text-[#64748B] pt-0.5">
+                        {tr(lang, 'Tous les autres paramètres restent inchangés.', 'All other parameters remain unchanged.')}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Action Buttons inside Visual Parameter Editor */}
+                <div className="pt-2 border-t border-white/[0.07] flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={() => executeBacktest(params, false, false)}
+                    disabled={runningBacktest}
+                    className="w-full py-2.5 rounded-lg bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-semibold text-xs flex items-center justify-center gap-2 transition-colors"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>
+                      {runningBacktest
+                        ? tr(lang, 'Calcul en cours...', 'Computing...')
+                        : tr(lang, 'Simuler ce Scénario (B)', 'Simulate Scenario (B)')}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => executeBacktest(baselineParams, true, false)}
+                    disabled={runningCompare}
+                    className="w-full py-2 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-xs text-[#F1F5F9] flex items-center justify-center gap-2 transition-colors"
+                  >
+                    <GitCompare className="w-3.5 h-3.5 text-[#60A5FA]" />
+                    <span>
+                      {runningCompare
+                        ? tr(lang, 'Calcul référence...', 'Computing baseline...')
+                        : tr(lang, 'Épingler la Référence Actuelle pour Comparaison A/B', 'Pin Current Baseline for A/B Comparison')}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* =================================================================
+              MODE 2: RAW CONFIG (TEXT EDITOR, STRICT PARSER & DIFF PREVIEW)
+             ================================================================= */}
+          {configEditorMode === 'raw' && (
+            <div className="p-4 space-y-4">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="text-xs text-[#94A3B8]">
+                  {tr(
+                    lang,
+                    'Éditez ou collez les paramètres existants au format KEY=VALUE. Toute variable inconnue ou hors modèle sélectionné est rejetée.',
+                    'Edit or paste existing parameters in KEY=VALUE format. Any unknown variable or unselected model parameter is strictly rejected.'
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(rawConfigText);
+                      onShowToast('success', tr(lang, 'Raw Config copiée dans le presse-papiers.', 'Raw Config copied to clipboard.'));
+                    }}
+                    className="px-2.5 py-1 rounded bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[11px] font-mono-tabular text-[#F1F5F9] flex items-center gap-1"
+                  >
+                    <Copy className="w-3 h-3 text-[#10B981]" />
+                    <span>{tr(lang, 'Copier', 'Copy')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const resetTxt = formatRawConfigText(
+                        baselineParams,
+                        selectedModels,
+                        labSchema.models || DEFAULT_LAB_MODELS,
+                        labSchema.parameters || DEFAULT_LAB_PARAM_SPECS
+                      );
+                      setParams(baselineParams);
+                      setRawConfigText(resetTxt);
+                      setRawConfigValid(true);
+                      setRawConfigErrors([]);
+                      setRawConfigDiff([]);
+                      onShowToast('info', tr(lang, 'Raw Config restaurée à la référence.', 'Raw Config reverted to baseline.'));
+                    }}
+                    className="px-2.5 py-1 rounded bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[11px] font-mono-tabular text-[#94A3B8] hover:text-[#F1F5F9] flex items-center gap-1"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>{tr(lang, 'Réinitialiser', 'Reset')}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Raw Config Textarea */}
+              <div>
+                <textarea
+                  value={rawConfigText}
+                  onChange={(e) => {
+                    setRawConfigText(e.target.value);
+                    setRawConfigValid(null);
+                  }}
+                  rows={14}
+                  spellCheck={false}
+                  placeholder="min_teddy_score=58&#10;rsi_oversold=32.0&#10;rsi_overbought=68.0"
+                  className="w-full p-3 rounded-lg bg-[#090D16] border border-white/15 focus:border-[#10B981] text-xs font-mono-tabular text-[#F1F5F9] leading-relaxed focus:outline-none"
+                />
+              </div>
+
+              {/* Validation Error Banner */}
+              {rawConfigErrors.length > 0 && (
+                <div className="p-3 rounded-lg bg-[#F43F5E]/10 border border-[#F43F5E]/30 space-y-1">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-[#F43F5E]">
+                    <XCircle className="w-4 h-4 shrink-0" />
+                    <span>Invalid configuration</span>
+                  </div>
+                  {rawConfigErrors.map((err, i) => (
+                    <div key={i} className="text-[11px] font-mono-tabular text-[#FDA4AF]">
+                      {err}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Diff Preview Before Backtest */}
+              <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-2">
+                <div className="flex items-center justify-between text-xs font-mono-tabular">
+                  <span className="uppercase text-[#94A3B8] font-semibold">
+                    Configuration changes
+                  </span>
+                  {rawConfigValid === true && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-[#10B981]">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      {tr(lang, 'Validé', 'Validated')}
+                    </span>
+                  )}
+                </div>
+
+                {rawConfigErrors.length > 0 ? (
+                  <div className="text-xs font-mono-tabular text-[#F43F5E]">
+                    Invalid configuration — {tr(lang, 'lancement bloqué.', 'launch blocked.')}
+                  </div>
+                ) : (rawConfigDiff.length > 0 ? rawConfigDiff : liveParamsDiff).length === 0 ? (
+                  <div className="text-xs font-mono-tabular text-[#64748B]">
+                    No configuration changes detected.
+                  </div>
+                ) : (
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                    {(rawConfigDiff.length > 0 ? rawConfigDiff : liveParamsDiff).map((chg) => (
+                      <div
+                        key={chg.param}
+                        className="p-2 rounded bg-[#111827] border border-white/[0.06] flex items-center justify-between text-xs font-mono-tabular"
+                      >
+                        <div>
+                          <div className="font-bold text-[#F1F5F9]">{chg.param}</div>
+                          <div className="text-[10px] text-[#64748B]">{chg.model}</div>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[#94A3B8]">{String(chg.old_value)}</span>
+                          <span className="mx-1.5 text-[#10B981]">→</span>
+                          <span className="text-[#10B981] font-bold">{String(chg.new_value)}</span>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="text-[11px] font-mono-tabular text-[#94A3B8] pt-1">
+                      {(rawConfigDiff.length > 0 ? rawConfigDiff : liveParamsDiff).length} parameters changed. All other parameters remain unchanged.
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Separation of Strategy Config & Backtest Config */}
+              <div className="p-3 rounded-lg bg-[#090D16]/60 border border-white/[0.05] text-[11px] font-mono-tabular space-y-1 text-[#94A3B8]">
+                <div className="text-[10px] uppercase text-[#64748B] font-bold">
+                  BACKTEST CONFIG ({tr(lang, 'Séparé des variables de modèles', 'Separated from model variables')})
+                </div>
+                <div>Asset: <strong className="text-[#F1F5F9]">{symbol}</strong> • Timeframe: <strong className="text-[#F1F5F9]">{timeframe}</strong> • Style: <strong className="text-[#F1F5F9]">{tradingStyle.toUpperCase()}</strong></div>
+                <div>Period: <strong className="text-[#F1F5F9]">{activeRun?.start_date || startDate || 'Auto'}</strong> → <strong className="text-[#F1F5F9]">{activeRun?.end_date || endDate || 'Latest closed candle'}</strong> ({maxCandles} candles)</div>
+                <div>Initial simulated capital: <strong className="text-[#10B981]">{params.initial_capital} USDT</strong></div>
+              </div>
+
+              {/* Raw Config Actions */}
+              <div className="flex flex-col gap-2 pt-1">
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleValidateRawConfig(rawConfigText, false)}
+                    disabled={validatingRawConfig}
+                    className="py-2 px-3 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/15 text-xs font-semibold text-[#F1F5F9] flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981]" />
+                    <span>
+                      {validatingRawConfig
+                        ? tr(lang, 'Validation...', 'Validating...')
+                        : tr(lang, 'Valider Raw Config', 'Validate Raw Config')}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowSavePresetModal(true)}
+                    className="py-2 px-3 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/15 text-xs font-semibold text-[#F1F5F9] flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <Save className="w-3.5 h-3.5 text-[#60A5FA]" />
+                    <span>{tr(lang, 'Sauver Preset', 'Save Preset')}</span>
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => executeBacktest(params, false, true)}
+                  disabled={runningBacktest || rawConfigErrors.length > 0}
+                  className="w-full py-2.5 rounded-lg bg-[#10B981] hover:bg-[#059669] disabled:opacity-40 text-[#090D16] font-semibold text-xs flex items-center justify-center gap-2 transition-colors"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>
+                    {runningBacktest
+                      ? tr(lang, 'Simulation en cours...', 'Simulating...')
+                      : tr(lang, 'Valider & Lancer le Backtest (Nouvelle Expérience)', 'Validate & Run Backtest (New Experiment)')}
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* =================================================================
+              MODE 3: AI PROMPT GENERATOR (100% LOCAL, NO EXTERNAL AI CALL)
+             ================================================================= */}
+          {configEditorMode === 'ai_prompt' && (
+            <div className="p-4 space-y-4">
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-[#F1F5F9] flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-[#10B981]" />
+                    <span>AI Prompt Generator</span>
+                  </span>
+                  <span className="text-[10px] font-mono-tabular px-2 py-0.5 rounded bg-[#10B981]/10 text-[#10B981] border border-[#10B981]/25">
+                    {tr(lang, '100% Local • Sans clé API', '100% Local • No API Key')}
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#94A3B8]">
+                  {tr(
+                    lang,
+                    "Prompt structuré généré dynamiquement à partir de vos vrais paramètres Bitsure, des modèles cochés et des résultats du backtest actif. Copiez-le dans n'importe quelle IA externe (ChatGPT, Claude, Gemini), puis collez sa réponse dans Raw Config.",
+                    'Structured prompt dynamically generated from your real Bitsure parameters, selected models, and active backtest results. Copy it into any external AI, then paste its response into Raw Config.'
+                  )}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!generatedAiPrompt) return;
+                    navigator.clipboard?.writeText(generatedAiPrompt);
+                    onShowToast(
+                      'success',
+                      tr(lang, 'Prompt IA copié ! Collez-le dans votre IA externe.', 'AI Prompt copied! Paste it into your external AI.')
+                    );
+                  }}
+                  disabled={!generatedAiPrompt}
+                  className="flex-1 py-2.5 px-3 rounded-lg bg-[#10B981] hover:bg-[#059669] disabled:opacity-40 text-[#090D16] font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-[#10B981]/10"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy AI Prompt</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGenerateAiPrompt}
+                  disabled={generatingAiPrompt}
+                  className="py-2.5 px-3 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-xs text-[#F1F5F9] flex items-center gap-1"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 ${generatingAiPrompt ? 'animate-spin' : ''}`} />
+                  <span>{tr(lang, 'Actualiser', 'Refresh')}</span>
+                </button>
+              </div>
+
+              <textarea
+                readOnly
+                value={generatedAiPrompt}
+                rows={18}
+                className="w-full p-3 rounded-lg bg-[#090D16] border border-white/15 text-[11px] font-mono-tabular text-[#E2E8F0] leading-relaxed focus:outline-none"
+              />
+
+              <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.07] text-[11px] text-[#94A3B8] space-y-1">
+                <div className="font-semibold text-[#F1F5F9]">
+                  {tr(lang, 'Flux recommandé :', 'Recommended workflow:')}
+                </div>
+                <div>1. {tr(lang, 'Cliquez sur « Copy AI Prompt » et collez-le dans votre IA.', 'Click "Copy AI Prompt" and paste it into your AI.')}</div>
+                <div>2. {tr(lang, "Copiez la section PROPOSED CHANGES de la réponse de l'IA.", "Copy the PROPOSED CHANGES section from the AI's response.")}</div>
+                <div>3. {tr(lang, 'Collez-la dans l’onglet « Raw Config », vérifiez le Diff et lancez le backtest.', 'Paste it into the "Raw Config" tab, inspect the Diff, and run the backtest.')}</div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* RIGHT COLUMN: ANALYTICS, CHARTS, DIAGNOSTICS, TRADES & SWEEP */}

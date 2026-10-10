@@ -22,9 +22,14 @@ from typing import Dict, Any, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from database import get_db
+import database as _db_mod
 from indicators import macd, adx, bollinger_bands, rsi as calc_rsi, atr as calc_atr
 from data_fetcher import normalize_symbol
+
+
+def get_db():
+    return _db_mod.get_db()
+
 
 logger = logging.getLogger("strategy_lab")
 
@@ -303,6 +308,1054 @@ def normalize_lab_params(raw_params: Optional[Dict[str, Any]], style: str = "day
     base["trailing_distance_atr"] = max(0.3, min(10.0, float(base.get("trailing_distance_atr", 1.1))))
     base["max_bars_in_trade"] = max(4, min(1000, int(base.get("max_bars_in_trade", 48))))
     return base
+
+
+# ==============================================================================
+# SINGLE SOURCE OF TRUTH: STRATEGY MODELS & PARAMETER SPECIFICATIONS
+# ==============================================================================
+# Maps every existing Bitsure Strategy Lab parameter to its exact model, type,
+# bounds, and unit without creating any parallel variable system.
+LAB_MODELS_CATALOG: List[Dict[str, Any]] = [
+    {
+        "id": "confluence",
+        "name": "Signal & Confluence Model",
+        "name_fr": "Modèle Signal & Confluence (Teddy Score)",
+        "description": "Gouverne le seuil Teddy Score, les directions autorisées (Long/Short), les filtres d'alignement EMA/MACD/Tendance et les seuils de régime (ADX, ATR%, Volume, Cooldown).",
+        "is_strategy_model": True,
+    },
+    {
+        "id": "indicators",
+        "name": "Technical Indicators Model",
+        "name_fr": "Modèle Indicateurs Techniques (EMA / RSI / ADX / ATR / Volume)",
+        "description": "Définit les périodes de calcul des moyennes mobiles exponentielles, du RSI (et ses bornes survente/surachat), de l'ADX, de l'ATR et de la moyenne mobile de volume.",
+        "is_strategy_model": True,
+    },
+    {
+        "id": "exits",
+        "name": "Exit & Protection Model",
+        "name_fr": "Modèle Sorties & Protection (SL / TP / Break-Even / Trailing)",
+        "description": "Contrôle le calcul du Stop Loss, du Take Profit, du ratio R:R minimum, de la prise de profit partielle (TP1), du Break-Even, du Trailing Stop ATR et de la durée maximale en position.",
+        "is_strategy_model": True,
+    },
+    {
+        "id": "capital",
+        "name": "Capital, Sizing & Execution Simulation Model",
+        "name_fr": "Modèle Capital, Sizing & Frais de Simulation",
+        "description": "Configure le capital initial simulé, le mode de dimensionnement des positions, le levier, les frais Taker, le slippage et les coupe-circuits journaliers.",
+        "is_strategy_model": False,
+    },
+]
+
+LAB_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
+    # 1. Signal & Confluence Model ("confluence")
+    "min_teddy_score": {
+        "model": "confluence",
+        "type": "int",
+        "min": 20,
+        "max": 95,
+        "unit": "/100",
+        "label_fr": "Score Teddy Minimum d'Entrée",
+        "label_en": "Minimum Entry Teddy Score",
+    },
+    "allow_long": {
+        "model": "confluence",
+        "type": "bool",
+        "unit": "",
+        "label_fr": "Autoriser les positions LONG (BUY)",
+        "label_en": "Allow LONG (BUY) positions",
+    },
+    "allow_short": {
+        "model": "confluence",
+        "type": "bool",
+        "unit": "",
+        "label_fr": "Autoriser les positions SHORT (SELL)",
+        "label_en": "Allow SHORT (SELL) positions",
+    },
+    "require_ema_alignment": {
+        "model": "confluence",
+        "type": "bool",
+        "unit": "",
+        "label_fr": "Exiger alignement EMA rapide / lente",
+        "label_en": "Require Fast / Slow EMA alignment",
+    },
+    "require_macd_confirmation": {
+        "model": "confluence",
+        "type": "bool",
+        "unit": "",
+        "label_fr": "Exiger confirmation impulsion MACD",
+        "label_en": "Require MACD momentum confirmation",
+    },
+    "require_trend_filter_ema200": {
+        "model": "confluence",
+        "type": "bool",
+        "unit": "",
+        "label_fr": "Filtre directionnel strict EMA tendance",
+        "label_en": "Strict directional Trend EMA filter",
+    },
+    "block_against_strong_trend": {
+        "model": "confluence",
+        "type": "bool",
+        "unit": "",
+        "label_fr": "Protection anti contre-tendance forte (ADX >= 30)",
+        "label_en": "Strong counter-trend protection (ADX >= 30)",
+    },
+    "adx_min": {
+        "model": "confluence",
+        "type": "float",
+        "min": 5.0,
+        "max": 60.0,
+        "unit": "pts",
+        "label_fr": "Seuil ADX Minimum (Force de tendance)",
+        "label_en": "Minimum ADX Threshold (Trend strength)",
+    },
+    "min_atr_pct": {
+        "model": "confluence",
+        "type": "float",
+        "min": 0.0,
+        "max": 5.0,
+        "unit": "%",
+        "label_fr": "Volatilité ATR Minimum (%)",
+        "label_en": "Minimum ATR Volatility (%)",
+    },
+    "min_volume_ratio": {
+        "model": "confluence",
+        "type": "float",
+        "min": 0.0,
+        "max": 5.0,
+        "unit": "x",
+        "label_fr": "Ratio Volume Minimum (vs MA)",
+        "label_en": "Minimum Volume Ratio (vs MA)",
+    },
+    "cooldown_candles": {
+        "model": "confluence",
+        "type": "int",
+        "min": 0,
+        "max": 100,
+        "unit": "candles",
+        "label_fr": "Cooldown après clôture (bougies)",
+        "label_en": "Post-trade Cooldown (candles)",
+    },
+    # 2. Technical Indicators Model ("indicators")
+    "ema_fast": {
+        "model": "indicators",
+        "type": "int",
+        "min": 3,
+        "max": 100,
+        "unit": "bars",
+        "label_fr": "Période EMA Rapide",
+        "label_en": "Fast EMA Period",
+    },
+    "ema_slow": {
+        "model": "indicators",
+        "type": "int",
+        "min": 5,
+        "max": 250,
+        "unit": "bars",
+        "label_fr": "Période EMA Lente",
+        "label_en": "Slow EMA Period",
+    },
+    "ema_trend": {
+        "model": "indicators",
+        "type": "int",
+        "min": 20,
+        "max": 500,
+        "unit": "bars",
+        "label_fr": "Période EMA Tendance",
+        "label_en": "Trend EMA Period",
+    },
+    "rsi_period": {
+        "model": "indicators",
+        "type": "int",
+        "min": 4,
+        "max": 50,
+        "unit": "bars",
+        "label_fr": "Période RSI",
+        "label_en": "RSI Period",
+    },
+    "rsi_oversold": {
+        "model": "indicators",
+        "type": "float",
+        "min": 10.0,
+        "max": 49.0,
+        "unit": "pts",
+        "label_fr": "Seuil RSI Survente",
+        "label_en": "RSI Oversold Threshold",
+    },
+    "rsi_overbought": {
+        "model": "indicators",
+        "type": "float",
+        "min": 51.0,
+        "max": 90.0,
+        "unit": "pts",
+        "label_fr": "Seuil RSI Surachat",
+        "label_en": "RSI Overbought Threshold",
+    },
+    "adx_period": {
+        "model": "indicators",
+        "type": "int",
+        "min": 5,
+        "max": 50,
+        "unit": "bars",
+        "label_fr": "Période ADX",
+        "label_en": "ADX Period",
+    },
+    "atr_period": {
+        "model": "indicators",
+        "type": "int",
+        "min": 5,
+        "max": 50,
+        "unit": "bars",
+        "label_fr": "Période ATR",
+        "label_en": "ATR Period",
+    },
+    "volume_ma_period": {
+        "model": "indicators",
+        "type": "int",
+        "min": 5,
+        "max": 100,
+        "unit": "bars",
+        "label_fr": "Période Moyenne Mobile Volume",
+        "label_en": "Volume Moving Average Period",
+    },
+    # 3. Exit & Protection Model ("exits")
+    "sl_mode": {
+        "model": "exits",
+        "type": "enum",
+        "choices": ["atr", "fixed_pct"],
+        "unit": "",
+        "label_fr": "Mode de calcul Stop Loss",
+        "label_en": "Stop Loss Calculation Mode",
+    },
+    "sl_atr_mult": {
+        "model": "exits",
+        "type": "float",
+        "min": 0.3,
+        "max": 10.0,
+        "unit": "xATR",
+        "label_fr": "Multiplicateur Stop Loss (ATR)",
+        "label_en": "Stop Loss ATR Multiplier",
+    },
+    "sl_fixed_pct": {
+        "model": "exits",
+        "type": "float",
+        "min": 0.1,
+        "max": 25.0,
+        "unit": "%",
+        "label_fr": "Distance Stop Loss Fixe (%)",
+        "label_en": "Fixed Stop Loss Distance (%)",
+    },
+    "tp_mode": {
+        "model": "exits",
+        "type": "enum",
+        "choices": ["rr", "atr", "fixed_pct"],
+        "unit": "",
+        "label_fr": "Mode de calcul Take Profit",
+        "label_en": "Take Profit Calculation Mode",
+    },
+    "min_rr_ratio": {
+        "model": "exits",
+        "type": "float",
+        "min": 0.5,
+        "max": 10.0,
+        "unit": "R",
+        "label_fr": "Ratio Risque/Rendement (R:R) Minimum",
+        "label_en": "Minimum Risk/Reward (R:R) Ratio",
+    },
+    "tp_atr_mult": {
+        "model": "exits",
+        "type": "float",
+        "min": 0.5,
+        "max": 20.0,
+        "unit": "xATR",
+        "label_fr": "Multiplicateur Take Profit (ATR)",
+        "label_en": "Take Profit ATR Multiplier",
+    },
+    "tp_fixed_pct": {
+        "model": "exits",
+        "type": "float",
+        "min": 0.2,
+        "max": 50.0,
+        "unit": "%",
+        "label_fr": "Distance Take Profit Fixe (%)",
+        "label_en": "Fixed Take Profit Distance (%)",
+    },
+    "partial_tp_enabled": {
+        "model": "exits",
+        "type": "bool",
+        "unit": "",
+        "label_fr": "Activer Take Profit Partiel (TP1)",
+        "label_en": "Enable Partial Take Profit (TP1)",
+    },
+    "partial_tp_rr": {
+        "model": "exits",
+        "type": "float",
+        "min": 0.3,
+        "max": 10.0,
+        "unit": "R",
+        "label_fr": "Seuil de déclenchement TP Partiel (en R)",
+        "label_en": "Partial TP Trigger (in R)",
+    },
+    "partial_tp_close_pct": {
+        "model": "exits",
+        "type": "float",
+        "min": 10.0,
+        "max": 90.0,
+        "unit": "%",
+        "label_fr": "Pourcentage clôturé au TP Partiel (%)",
+        "label_en": "Position Closed at Partial TP (%)",
+    },
+    "breakeven_enabled": {
+        "model": "exits",
+        "type": "bool",
+        "unit": "",
+        "label_fr": "Activer mise à Break-Even automatique",
+        "label_en": "Enable Automatic Break-Even",
+    },
+    "breakeven_trigger_rr": {
+        "model": "exits",
+        "type": "float",
+        "min": 0.3,
+        "max": 10.0,
+        "unit": "R",
+        "label_fr": "Seuil d'activation Break-Even (en R)",
+        "label_en": "Break-Even Activation Threshold (in R)",
+    },
+    "trailing_stop_enabled": {
+        "model": "exits",
+        "type": "bool",
+        "unit": "",
+        "label_fr": "Activer Trailing Stop Dynamique (ATR)",
+        "label_en": "Enable Dynamic ATR Trailing Stop",
+    },
+    "trailing_activation_rr": {
+        "model": "exits",
+        "type": "float",
+        "min": 0.4,
+        "max": 10.0,
+        "unit": "R",
+        "label_fr": "Seuil d'activation Trailing Stop (en R)",
+        "label_en": "Trailing Stop Activation Threshold (in R)",
+    },
+    "trailing_distance_atr": {
+        "model": "exits",
+        "type": "float",
+        "min": 0.3,
+        "max": 10.0,
+        "unit": "xATR",
+        "label_fr": "Distance de suivi Trailing Stop (x ATR)",
+        "label_en": "Trailing Stop Distance (x ATR)",
+    },
+    "exit_on_opposite_signal": {
+        "model": "exits",
+        "type": "bool",
+        "unit": "",
+        "label_fr": "Clôturer sur signal opposé validé",
+        "label_en": "Exit on Validated Opposite Signal",
+    },
+    "max_bars_in_trade": {
+        "model": "exits",
+        "type": "int",
+        "min": 4,
+        "max": 1000,
+        "unit": "candles",
+        "label_fr": "Durée maximale d'une position (bougies)",
+        "label_en": "Maximum Bars Held in Trade",
+    },
+    # 4. Capital, Sizing & Execution Simulation Model ("capital")
+    "initial_capital": {
+        "model": "capital",
+        "type": "float",
+        "min": 100.0,
+        "max": 10_000_000.0,
+        "unit": "USDT",
+        "label_fr": "Capital Initial Simulé (USDT)",
+        "label_en": "Simulated Initial Capital (USDT)",
+    },
+    "position_sizing_mode": {
+        "model": "capital",
+        "type": "enum",
+        "choices": ["risk_pct", "capital_pct", "fixed_usdt"],
+        "unit": "",
+        "label_fr": "Mode de Dimensionnement (Position Sizing)",
+        "label_en": "Position Sizing Mode",
+    },
+    "risk_per_trade_pct": {
+        "model": "capital",
+        "type": "float",
+        "min": 0.1,
+        "max": 25.0,
+        "unit": "%",
+        "label_fr": "Risque par Trade (% du capital)",
+        "label_en": "Risk per Trade (% of capital)",
+    },
+    "fixed_position_usdt": {
+        "model": "capital",
+        "type": "float",
+        "min": 10.0,
+        "max": 1_000_000.0,
+        "unit": "USDT",
+        "label_fr": "Mise Fixe par Position (USDT)",
+        "label_en": "Fixed Position Size (USDT)",
+    },
+    "capital_allocation_pct": {
+        "model": "capital",
+        "type": "float",
+        "min": 1.0,
+        "max": 100.0,
+        "unit": "%",
+        "label_fr": "Allocation Capital par Position (%)",
+        "label_en": "Capital Allocation per Position (%)",
+    },
+    "leverage": {
+        "model": "capital",
+        "type": "float",
+        "min": 1.0,
+        "max": 50.0,
+        "unit": "x",
+        "label_fr": "Levier Simulé (x)",
+        "label_en": "Simulated Leverage (x)",
+    },
+    "fee_bps": {
+        "model": "capital",
+        "type": "float",
+        "min": 0.0,
+        "max": 100.0,
+        "unit": "bps",
+        "label_fr": "Frais Taker Simulés (bps)",
+        "label_en": "Simulated Taker Fee (bps)",
+    },
+    "slippage_bps": {
+        "model": "capital",
+        "type": "float",
+        "min": 0.0,
+        "max": 100.0,
+        "unit": "bps",
+        "label_fr": "Slippage Estimé par Ordre (bps)",
+        "label_en": "Estimated Slippage per Order (bps)",
+    },
+    "max_open_positions": {
+        "model": "capital",
+        "type": "int",
+        "min": 1,
+        "max": 1,
+        "unit": "pos",
+        "label_fr": "Positions Simultanées Max",
+        "label_en": "Max Simultaneous Open Positions",
+    },
+    "max_trades_per_day": {
+        "model": "capital",
+        "type": "int",
+        "min": 1,
+        "max": 100,
+        "unit": "trades/d",
+        "label_fr": "Nombre Maximum de Trades par Jour",
+        "label_en": "Max Trades per Day",
+    },
+    "max_consecutive_losses": {
+        "model": "capital",
+        "type": "int",
+        "min": 1,
+        "max": 50,
+        "unit": "losses",
+        "label_fr": "Coupe-circuit Pertes Consécutives Max",
+        "label_en": "Max Consecutive Losses Circuit Breaker",
+    },
+}
+
+ALL_LAB_MODEL_IDS: List[str] = [m["id"] for m in LAB_MODELS_CATALOG]
+
+
+def get_lab_schema_metadata() -> Dict[str, Any]:
+    """Returns the authoritative models and parameter metadata for Strategy Lab UI and API consumers."""
+    return {
+        "models": LAB_MODELS_CATALOG,
+        "parameters": LAB_PARAM_SPECS,
+        "default_selected_models": ["confluence", "indicators", "exits"],
+    }
+
+
+def _coerce_strict_param_value(param_key: str, raw_val: Any) -> Tuple[bool, Any, Optional[str]]:
+    """
+    Strictly validates and converts a single parameter value according to LAB_PARAM_SPECS.
+    Rejects invalid types, out-of-range numbers, or unsupported enum choices without silent clamping.
+    """
+    if param_key not in LAB_PARAM_SPECS:
+        return (
+            False,
+            None,
+            f"Unknown parameter: {param_key}. This parameter is not supported by the selected strategy/model.",
+        )
+
+    spec = LAB_PARAM_SPECS[param_key]
+    ptype = spec["type"]
+
+    if isinstance(raw_val, str):
+        val_str = raw_val.strip()
+        if (val_str.startswith('"') and val_str.endswith('"')) or (
+            val_str.startswith("'") and val_str.endswith("'")
+        ):
+            val_str = val_str[1:-1].strip()
+    else:
+        val_str = str(raw_val).strip()
+
+    if ptype == "bool":
+        if isinstance(raw_val, bool):
+            return True, raw_val, None
+        low = val_str.lower()
+        if low in ("true", "1", "yes", "on"):
+            return True, True, None
+        if low in ("false", "0", "no", "off"):
+            return True, False, None
+        return (
+            False,
+            None,
+            f"Invalid boolean value for {param_key}: '{raw_val}'. Expected true or false.",
+        )
+
+    if ptype == "enum":
+        choices = spec.get("choices", [])
+        candidate = val_str.lower()
+        if candidate not in choices:
+            return (
+                False,
+                None,
+                f"Invalid value for {param_key}: '{raw_val}'. Allowed values: {', '.join(choices)}.",
+            )
+        return True, candidate, None
+
+    if ptype == "int":
+        if isinstance(raw_val, bool):
+            return False, None, f"Invalid integer value for {param_key}: '{raw_val}'."
+        try:
+            f_val = float(val_str)
+            if not math.isfinite(f_val) or int(f_val) != f_val:
+                return (
+                    False,
+                    None,
+                    f"Invalid integer value for {param_key}: '{raw_val}'. Expected an integer.",
+                )
+            i_val = int(f_val)
+        except Exception:
+            return (
+                False,
+                None,
+                f"Invalid integer value for {param_key}: '{raw_val}'. Expected an integer.",
+            )
+        min_v = spec.get("min")
+        max_v = spec.get("max")
+        if min_v is not None and i_val < min_v:
+            return (
+                False,
+                None,
+                f"Value out of range for {param_key}: {i_val} (minimum allowed is {min_v}).",
+            )
+        if max_v is not None and i_val > max_v:
+            return (
+                False,
+                None,
+                f"Value out of range for {param_key}: {i_val} (maximum allowed is {max_v}).",
+            )
+        return True, i_val, None
+
+    if ptype == "float":
+        if isinstance(raw_val, bool):
+            return False, None, f"Invalid numeric value for {param_key}: '{raw_val}'."
+        try:
+            f_val = float(val_str)
+            if not math.isfinite(f_val):
+                raise ValueError("not finite")
+        except Exception:
+            return (
+                False,
+                None,
+                f"Invalid numeric value for {param_key}: '{raw_val}'. Expected a number.",
+            )
+        min_v = spec.get("min")
+        max_v = spec.get("max")
+        if min_v is not None and f_val < min_v - 1e-9:
+            return (
+                False,
+                None,
+                f"Value out of range for {param_key}: {f_val} (minimum allowed is {min_v}).",
+            )
+        if max_v is not None and f_val > max_v + 1e-9:
+            return (
+                False,
+                None,
+                f"Value out of range for {param_key}: {f_val} (maximum allowed is {max_v}).",
+            )
+        return True, round(f_val, 6), None
+
+    return False, None, f"Unsupported parameter type for {param_key}."
+
+
+def format_raw_config(
+    params: Dict[str, Any],
+    selected_models: Optional[List[str]] = None,
+    include_comments: bool = True,
+) -> str:
+    """
+    Formats the existing Bitsure Strategy Lab parameters into a clean, deterministic
+    KEY=VALUE Raw Config text representation.
+    If selected_models is provided, outputs only parameters belonging to those models.
+    """
+    active_models = (
+        [m for m in selected_models if m in ALL_LAB_MODEL_IDS]
+        if selected_models is not None
+        else list(ALL_LAB_MODEL_IDS)
+    )
+    lines: List[str] = []
+    for model_meta in LAB_MODELS_CATALOG:
+        m_id = model_meta["id"]
+        if m_id not in active_models:
+            continue
+        model_keys = [k for k, spec in LAB_PARAM_SPECS.items() if spec["model"] == m_id]
+        if not model_keys:
+            continue
+        if include_comments:
+            if lines:
+                lines.append("")
+            lines.append(f"# [{model_meta['name']}]")
+        for k in model_keys:
+            if k not in params:
+                continue
+            val = params[k]
+            if isinstance(val, bool):
+                val_str = "true" if val else "false"
+            else:
+                val_str = str(val)
+            lines.append(f"{k}={val_str}")
+    return "\n".join(lines)
+
+
+def compute_params_diff(
+    reference_params: Dict[str, Any],
+    candidate_params: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Computes the exact list of parameter changes between reference_params and candidate_params."""
+    changes: List[Dict[str, Any]] = []
+    for k, spec in LAB_PARAM_SPECS.items():
+        if k not in reference_params or k not in candidate_params:
+            continue
+        old_v = reference_params[k]
+        new_v = candidate_params[k]
+        if isinstance(old_v, (int, float)) and isinstance(new_v, (int, float)) and not isinstance(old_v, bool) and not isinstance(new_v, bool):
+            is_diff = abs(float(old_v) - float(new_v)) > 1e-7
+        else:
+            is_diff = old_v != new_v
+        if is_diff:
+            changes.append(
+                {
+                    "param": k,
+                    "model": spec["model"],
+                    "old_value": old_v,
+                    "new_value": new_v,
+                    "unit": spec.get("unit", ""),
+                    "label_fr": spec.get("label_fr", k),
+                    "label_en": spec.get("label_en", k),
+                }
+            )
+    return changes
+
+
+def parse_and_validate_raw_config(
+    raw_text: str,
+    reference_params: Optional[Dict[str, Any]] = None,
+    selected_models: Optional[List[str]] = None,
+    trading_style: str = "day",
+) -> Dict[str, Any]:
+    """
+    Strictly parses and validates a Raw Config text block against Bitsure's existing parameters
+    and the currently selected strategy models.
+    - Rejects any unknown parameter (never creates implicit variables or ignores unknown keys).
+    - Rejects malformed lines or invalid value types/ranges.
+    - Rejects attempts to modify parameters belonging to unselected models.
+    - Preserves all unselected models' parameters and unspecified parameters from reference_params.
+    """
+    base_ref = normalize_lab_params(reference_params, style=trading_style)
+    allowed_models = (
+        [m for m in selected_models if m in ALL_LAB_MODEL_IDS]
+        if selected_models is not None
+        else list(ALL_LAB_MODEL_IDS)
+    )
+
+    errors: List[str] = []
+    parsed_overrides: Dict[str, Any] = {}
+    seen_keys: set[str] = set()
+
+    if raw_text is None or not isinstance(raw_text, str):
+        errors.append("Raw configuration text must be a valid string.")
+        raw_lines = []
+    else:
+        raw_lines = raw_text.splitlines()
+
+    in_reasoning_section = False
+    for line_num, raw_line in enumerate(raw_lines, start=1):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("//"):
+            continue
+        # Support pasting AI outputs that include headers like "PROPOSED CHANGES" or "REASONING"
+        upper_header = stripped.upper().rstrip(":")
+        if upper_header in ("PROPOSED CHANGES", "STRATEGY CONFIG", "PARAMETERS", "RAW CONFIG"):
+            in_reasoning_section = False
+            continue
+        if upper_header in ("REASONING", "EXPLANATION", "EXPLANATIONS", "NOTES"):
+            in_reasoning_section = True
+            continue
+        if in_reasoning_section:
+            continue
+        if stripped.startswith("```"):
+            continue
+
+        if "=" not in stripped:
+            errors.append(
+                f"Line {line_num}: Invalid syntax '{stripped}'. Expected KEY=VALUE format."
+            )
+            continue
+
+        key_part, val_part = stripped.split("=", 1)
+        # Strip inline comment if present after value
+        if " #" in val_part:
+            val_part = val_part.split(" #", 1)[0]
+        raw_key = key_part.strip()
+        canonical_key = raw_key.lower()
+
+        if canonical_key not in LAB_PARAM_SPECS:
+            errors.append(
+                f"Unknown parameter: {raw_key}. This parameter is not supported by the selected strategy/model."
+            )
+            continue
+
+        if canonical_key in seen_keys:
+            errors.append(f"Line {line_num}: Duplicate parameter '{canonical_key}' in Raw Config.")
+            continue
+        seen_keys.add(canonical_key)
+
+        ok_val, typed_val, val_err = _coerce_strict_param_value(canonical_key, val_part)
+        if not ok_val:
+            errors.append(val_err or f"Invalid value for {canonical_key}.")
+            continue
+
+        param_model = LAB_PARAM_SPECS[canonical_key]["model"]
+        # Check if this parameter belongs to an unselected model
+        if param_model not in allowed_models:
+            # If the user pasted the full config and the value is identical to reference_params, we still
+            # disallow editing unselected models if the value differs, or if strict model scope is active
+            ref_val = base_ref.get(canonical_key)
+            is_changed = (
+                abs(float(ref_val) - float(typed_val)) > 1e-7
+                if isinstance(ref_val, (int, float)) and isinstance(typed_val, (int, float)) and not isinstance(ref_val, bool)
+                else ref_val != typed_val
+            )
+            if is_changed:
+                model_label = next((m["name"] for m in LAB_MODELS_CATALOG if m["id"] == param_model), param_model)
+                errors.append(
+                    f"Forbidden parameter modification: '{canonical_key}' belongs to unselected model '{model_label}' ({param_model}). Select that model or keep its value unchanged."
+                )
+                continue
+            else:
+                errors.append(
+                    f"Parameter '{canonical_key}' belongs to unselected model '{param_model}'. Only parameters from selected models ({', '.join(allowed_models) or 'none'}) are allowed."
+                )
+                continue
+
+        parsed_overrides[canonical_key] = typed_val
+
+    # Start from a full copy of reference_params so all unselected models and unspecified parameters are 100% preserved
+    merged_params = dict(base_ref)
+    for k, v in parsed_overrides.items():
+        merged_params[k] = v
+
+    # Relational consistency check (e.g. ema_fast < ema_slow, rsi_oversold < rsi_overbought)
+    if int(merged_params["ema_fast"]) >= int(merged_params["ema_slow"]):
+        errors.append(
+            f"Invalid EMA relationship: ema_fast ({merged_params['ema_fast']}) must be strictly less than ema_slow ({merged_params['ema_slow']})."
+        )
+    if float(merged_params["rsi_oversold"]) >= float(merged_params["rsi_overbought"]):
+        errors.append(
+            f"Invalid RSI relationship: rsi_oversold ({merged_params['rsi_oversold']}) must be strictly less than rsi_overbought ({merged_params['rsi_overbought']})."
+        )
+
+    diff = compute_params_diff(base_ref, merged_params) if not errors else []
+    editable_params_count = sum(
+        1 for spec in LAB_PARAM_SPECS.values() if spec["model"] in allowed_models
+    )
+
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "selected_models": allowed_models,
+        "selected_models_count": len(allowed_models),
+        "editable_params_count": editable_params_count,
+        "changes": diff,
+        "changes_count": len(diff),
+        "params": merged_params if len(errors) == 0 else base_ref,
+        "raw_config_normalized": format_raw_config(
+            merged_params if len(errors) == 0 else base_ref,
+            selected_models=allowed_models,
+        ),
+    }
+
+
+def validate_partial_model_update(
+    candidate_params: Optional[Dict[str, Any]],
+    reference_params: Optional[Dict[str, Any]],
+    selected_models: Optional[List[str]] = None,
+    trading_style: str = "day",
+) -> Dict[str, Any]:
+    """
+    Validates a dictionary of parameters (from Visual Config or API request) with strict checking:
+    - Rejects unknown parameter keys.
+    - Rejects invalid types/ranges.
+    - When selected_models is provided, verifies that no unselected model's parameter was modified
+      and locks all unselected models to reference_params.
+    """
+    base_ref = normalize_lab_params(reference_params, style=trading_style)
+    if not isinstance(candidate_params, dict):
+        return {
+            "ok": False,
+            "errors": ["Parameters payload must be a JSON object."],
+            "params": base_ref,
+            "changes": [],
+        }
+
+    allowed_models = (
+        [m for m in selected_models if m in ALL_LAB_MODEL_IDS]
+        if selected_models is not None
+        else list(ALL_LAB_MODEL_IDS)
+    )
+    errors: List[str] = []
+    merged = dict(base_ref)
+
+    for raw_k, raw_v in candidate_params.items():
+        if raw_k not in LAB_PARAM_SPECS:
+            errors.append(
+                f"Unknown parameter: {raw_k}. This parameter is not supported by the selected strategy/model."
+            )
+            continue
+        ok_val, typed_val, val_err = _coerce_strict_param_value(raw_k, raw_v)
+        if not ok_val:
+            errors.append(val_err or f"Invalid value for {raw_k}.")
+            continue
+
+        param_model = LAB_PARAM_SPECS[raw_k]["model"]
+        ref_val = base_ref.get(raw_k)
+        is_changed = (
+            abs(float(ref_val) - float(typed_val)) > 1e-7
+            if isinstance(ref_val, (int, float)) and isinstance(typed_val, (int, float)) and not isinstance(ref_val, bool)
+            else ref_val != typed_val
+        )
+        if is_changed and param_model not in allowed_models:
+            errors.append(
+                f"Forbidden parameter modification: '{raw_k}' belongs to unselected model '{param_model}'."
+            )
+            continue
+        if param_model in allowed_models:
+            merged[raw_k] = typed_val
+
+    if int(merged["ema_fast"]) >= int(merged["ema_slow"]):
+        errors.append(
+            f"Invalid EMA relationship: ema_fast ({merged['ema_fast']}) must be strictly less than ema_slow ({merged['ema_slow']})."
+        )
+    if float(merged["rsi_oversold"]) >= float(merged["rsi_overbought"]):
+        errors.append(
+            f"Invalid RSI relationship: rsi_oversold ({merged['rsi_oversold']}) must be strictly less than rsi_overbought ({merged['rsi_overbought']})."
+        )
+
+    diff = compute_params_diff(base_ref, merged) if not errors else []
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "selected_models": allowed_models,
+        "params": merged if not errors else base_ref,
+        "changes": diff,
+        "changes_count": len(diff),
+    }
+
+
+def generate_external_ai_prompt(
+    params: Dict[str, Any],
+    selected_models: Optional[List[str]] = None,
+    symbol: str = "BTCUSDT",
+    market_type: str = "futures",
+    timeframe: str = "15m",
+    trading_style: str = "day",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    max_candles: int = 800,
+    active_run: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Locally builds a self-contained, deterministic AI prompt ready to copy into any external AI
+    (ChatGPT, Gemini, Claude, etc.) without making any external API request.
+    Includes only real Bitsure parameters, selected models, backtest context, and real metrics if a run exists.
+    """
+    norm_params = normalize_lab_params(params, style=trading_style)
+    # Default to strategy models if none specified
+    active_models = (
+        [m for m in selected_models if m in ALL_LAB_MODEL_IDS]
+        if selected_models is not None
+        else ["confluence", "indicators", "exits"]
+    )
+
+    selected_model_names = [
+        f"{m['name']} ({m['id']})"
+        for m in LAB_MODELS_CATALOG
+        if m["id"] in active_models
+    ]
+    unselected_model_names = [
+        f"{m['name']} ({m['id']})"
+        for m in LAB_MODELS_CATALOG
+        if m["id"] not in active_models
+    ]
+
+    allowed_param_lines: List[str] = []
+    editable_raw_lines: List[str] = []
+    locked_raw_lines: List[str] = []
+
+    for k, spec in LAB_PARAM_SPECS.items():
+        val = norm_params.get(k)
+        val_str = ("true" if val else "false") if isinstance(val, bool) else str(val)
+        constraints = []
+        if spec["type"] in ("int", "float"):
+            constraints.append(f"type={spec['type']}")
+            if "min" in spec and "max" in spec:
+                constraints.append(f"range=[{spec['min']} .. {spec['max']}]")
+        elif spec["type"] == "enum":
+            constraints.append(f"type=enum({', '.join(spec.get('choices', []))})")
+        elif spec["type"] == "bool":
+            constraints.append("type=bool(true|false)")
+        if spec.get("unit"):
+            constraints.append(f"unit={spec['unit']}")
+        constraint_str = ", ".join(constraints)
+
+        if spec["model"] in active_models:
+            allowed_param_lines.append(
+                f"- {k}={val_str}  # [{spec['model']}] {spec['label_en']} ({constraint_str})"
+            )
+            editable_raw_lines.append(f"{k}={val_str}")
+        else:
+            locked_raw_lines.append(f"{k}={val_str}  # LOCKED ({spec['model']})")
+
+    # Resolve period info from active_run if available
+    run_start = (active_run or {}).get("start_date") or start_date or "Auto (based on candle depth)"
+    run_end = (active_run or {}).get("end_date") or end_date or "Latest closed candle"
+    run_candles = (active_run or {}).get("candles_count") or max_candles
+    run_source = (active_run or {}).get("data_source") or "Binance Historical Closed Candles"
+
+    sections: List[str] = [
+        "# BITSURE STRATEGY LAB — QUANTITATIVE BACKTEST & STRATEGY ANALYSIS PROMPT",
+        "",
+        "## 1. CONTEXT & ROLE",
+        "You are an algorithmic trading researcher analyzing a quantitative strategy inside the Bitsure Strategy Lab backtesting environment.",
+        "- This is strictly a historical simulation / backtesting task (100% isolated from live order execution).",
+        "- Historical backtest performance does NOT guarantee future live trading performance.",
+        "- Your goal is to analyze the current strategy configuration and backtest metrics, and propose targeted, well-reasoned adjustments ONLY within the allowed parameters of the selected strategy models.",
+        "",
+        "## 2. BACKTEST ENVIRONMENT CONFIG (SIMULATION CONTEXT)",
+        f"Asset: {_normalize_lab_symbol(symbol)}",
+        f"Market: {str(market_type or 'futures').upper()}",
+        f"Timeframe: {timeframe}",
+        f"Strategy Style: {trading_style}",
+        f"Historical Period Start: {run_start}",
+        f"Historical Period End: {run_end}",
+        f"Evaluated Closed Candles: {run_candles}",
+        f"Data Source: {run_source}",
+        f"Initial Simulated Capital: {norm_params['initial_capital']} USDT",
+        f"Position Sizing Mode: {norm_params['position_sizing_mode']} (risk_per_trade_pct={norm_params['risk_per_trade_pct']}%, leverage={norm_params['leverage']}x)",
+        f"Simulated Execution Costs: fee_bps={norm_params['fee_bps']} bps, slippage_bps={norm_params['slippage_bps']} bps",
+        "",
+        "## 3. SELECTED MODELS & ALLOWED PARAMETERS",
+        f"Selected Editable Models ({len(active_models)}): {', '.join(selected_model_names) if selected_model_names else 'None'}",
+        f"Unselected Locked Models ({len(unselected_model_names)}): {', '.join(unselected_model_names) if unselected_model_names else 'None'}",
+        "",
+        "### STRATEGY CONFIG (EDITABLE PARAMETERS FROM SELECTED MODELS)",
+        *allowed_param_lines,
+    ]
+
+    if locked_raw_lines:
+        sections.extend(
+            [
+                "",
+                "### LOCKED PARAMETERS (READ-ONLY CONTEXT — DO NOT MODIFY)",
+                *locked_raw_lines,
+            ]
+        )
+
+    # Include real backtest results ONLY if active_run with metrics is available
+    metrics = (active_run or {}).get("metrics") if isinstance(active_run, dict) else None
+    sig_sum = (active_run or {}).get("signals_summary") if isinstance(active_run, dict) else None
+    if isinstance(metrics, dict) and metrics:
+        sections.extend(
+            [
+                "",
+                "## 4. ACTUAL BACKTEST RESULTS (ENGINE-COMPUTED FACTS)",
+                f"Net P/L (USDT): {metrics.get('net_profit_usdt')} USDT",
+                f"Total Net Return (%): {metrics.get('total_return_pct')}%",
+                f"Buy & Hold Benchmark (%): {metrics.get('buy_hold_return_pct')}% (Alpha: {metrics.get('alpha_vs_buy_hold_pct')}%)",
+                f"Total Executed Trades: {metrics.get('total_trades')} (Wins: {metrics.get('winning_trades')}, Losses: {metrics.get('losing_trades')})",
+                f"Win Rate (%): {metrics.get('win_rate_pct')}%",
+                f"Profit Factor: {metrics.get('profit_factor')}",
+                f"Max Drawdown: -{metrics.get('max_drawdown_pct')}% (-{metrics.get('max_drawdown_usdt')} USDT)",
+                f"Expectancy per Trade: {metrics.get('expectancy_usdt')} USDT ({metrics.get('avg_r_multiple')}R)",
+                f"Average Win / Average Loss: +{metrics.get('avg_win_usdt')} USDT / {metrics.get('avg_loss_usdt')} USDT (Payoff Ratio: {metrics.get('payoff_ratio')})",
+                f"Best / Worst Trade: +{metrics.get('best_trade_usdt')} USDT / {metrics.get('worst_trade_usdt')} USDT",
+                f"Sharpe Ratio: {metrics.get('sharpe_ratio')} | Sortino Ratio: {metrics.get('sortino_ratio')} | Calmar Ratio: {metrics.get('calmar_ratio')}",
+                f"Total Deducted Fees: {metrics.get('total_fees_usdt')} USDT",
+                f"Long Trades: {metrics.get('long_trades')} ({metrics.get('long_win_rate_pct')}% WR, {metrics.get('long_pnl_usdt')} USDT)",
+                f"Short Trades: {metrics.get('short_trades')} ({metrics.get('short_win_rate_pct')}% WR, {metrics.get('short_pnl_usdt')} USDT)",
+            ]
+        )
+        if isinstance(sig_sum, dict) and sig_sum.get("rejection_counts"):
+            rej_items = [
+                f"{rk}={rv}"
+                for rk, rv in sorted(
+                    sig_sum["rejection_counts"].items(), key=lambda x: x[1], reverse=True
+                )
+                if rv > 0
+            ]
+            if rej_items:
+                sections.append(f"Filter Rejection Counts: {', '.join(rej_items)}")
+
+    # Provide example output keys using real editable parameters from selected models
+    sample_keys = [k for k, spec in LAB_PARAM_SPECS.items() if spec["model"] in active_models][:2]
+    if not sample_keys:
+        sample_keys = ["min_teddy_score", "rsi_oversold"]
+    example_lines = [f"{sk}={norm_params.get(sk)}" for sk in sample_keys]
+    reasoning_lines = [f"{sk}:\n[brief explanation]" for sk in sample_keys]
+
+    sections.extend(
+        [
+            "",
+            "## 5. IMPORTANT RULES",
+            "1. Do not invent new parameters.",
+            "2. Do not rename existing parameters.",
+            "3. Only use parameters explicitly listed as allowed parameters.",
+            "4. Do not modify models that were not selected.",
+            "5. Preserve all unspecified parameters.",
+            "6. Do not assume that historical backtest performance guarantees future performance.",
+            "7. This is a simulation/backtesting task only.",
+            "8. Return proposed changes using the exact parameter names provided.",
+            "9. Explain each proposed change briefly.",
+            "10. If you cannot make a valid proposal using the existing parameters, say so instead of inventing a parameter.",
+            "",
+            "## 6. REQUIRED OUTPUT FORMAT (BITSURE RAW CONFIG COMPATIBLE)",
+            "Respond strictly using the following two sections so your output can be pasted directly into Bitsure Raw Config:",
+            "",
+            "PROPOSED CHANGES",
+            *example_lines,
+            "",
+            "REASONING",
+            *reasoning_lines,
+        ]
+    )
+
+    return {
+        "ok": True,
+        "selected_models": active_models,
+        "editable_params_count": len(editable_raw_lines),
+        "prompt": "\n".join(sections),
+    }
 
 
 def _parse_date_to_ms(date_str: Optional[str], default_ms: int) -> int:
