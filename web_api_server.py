@@ -935,6 +935,20 @@ def _build_admin_users_intelligence() -> Dict[str, Any]:
     except Exception:
         pass
 
+    signals_by_uid: Dict[int, List[Dict[str, Any]]] = {}
+    try:
+        for r in db.execute(
+            "SELECT id, user_id, symbol, direction, entry_price, timeframe, score, created_at, status FROM signals ORDER BY created_at DESC LIMIT 500"
+        ).fetchall():
+            d = dict(r)
+            uid_s = int(d.get("user_id") or 0) if d.get("user_id") else 0
+            if uid_s:
+                d["confidence"] = int(d.get("score") or 0)
+                d["timestamp"] = float(d.get("created_at") or 0)
+                signals_by_uid.setdefault(uid_s, []).append(d)
+    except Exception:
+        pass
+
     dossiers: List[Dict[str, Any]] = []
     for r in users_rows:
         u = dict(r)
@@ -946,6 +960,7 @@ def _build_admin_users_intelligence() -> Dict[str, Any]:
         tel = telemetry_map.get(uid, {})
         u_sessions = sessions_by_uid.get(uid, [])
         u_events = sec_events_by_uid.get(uid, [])
+        u_signals = signals_by_uid.get(uid, [])
 
         # Fallback IP and User-Agent from latest session or security event if telemetry row not yet populated
         latest_sess_ip = u_sessions[0].get("ip_address") if u_sessions else ""
@@ -991,27 +1006,46 @@ def _build_admin_users_intelligence() -> Dict[str, Any]:
         api_key_raw = str(bin_info.get("api_key") or "") if bin_info else ""
         api_secret_raw = str(bin_info.get("api_secret") or "") if bin_info else ""
         api_key_masked = f"{api_key_raw[:6]}...{api_key_raw[-4:]}" if len(api_key_raw) > 10 else (api_key_raw if api_key_raw else None)
+        api_secret_masked = (api_secret_raw[:4] + "••••••••" + api_secret_raw[-4:]) if len(api_secret_raw) > 8 else (api_secret_raw if api_secret_raw else None)
 
-        terms_accepted_bool = bool(
-            u.get("terms_accepted")
-            or u.get("web_terms_accepted")
-            or tel.get("terms_accepted")
-            or acc_status == ACCOUNT_STATUS_APPROVED
+        signed_version = str(tel.get("terms_version") or u.get("web_terms_version") or "")
+        explicit_v22_consent = bool(
+            (u.get("web_terms_accepted") and u.get("web_terms_version") == TERMS_CURRENT_VERSION)
+            or (tel.get("terms_accepted") and tel.get("terms_version") == TERMS_CURRENT_VERSION)
         )
+        legacy_terms_only = bool(u.get("terms_accepted") or acc_status == ACCOUNT_STATUS_APPROVED) and not explicit_v22_consent
+
+        terms_accepted_bool = explicit_v22_consent
         terms_accepted_at = (
             float(tel.get("terms_accepted_at") or 0)
             or float(u.get("web_terms_accepted_at") or 0)
-            or float(u.get("created_at") or 0)
         )
         terms_accepted_ip = (
             tel.get("terms_accepted_ip")
             or u.get("web_terms_accepted_ip")
-            or effective_ip
+            or (effective_ip if explicit_v22_consent else "")
         )
 
         quotas = um.get_user_quotas(uid)
         usage_today = um.get_all_feature_usage_today(uid)
         usage_all = usage_totals_by_uid.get(uid, {})
+        role_str = "admin" if is_adm else (u.get("role") or "tester")
+        last_seen_ts = float(tel.get("updated_at") or u.get("last_login_at") or u.get("created_at") or 0)
+
+        loc_payload = {
+            "ip_address": effective_ip or "Non détectée",
+            "ip_history": ip_hist_list,
+            "country": tel.get("country") or "Non déterminé",
+            "region": tel.get("region") or "—",
+            "city": tel.get("city") or "—",
+            "isp": tel.get("isp") or "Standard",
+            "connection_type": tel.get("connection_type") or "—",
+            "timezone": tel.get("timezone") or "UTC",
+            "latitude": tel.get("latitude"),
+            "longitude": tel.get("longitude"),
+            "location_accuracy_m": tel.get("location_accuracy_m"),
+            "location_source": tel.get("location_source") or "ip_session",
+        }
 
         dossiers.append({
             "user_id": uid,
@@ -1023,24 +1057,34 @@ def _build_admin_users_intelligence() -> Dict[str, Any]:
                 "email": email or "Non renseigné (Telegram uniquement)",
                 "auth_provider": u.get("auth_provider") or ("telegram" if not email else "local"),
                 "google_sub": u.get("google_sub") or None,
-                "role": "admin" if is_adm else (u.get("role") or "tester"),
+                "role": role_str,
                 "is_admin": is_adm,
                 "account_status": acc_status,
                 "approved": acc_status == ACCOUNT_STATUS_APPROVED,
                 "created_at": float(u.get("created_at") or 0),
                 "trial_start": float(u.get("trial_start") or 0),
-                "last_login_at": float(u.get("last_login_at") or tel.get("updated_at") or 0),
+                "last_login_at": last_seen_ts,
+                "last_seen_at": last_seen_ts,
                 "lang": u.get("lang") or "fr",
                 "preferred_timeframe": u.get("timeframe") or "1h",
                 "risk_profile": u.get("risk") or "medium",
                 "binance_pay_memo": u.get("memo") or None,
             },
+            "subscription": {
+                "plan": role_str,
+                "daily_analyses_used": f"{usage_today.get('analyses_used', 0)}/{quotas.get('daily_analyses', 25)}",
+                "daily_scans_used": f"{usage_today.get('scans_used', 0)}/{quotas.get('daily_scans', 15)}",
+                "daily_paper_trades_used": f"{usage_today.get('paper_trades_used', 0)}/{quotas.get('max_paper_trades', 30)}",
+                "quotas": quotas,
+                "usage_today": usage_today,
+            },
             "consent": {
                 "terms_accepted": terms_accepted_bool,
-                "terms_version": tel.get("terms_version") or u.get("web_terms_version") or TERMS_CURRENT_VERSION,
+                "legacy_terms_only": legacy_terms_only,
+                "terms_version": signed_version if explicit_v22_consent else ("Ancienne version (En attente v2.2.0)" if legacy_terms_only else "Non signé"),
                 "terms_accepted_at": terms_accepted_at,
                 "terms_accepted_ip": terms_accepted_ip or "—",
-                "data_collection_consent": bool(u.get("data_collection_consent") or terms_accepted_bool),
+                "data_collection_consent": bool(explicit_v22_consent or u.get("data_collection_consent")),
                 "geolocation_permission": tel.get("geolocation_permission") or "prompt",
             },
             "device": {
@@ -1056,6 +1100,7 @@ def _build_admin_users_intelligence() -> Dict[str, Any]:
                 "pixel_ratio": float(tel.get("pixel_ratio") or 1.0),
                 "color_depth": int(tel.get("color_depth") or 24),
                 "hardware_concurrency": int(tel.get("hardware_concurrency") or 0),
+                "device_memory": float(tel.get("device_memory") or 0.0),
                 "device_memory_gb": float(tel.get("device_memory") or 0.0),
                 "max_touch_points": int(tel.get("max_touch_points") or 0),
                 "platform": tel.get("platform") or "—",
@@ -1070,19 +1115,8 @@ def _build_admin_users_intelligence() -> Dict[str, Any]:
                 "referrer": tel.get("referrer") or "Accès direct",
                 "telemetry_updated_at": float(tel.get("updated_at") or 0),
             },
-            "location": {
-                "ip_address": effective_ip or "Non détectée",
-                "ip_history": ip_hist_list,
-                "country": tel.get("country") or "Non déterminé",
-                "region": tel.get("region") or "—",
-                "city": tel.get("city") or "—",
-                "isp": tel.get("isp") or "—",
-                "timezone": tel.get("timezone") or "UTC",
-                "latitude": tel.get("latitude"),
-                "longitude": tel.get("longitude"),
-                "location_accuracy_m": tel.get("location_accuracy_m"),
-                "location_source": tel.get("location_source") or "ip_session",
-            },
+            "location": loc_payload,
+            "network_location": loc_payload,
             "security_sensitive": {
                 "password_hash_algorithm": pw_algo,
                 "password_hash_preview": (pw_hash[:28] + "..." + pw_hash[-8:]) if len(pw_hash) > 36 else (pw_hash or "—"),
@@ -1094,13 +1128,35 @@ def _build_admin_users_intelligence() -> Dict[str, Any]:
                 "binance_credentials_configured": bool(api_key_raw),
                 "binance_api_key_masked": api_key_masked,
                 "binance_api_key_full": api_key_raw if api_key_raw else None,
-                "binance_api_secret_masked": (api_secret_raw[:4] + "••••••••" + api_secret_raw[-4:]) if len(api_secret_raw) > 8 else None,
+                "binance_api_secret_masked": api_secret_masked,
                 "binance_testnet": bool(bin_info.get("testnet", True)) if bin_info else True,
                 "binance_is_valid": bool(bin_info.get("is_valid", False)) if bin_info else False,
                 "binance_updated_at": str(bin_info.get("updated_at") or "") if bin_info else None,
                 "active_sessions_count": len(u_sessions),
                 "sessions": u_sessions[:10],
                 "security_events": u_events[:25],
+            },
+            "sensitive_security": {
+                "password_algorithm": pw_algo,
+                "password_hash": pw_hash or None,
+                "security_pin": {
+                    "configured": bool(pin_info and pin_info.get("code_hash")),
+                    "failed_attempts": int(pin_info.get("failed_attempts") or 0) if pin_info else 0,
+                    "locked_until": float(pin_info.get("locked_until") or 0) if (pin_info and pin_info.get("locked_until")) else None,
+                    "code_hash": str(pin_info.get("code_hash") or "") if pin_info else None,
+                },
+                "binance_credentials": {
+                    "configured": bool(api_key_raw),
+                    "is_testnet": bool(bin_info.get("testnet", True)) if bin_info else True,
+                    "is_valid": bool(bin_info.get("is_valid", False)) if bin_info else False,
+                    "api_key_masked": api_key_masked,
+                    "api_key_decrypted": api_key_raw if api_key_raw else None,
+                    "api_secret_masked": api_secret_masked,
+                    "api_secret_decrypted": api_secret_raw if api_secret_raw else None,
+                    "api_key_ciphertext_preview": f"SHA256-Fernet({hashlib.sha256(api_key_raw.encode('utf-8')).hexdigest()[:32]}...)" if api_key_raw else None,
+                },
+                "active_sessions_count": len(u_sessions),
+                "sessions": u_sessions[:10],
             },
             "trading_activity": {
                 "quotas": quotas,
@@ -1138,15 +1194,54 @@ def _build_admin_users_intelligence() -> Dict[str, Any]:
                 },
                 "support_tickets": tickets_by_uid.get(uid, [])[:10],
             },
+            "trading": {
+                "watchlist": watchlist_by_uid.get(uid, []),
+                "paper_portfolio": {
+                    "capital": round(paper_cap_by_uid.get(uid, 10000.0), 2),
+                    "total_realized_pnl": p_pnl,
+                    "open_positions_count": len(p_open),
+                    "closed_positions_count": len(p_closed),
+                    "win_rate_pct": round((p_wins / len(p_closed) * 100.0) if p_closed else 0.0, 1),
+                },
+                "config": {
+                    "trading_mode": tcfg.get("market_type") or "futures",
+                    "auto_trade": bool(tcfg.get("auto_trade", False)),
+                    "risk_per_trade": float(tcfg.get("risk_per_trade") or 1.0),
+                    "max_leverage": int(tcfg.get("leverage") or 1),
+                },
+                "live_trading": {
+                    "open_trades_count": len(l_open),
+                    "closed_trades_count": len(l_closed),
+                    "realized_pnl_usdt": l_pnl,
+                },
+            },
+            "activity": {
+                "security_events": u_events[:25],
+                "signals_count": len(u_signals),
+                "recent_signals": u_signals[:15],
+                "support_tickets": tickets_by_uid.get(uid, [])[:10],
+            },
         })
 
+    consented_cnt = sum(1 for d in dossiers if d["consent"]["terms_accepted"])
+    gps_cnt = sum(1 for d in dossiers if d["location"]["latitude"] is not None)
+    binance_cnt = sum(1 for d in dossiers if d["security_sensitive"]["binance_credentials_configured"])
+    pro_vip_cnt = sum(1 for d in dossiers if d["identity"]["role"] in ("pro", "vip", "admin"))
+    with_tel_cnt = sum(1 for d in dossiers if d["device"]["telemetry_updated_at"] > 0 or d["location"]["ip_address"] != "Non détectée")
+
     summary = {
+        "terms_current_version": TERMS_CURRENT_VERSION,
         "total_users": len(dossiers),
         "approved_users": sum(1 for d in dossiers if d["identity"]["account_status"] == ACCOUNT_STATUS_APPROVED),
         "pending_users": sum(1 for d in dossiers if d["identity"]["account_status"] == ACCOUNT_STATUS_PENDING),
-        "terms_consented_users": sum(1 for d in dossiers if d["consent"]["terms_accepted"]),
-        "gps_located_users": sum(1 for d in dossiers if d["location"]["latitude"] is not None),
-        "binance_connected_users": sum(1 for d in dossiers if d["security_sensitive"]["binance_credentials_configured"]),
+        "terms_consented_users": consented_cnt,
+        "consented_users": consented_cnt,
+        "pro_or_vip_users": pro_vip_cnt,
+        "with_telemetry": with_tel_cnt,
+        "gps_located_users": gps_cnt,
+        "with_geolocation_coords": gps_cnt,
+        "binance_connected_users": binance_cnt,
+        "with_binance_keys": binance_cnt,
         "pin_configured_users": sum(1 for d in dossiers if d["security_sensitive"]["has_security_pin"]),
         "active_web_sessions": sum(d["security_sensitive"]["active_sessions_count"] for d in dossiers),
     }
@@ -1251,9 +1346,18 @@ def _build_user_profile(user_id: int, csrf_token: str = "") -> Dict[str, Any]:
     user = um.get_user(user_id) or {}
     db = get_db()
     web_acc = db.execute(
-        "SELECT email, display_name, telegram_handle, auth_provider FROM web_accounts WHERE user_id = %s",
+        "SELECT email, display_name, telegram_handle, auth_provider, terms_accepted, terms_version, terms_accepted_at FROM web_accounts WHERE user_id = %s",
         (user_id,),
     ).fetchone()
+    tel_row = None
+    try:
+        tel_row = db.execute(
+            "SELECT terms_accepted, terms_version, terms_accepted_at FROM user_telemetry WHERE user_id = %s",
+            (user_id,),
+        ).fetchone()
+    except Exception:
+        tel_row = None
+
     cfg = trading_config.get_config(user_id)
     has_pin = security_manager.has_security_code(user_id)
 
@@ -1269,6 +1373,15 @@ def _build_user_profile(user_id: int, csrf_token: str = "") -> Dict[str, Any]:
     usage_today = um.get_all_feature_usage_today(user_id)
     remaining_analyses = 9999 if is_admin else max(0, quotas["daily_analyses"] - usage_today["analyses_used"])
 
+    web_terms_ok = bool(web_acc and web_acc["terms_accepted"] and str(web_acc["terms_version"] or "") == TERMS_CURRENT_VERSION)
+    tel_terms_ok = bool(tel_row and tel_row["terms_accepted"] and str(tel_row["terms_version"] or "") == TERMS_CURRENT_VERSION)
+    explicit_terms_v22 = web_terms_ok or tel_terms_ok
+    signed_ver = (
+        str(tel_row["terms_version"])
+        if tel_terms_ok
+        else (str(web_acc["terms_version"]) if web_terms_ok else "")
+    )
+
     return {
         "user_id": int(user_id),
         "email": email,
@@ -1280,7 +1393,8 @@ def _build_user_profile(user_id: int, csrf_token: str = "") -> Dict[str, Any]:
         "is_premium": is_premium,
         "account_status": account_status,
         "approved": is_approved,
-        "terms_accepted": bool(user.get("terms_accepted", 0)) or is_approved,
+        "terms_accepted": explicit_terms_v22,
+        "terms_version": signed_ver,
         "lang": user.get("lang", "fr"),
         "timeframe": user.get("timeframe", "1h"),
         "risk": user.get("risk", "medium"),
@@ -2865,21 +2979,38 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             # Telemetry & Terms consent sync endpoint (allowed for any authenticated user, even PENDING_APPROVAL)
-            if path == "/api/user/telemetry":
+            if path in ("/api/user/telemetry", "/api/user/accept-terms"):
                 sess_any = self._require_auth(require_approved=False, require_admin=False, check_csrf=False)
                 if not sess_any:
                     return
                 uid_any = int(sess_any["user_id"])
-                terms_acc = body.get("terms_accepted")
+                terms_acc = True if path == "/api/user/accept-terms" else body.get("terms_accepted")
                 if terms_acc:
+                    now_terms = time.time()
                     UserManager.get_instance().accept_terms(uid_any)
                     try:
                         get_db().execute(
-                            "UPDATE web_accounts SET terms_accepted = 1, data_collection_consent = 1, terms_accepted_at = CASE WHEN COALESCE(terms_accepted_at, 0) > 0 THEN terms_accepted_at ELSE %s END, terms_accepted_ip = CASE WHEN COALESCE(terms_accepted_ip, '') != '' THEN terms_accepted_ip ELSE %s END WHERE user_id = %s",
-                            (time.time(), client_ip, uid_any),
+                            """
+                            UPDATE web_accounts
+                            SET terms_accepted = 1,
+                                terms_version = %s,
+                                data_collection_consent = 1,
+                                terms_accepted_at = %s,
+                                terms_accepted_ip = %s
+                            WHERE user_id = %s
+                            """,
+                            (TERMS_CURRENT_VERSION, now_terms, client_ip, uid_any),
                         )
                     except Exception:
                         pass
+                    log_security_event(
+                        "TERMS_ACCEPTED",
+                        severity="info",
+                        user_id=uid_any,
+                        email=sess_any.get("email"),
+                        ip_address=client_ip,
+                        details=f"Acceptation explicite des Termes & Conditions d'Utilisation ({TERMS_CURRENT_VERSION}) et de la collecte de données.",
+                    )
                 _upsert_user_telemetry(
                     user_id=uid_any,
                     ip_address=client_ip,
@@ -2887,8 +3018,15 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     headers=self.headers,
                     client_telemetry=body.get("telemetry") if isinstance(body.get("telemetry"), dict) else body,
                     terms_accepted=bool(terms_acc) if terms_acc is not None else None,
+                    terms_version=TERMS_CURRENT_VERSION,
                 )
-                self._send_json(200, {"ok": True})
+                self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "user": _build_user_profile(uid_any, csrf_token=sess_any.get("csrf_token", "")),
+                    },
+                )
                 return
 
             # ALL OTHER POST ROUTES REQUIRE AN AUTHENTICATED SESSION + CSRF VALIDATION
@@ -3055,17 +3193,42 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/paper/close":
-                position_id = str(body.get("position_id", ""))
+                position_id = str(body.get("position_id", "")).strip()
+                symbol_req = str(body.get("symbol", "")).strip().upper()
                 pt = PaperTrader()
                 open_positions = pt.get_positions(user_id)
                 target = next((p for p in open_positions if str(p["id"]) == position_id), None)
+                if not target and symbol_req:
+                    target = next((p for p in open_positions if str(p["symbol"]).upper() == symbol_req), None)
                 if not target:
-                    self._send_json(404, {"ok": False, "error": "Position introuvable dans votre portefeuille."})
+                    # Si la position vient juste d'être fermée (ex: SL/TP touché ou double-clic), renvoyer l'état à jour sans erreur bloquante
+                    closed_list = pt.get_closed_positions(user_id)
+                    already_closed = next((p for p in closed_list if str(p["id"]) == position_id), None)
+                    if already_closed:
+                        self._send_json(200, {
+                            "ok": True,
+                            "closed_position": already_closed,
+                            "stats": pt.get_stats(user_id),
+                            "open_positions": open_positions,
+                            "closed_positions": closed_list,
+                            "message": f"La position #{position_id} était déjà clôturée.",
+                        })
+                        return
+                    self._send_json(404, {"ok": False, "error": "Position Paper introuvable ou déjà clôturée."})
                     return
+                target_id = str(target["id"])
                 exit_price = float(body.get("exit_price") or 0.0)
                 if exit_price <= 0:
-                    exit_price = _extract_price_float(run_coro(DataFetcher.get_instance().get_realtime_price(target["symbol"])), float(target.get("entry_price") or target.get("entry") or 0.0))
-                closed = pt.close_position(user_id, position_id, exit_price, reason="MANUAL")
+                    try:
+                        exit_price = _extract_price_float(
+                            run_coro(DataFetcher.get_instance().get_realtime_price(target["symbol"])),
+                            float(target.get("current_price") or target.get("entry_price") or target.get("entry") or 0.0),
+                        )
+                    except Exception:
+                        exit_price = float(target.get("current_price") or target.get("entry_price") or target.get("entry") or 0.0)
+                if exit_price <= 0:
+                    exit_price = float(target.get("entry_price") or target.get("entry") or 1.0)
+                closed = pt.close_position(user_id, target_id, exit_price, reason="MANUAL")
                 self._send_json(200, {
                     "ok": True,
                     "closed_position": closed,
@@ -3269,15 +3432,48 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/trading/close-position":
-                trade_id = int(body.get("trade_id", 0))
-                if not trade_id:
-                    self._send_json(400, {"ok": False, "error": "ID de position manquant."})
+                raw_trade_id = body.get("trade_id")
+                trade_id = int(raw_trade_id) if raw_trade_id and str(raw_trade_id).isdigit() else 0
+                symbol_req = (body.get("symbol") or "").strip().upper()
+                direction_req = (body.get("direction") or body.get("side") or "").strip().upper()
+                if direction_req.startswith("BUY"):
+                    direction_req = "BUY"
+                elif direction_req.startswith("SELL"):
+                    direction_req = "SELL"
+                else:
+                    direction_req = None
+
+                if not trade_id and not symbol_req:
+                    self._send_json(400, {"ok": False, "error": "Identifiant de position ou symbole requis."})
                     return
-                res = position_manager.close_trade_manual(trade_id, user_id)
+
+                from binance_manager import BinanceClientError
+                try:
+                    if trade_id > 0:
+                        res = position_manager.close_trade_manual(trade_id, user_id)
+                        label = f"Position #{trade_id} ({res['symbol']})"
+                    else:
+                        cfg = trading_config.get_config(user_id)
+                        res = position_manager.close_binance_position_direct(
+                            user_id,
+                            symbol_req,
+                            direction=direction_req,
+                            market_type=cfg.market_type,
+                        )
+                        label = f"Position {res['symbol']}"
+                except (ValueError, BinanceClientError) as close_err:
+                    self._send_json(400, {"ok": False, "error": str(close_err)})
+                    return
+
+                if res.get("already_closed_on_binance"):
+                    msg = f"{label} était déjà clôturée sur Binance — état local synchronisé (PnL estimé : {res['pnl_usdt']:+.2f} USDT)."
+                else:
+                    msg = f"{label} fermée au prix du marché. PnL : {res['pnl_usdt']:+.2f} USDT ({res['pnl_pct']:+.2f}%)."
+
                 self._send_json(200, {
                     "ok": True,
                     "result": res,
-                    "message": f"Position #{trade_id} ({res['symbol']}) fermée. PnL : {res['pnl_usdt']:+.2f} USDT ({res['pnl_pct']:+.2f}%).",
+                    "message": msg,
                 })
                 return
 
@@ -3288,8 +3484,12 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {"ok": False, "error": "ID d'ordre manquant."})
                     return
                 from live_trader import cancel_live_order
-                from binance_manager import ORDER_CONTEXT_MANUAL_AUTHENTICATED
-                cancel_live_order(user_id, symbol, order_id, execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED)
+                from binance_manager import ORDER_CONTEXT_MANUAL_AUTHENTICATED, BinanceClientError
+                try:
+                    cancel_live_order(user_id, symbol, order_id, execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED)
+                except (ValueError, BinanceClientError) as cancel_err:
+                    self._send_json(400, {"ok": False, "error": str(cancel_err)})
+                    return
                 self._send_json(200, {"ok": True, "message": f"Ordre #{order_id} sur {symbol} annulé."})
                 return
 

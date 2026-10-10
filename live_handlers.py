@@ -284,12 +284,18 @@ async def live_callback_router(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def cmd_live_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Usage : /live_close <id_position>")
+    if not context.args:
+        await update.message.reply_text("Usage : /live_close <id_position ou SYMBOLE>")
         return
+    arg = context.args[0].strip()
     try:
-        result = close_trade_manual(int(context.args[0]), update.effective_user.id)
-        await update.message.reply_text(f"✅ Position fermée. PnL : {result['pnl_usdt']:.2f} USDT")
+        if arg.isdigit():
+            result = close_trade_manual(int(arg), update.effective_user.id)
+        else:
+            from position_manager import close_binance_position_direct
+            cfg = get_config(update.effective_user.id)
+            result = close_binance_position_direct(update.effective_user.id, arg, market_type=cfg.market_type)
+        await update.message.reply_text(f"✅ Position {result['symbol']} fermée. PnL : {result['pnl_usdt']:.2f} USDT")
     except (ValueError, BinanceClientError) as e:
         await update.message.reply_text(f"❌ Fermeture refusée : {e}")
 

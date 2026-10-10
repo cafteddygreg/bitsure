@@ -36,6 +36,7 @@ export interface UserProfile {
   account_status: AccountStatus;
   approved: boolean;
   terms_accepted: boolean;
+  terms_version?: string;
   lang: 'fr' | 'en';
   timeframe: string;
   risk: 'low' | 'medium' | 'high';

@@ -333,7 +333,12 @@ def get_open_orders(user_id: int, symbol: Optional[str] = None) -> list[dict]:
 
 
 def cancel_live_order(user_id: int, symbol: str, order_id: str, execution_context: Optional[str] = None) -> None:
-    _assert_order_context_allowed(user_id, execution_context, require_auto_trade=False)
+    _assert_order_context_allowed(
+        user_id,
+        execution_context,
+        require_auto_trade=False,
+        allow_under_safety_lock=True,
+    )
     config = get_config(user_id)
     client = _client_for_user(user_id, market_type=config.market_type)
     try:

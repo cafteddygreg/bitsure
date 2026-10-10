@@ -177,25 +177,37 @@ _ALLOWED_ORDER_CONTEXTS = {
 }
 
 
-def _assert_order_context_allowed(user_id: int, execution_context: Optional[str], *, require_auto_trade: bool) -> None:
+def _assert_order_context_allowed(
+    user_id: int,
+    execution_context: Optional[str],
+    *,
+    require_auto_trade: bool,
+    allow_under_safety_lock: bool = False,
+) -> None:
     """Fail closed before any real Binance order can be sent.
 
     Telegram/webhooks/scanners must not rely on their route-level checks only: every
     backend order primitive must receive an explicit, already-authorized execution
     context. AutoTrade contexts do not require a fresh PIN per order, but they are
     accepted only while AutoTrade remains enabled and safety state is valid.
+    Note: Closing an existing position or cancelling orders reduces risk and is
+    allowed for authenticated manual/emergency actions even if safety_lock is active.
     """
     if execution_context not in _ALLOWED_ORDER_CONTEXTS:
         raise BinanceClientError("Ordre réel refusé: contexte d'exécution non autorisé.")
 
     config = get_config(user_id)
-    try:
-        assert_trading_allowed(
-            config,
-            require_auto_trade=(require_auto_trade or execution_context == ORDER_CONTEXT_AUTOTRADE),
-        )
-    except SafetyError as e:
-        raise BinanceClientError(f"Ordre réel refusé: {e}")
+    if not (allow_under_safety_lock and execution_context in (ORDER_CONTEXT_MANUAL_AUTHENTICATED, ORDER_CONTEXT_EMERGENCY)):
+        try:
+            assert_trading_allowed(
+                config,
+                require_auto_trade=(require_auto_trade or execution_context == ORDER_CONTEXT_AUTOTRADE),
+            )
+        except SafetyError as e:
+            raise BinanceClientError(f"Ordre réel refusé: {e}")
+    elif require_auto_trade or execution_context == ORDER_CONTEXT_AUTOTRADE:
+        if not config.auto_trade:
+            raise BinanceClientError("Ordre automatique refusé: AutoTrade est désactivé.")
 
     if execution_context == ORDER_CONTEXT_AUTOTRADE and not config.auto_trade:
         raise BinanceClientError("Ordre automatique refusé: AutoTrade est désactivé.")
@@ -691,6 +703,32 @@ def get_open_binance_positions(user_id: int, market_type: MarketType = "futures"
     """Return real open positions from Binance for reconciliation/risk checks."""
     if market_type != "futures":
         return []
+    creds = get_binance_credentials(user_id, market_type="futures")
+    if creds and creds.get("api_key") and creds.get("api_secret"):
+        rest_pos = _signed_rest_get(
+            creds["api_key"],
+            creds["api_secret"],
+            "/fapi/v2/positionRisk",
+            market_type="futures",
+            testnet=bool(creds.get("testnet", True)),
+        )
+        if isinstance(rest_pos, list):
+            positions = []
+            for pos in rest_pos:
+                amt = float(pos.get("positionAmt", 0.0))
+                if amt == 0:
+                    continue
+                positions.append({
+                    "symbol": normalize_symbol(pos["symbol"]),
+                    "direction": "BUY" if amt > 0 else "SELL",
+                    "quantity": abs(amt),
+                    "entry_price": float(pos.get("entryPrice", 0.0)),
+                    "mark_price": float(pos.get("markPrice", 0.0)),
+                    "unrealized_pnl": float(pos.get("unRealizedProfit", 0.0)),
+                    "leverage": int(pos.get("leverage", 1)),
+                })
+            return positions
+
     client = _client_for_user(user_id, market_type="futures")
     try:
         positions = []
@@ -699,11 +737,13 @@ def get_open_binance_positions(user_id: int, market_type: MarketType = "futures"
             if amt == 0:
                 continue
             positions.append({
-                "symbol": pos["symbol"],
+                "symbol": normalize_symbol(pos["symbol"]),
                 "direction": "BUY" if amt > 0 else "SELL",
                 "quantity": abs(amt),
                 "entry_price": float(pos.get("entryPrice", 0.0)),
                 "mark_price": float(pos.get("markPrice", 0.0)),
+                "unrealized_pnl": float(pos.get("unRealizedProfit", 0.0)),
+                "leverage": int(pos.get("leverage", 1)),
             })
         return positions
     except BinanceAPIException as e:
@@ -714,6 +754,21 @@ def get_open_binance_orders(user_id: int, market_type: MarketType = "futures", s
     """Return open Binance orders for reconciliation."""
     if market_type not in ("spot", "futures"):
         raise BinanceClientError(f"Type de marché non supporté : {market_type}")
+    creds = get_binance_credentials(user_id, market_type=market_type)
+    if creds and creds.get("api_key") and creds.get("api_secret"):
+        path = "/fapi/v1/openOrders" if market_type == "futures" else "/api/v3/openOrders"
+        params = {"symbol": normalize_symbol(symbol)} if symbol else None
+        rest_orders = _signed_rest_get(
+            creds["api_key"],
+            creds["api_secret"],
+            path,
+            params,
+            market_type=market_type,
+            testnet=bool(creds.get("testnet", True)),
+        )
+        if isinstance(rest_orders, list):
+            return rest_orders
+
     client = _client_for_user(user_id, market_type=market_type)
     try:
         if market_type == "futures":
@@ -735,50 +790,117 @@ def close_position(
     if market_type not in ("spot", "futures"):
         raise BinanceClientError(f"Type de marché non supporté : {market_type}")
 
-    _assert_order_context_allowed(user_id, execution_context, require_auto_trade=(execution_context == ORDER_CONTEXT_AUTOTRADE))
+    _assert_order_context_allowed(
+        user_id,
+        execution_context,
+        require_auto_trade=(execution_context == ORDER_CONTEXT_AUTOTRADE),
+        allow_under_safety_lock=True,
+    )
     client = _client_for_user(user_id, market_type=market_type)
-    symbol = symbol.upper()
+    symbol = normalize_symbol(symbol).upper()
     direction = direction.upper()
     if market_type == "spot" and direction == "SELL":
         raise BinanceClientError("Fermeture d'une position SHORT impossible en mode Spot standard.")
     opposite = "SELL" if direction == "BUY" else "BUY"
 
     try:
+        effective_qty = float(quantity)
         if market_type == "futures":
             remote_positions = get_open_binance_positions(user_id, market_type=market_type)
-            matching = [
+            exact_matching = [
                 p for p in remote_positions
-                if p["symbol"] == symbol
+                if normalize_symbol(p["symbol"]) == symbol
                 and p["direction"] == direction
                 and abs(float(p["quantity"]) - float(quantity)) <= max(float(quantity) * 0.001, 1e-12)
             ]
-            if not matching:
-                raise BinanceClientError(
-                    f"Fermeture refusée: aucune position Binance {symbol} {direction} "
-                    f"avec quantité attendue {quantity}."
-                )
+            if exact_matching:
+                effective_qty = float(exact_matching[0]["quantity"])
+            else:
+                same_dir = [
+                    p for p in remote_positions
+                    if normalize_symbol(p["symbol"]) == symbol and p["direction"] == direction
+                ]
+                if same_dir and execution_context in (ORDER_CONTEXT_MANUAL_AUTHENTICATED, ORDER_CONTEXT_EMERGENCY):
+                    # L'utilisateur ferme manuellement ou en urgence : on ferme la quantité réellement ouverte (ou min)
+                    effective_qty = float(same_dir[0]["quantity"]) if float(quantity) <= 0 else min(float(quantity), float(same_dir[0]["quantity"]))
+                else:
+                    raise BinanceClientError(
+                        f"Fermeture refusée: aucune position Binance {symbol} {direction} "
+                        f"avec quantité attendue {quantity}."
+                    )
         filters = get_symbol_filters(client, symbol, market_type)
         step_size = filters.get("LOT_SIZE", {}).get("stepSize") or filters.get("MARKET_LOT_SIZE", {}).get("stepSize", "0.001")
-        qty = format_step_value(quantity, step_size)
+        qty = format_step_value(effective_qty, step_size)
+        if float(qty) <= 0:
+            qty = str(effective_qty)
         if market_type == "futures":
-            order = client.futures_create_order(
-                symbol=symbol, side=opposite, type="MARKET",
-                quantity=qty, reduceOnly=True,
-            )
+            try:
+                order = client.futures_create_order(
+                    symbol=symbol, side=opposite, type="MARKET",
+                    quantity=qty, reduceOnly=True,
+                )
+            except (BinanceAPIException, BinanceOrderException):
+                raise
+            except Exception:
+                creds = get_binance_credentials(user_id, market_type="futures")
+                if not creds:
+                    raise
+                order = _signed_rest_request(
+                    "POST",
+                    creds["api_key"],
+                    creds["api_secret"],
+                    "/fapi/v1/order",
+                    {
+                        "symbol": symbol,
+                        "side": opposite,
+                        "type": "MARKET",
+                        "quantity": qty,
+                        "reduceOnly": "true",
+                    },
+                    market_type="futures",
+                    testnet=bool(creds.get("testnet", True)),
+                )
         else:
-            order = client.create_order(
-                symbol=symbol, side=opposite, type="MARKET", quantity=qty
-            )
+            try:
+                order = client.create_order(
+                    symbol=symbol, side=opposite, type="MARKET", quantity=qty
+                )
+            except (BinanceAPIException, BinanceOrderException):
+                raise
+            except Exception:
+                creds = get_binance_credentials(user_id, market_type="spot")
+                if not creds:
+                    raise
+                order = _signed_rest_request(
+                    "POST",
+                    creds["api_key"],
+                    creds["api_secret"],
+                    "/api/v3/order",
+                    {
+                        "symbol": symbol,
+                        "side": opposite,
+                        "type": "MARKET",
+                        "quantity": qty,
+                    },
+                    market_type="spot",
+                    testnet=bool(creds.get("testnet", True)),
+                )
         return {
-            "order_id": order["orderId"],
-            "executed_price": _extract_order_fill_price(order),
+            "order_id": order.get("orderId") if isinstance(order, dict) else None,
+            "executed_price": _extract_order_fill_price(order if isinstance(order, dict) else None),
+            "closed_quantity": float(qty),
         }
     except (BinanceAPIException, BinanceOrderException) as e:
         raise BinanceClientError(f"Erreur Binance à la fermeture : {getattr(e, 'message', str(e))}")
 
 
 def cancel_order(user_id: int, symbol: str, order_id: str, market_type: MarketType = "futures", execution_context: Optional[str] = None) -> None:
-    _assert_order_context_allowed(user_id, execution_context, require_auto_trade=(execution_context == ORDER_CONTEXT_AUTOTRADE))
+    _assert_order_context_allowed(
+        user_id,
+        execution_context,
+        require_auto_trade=(execution_context == ORDER_CONTEXT_AUTOTRADE),
+        allow_under_safety_lock=True,
+    )
     client = _client_for_user(user_id, market_type=market_type)
     try:
         if market_type == "futures":

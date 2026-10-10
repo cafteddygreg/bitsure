@@ -428,17 +428,19 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     await _delete_sensitive_command_message(update, "close")
-    ok, msg = _sensitive_authorized(user_id, context)
-    if not ok:
-        await update.message.reply_text(f"🔐 {msg}")
-        return
     if not context.args:
-        await update.message.reply_text("Usage : /close <id_position>")
+        await update.message.reply_text("Usage : /close <id_position ou SYMBOLE>")
         return
 
+    arg = context.args[0].strip()
     try:
-        trade_id = int(context.args[0])
-        result = close_trade_manual(trade_id, user_id)
+        if arg.isdigit():
+            trade_id = int(arg)
+            result = close_trade_manual(trade_id, user_id)
+        else:
+            from position_manager import close_binance_position_direct
+            cfg = get_config(user_id)
+            result = close_binance_position_direct(user_id, arg, market_type=cfg.market_type)
         emoji = "🟢" if result["pnl_usdt"] >= 0 else "🔴"
         await update.message.reply_text(
             f"{emoji} Position `{result['symbol']}` fermée. "

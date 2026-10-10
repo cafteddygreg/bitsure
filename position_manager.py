@@ -579,7 +579,7 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def close_trade_manual(trade_id: int, user_id: int) -> Dict[str, Any]:
-    """Ferme manuellement une position ouverte après vérification de cohérence sur Binance."""
+    """Ferme manuellement une position ouverte et synchronise immédiatement avec Binance."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -602,6 +602,11 @@ def close_trade_manual(trade_id: int, user_id: int) -> Dict[str, Any]:
     ]
     trade = dict(zip(cols, row))
     norm_sym = normalize_symbol(trade["symbol"])
+    current_price = float(trade["entry_price"] or 0.0)
+    try:
+        current_price = get_price(user_id, norm_sym, trade["market_type"])
+    except Exception:
+        pass
 
     if trade["market_type"] == "futures":
         remote_positions = get_open_binance_positions(user_id, market_type="futures")
@@ -610,23 +615,43 @@ def close_trade_manual(trade_id: int, user_id: int) -> Dict[str, Any]:
                 p for p in remote_positions
                 if normalize_symbol(p["symbol"]) == norm_sym
                 and p["direction"] == trade["direction"]
-                and abs(float(p["quantity"]) - float(trade["quantity"]))
-                <= max(float(trade["quantity"]) * 0.001, 1e-12)
             ),
             None,
         )
         if not remote:
-            log_error(logger, user_id, "close_trade_manual", f"Position Binance non conforme pour trade {trade_id}")
-            raise ValueError(
-                "Fermeture refusée: position Binance correspondante introuvable sur le compte ou taille différente."
-            )
+            # La position a déjà été clôturée sur Binance (TP/SL déclenché, liquidation ou fermeture depuis l'app Binance).
+            # On annule les ordres protecteurs résiduels et on clôture proprement la ligne locale sans lever d'erreur bloquante.
+            for oid in (trade.get("sl_order_id"), trade.get("tp_order_id")):
+                if oid:
+                    try:
+                        cancel_order(
+                            user_id,
+                            norm_sym,
+                            oid,
+                            trade["market_type"],
+                            execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED,
+                        )
+                    except Exception:
+                        pass
+            pnl_usdt, pnl_pct = close_trade(trade, "manual_synced", current_price)
+            return {
+                "pnl_usdt": pnl_usdt,
+                "pnl_pct": pnl_pct,
+                "symbol": norm_sym,
+                "already_closed_on_binance": True,
+            }
 
-    current_price = get_price(user_id, norm_sym, trade["market_type"])
+        # Si la taille sur Binance diffère (ex: fermeture partielle sur Binance), on ferme la taille réelle sur Binance
+        qty_to_close = float(remote["quantity"])
+        trade["quantity"] = qty_to_close
+    else:
+        qty_to_close = float(trade["quantity"])
+
     close_res = close_position(
         user_id,
         norm_sym,
         trade["direction"],
-        trade["quantity"],
+        qty_to_close,
         trade["market_type"],
         execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED,
     )
@@ -648,6 +673,88 @@ def close_trade_manual(trade_id: int, user_id: int) -> Dict[str, Any]:
 
     pnl_usdt, pnl_pct = close_trade(trade, "manual", exit_price)
     return {"pnl_usdt": pnl_usdt, "pnl_pct": pnl_pct, "symbol": norm_sym}
+
+
+def close_binance_position_direct(
+    user_id: int,
+    symbol: str,
+    direction: Optional[str] = None,
+    market_type: str = "futures",
+) -> Dict[str, Any]:
+    """Ferme directement une position ouverte sur Binance par son symbole (même si aucun trade_id local ne correspond)."""
+    norm_sym = normalize_symbol(symbol)
+    local_trades = [
+        t for t in get_open_trades(user_id)
+        if normalize_symbol(t["symbol"]) == norm_sym
+        and (not direction or t["direction"].upper() == direction.upper())
+    ]
+
+    if market_type == "futures":
+        remote_positions = get_open_binance_positions(user_id, market_type="futures")
+        remote = next(
+            (
+                p for p in remote_positions
+                if normalize_symbol(p["symbol"]) == norm_sym
+                and (not direction or p["direction"].upper() == direction.upper())
+            ),
+            None,
+        )
+        if not remote:
+            # Si aucune position n'est ouverte sur Binance mais qu'un trade local est resté ouvert, on le clôture
+            if local_trades:
+                return close_trade_manual(int(local_trades[0]["id"]), user_id)
+            raise ValueError(f"Aucune position ouverte trouvée sur Binance pour {norm_sym}.")
+
+        eff_dir = str(remote["direction"]).upper()
+        eff_qty = float(remote["quantity"])
+        entry_p = float(remote.get("entry_price") or 0.0)
+        lev = int(remote.get("leverage") or 1)
+        mark_p = float(remote.get("mark_price") or entry_p or 0.0)
+        try:
+            current_price = get_price(user_id, norm_sym, "futures")
+        except Exception:
+            current_price = mark_p
+
+        close_res = close_position(
+            user_id,
+            norm_sym,
+            eff_dir,
+            eff_qty,
+            "futures",
+            execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED,
+        )
+        exit_price = (
+            float(close_res["executed_price"])
+            if isinstance(close_res, dict) and close_res.get("executed_price")
+            else current_price
+        )
+
+        # Annuler tous les ordres protecteurs ouverts sur ce symbole
+        try:
+            for o in get_open_binance_orders(user_id, market_type="futures", symbol=norm_sym):
+                if o.get("orderId"):
+                    cancel_order(
+                        user_id,
+                        norm_sym,
+                        str(o["orderId"]),
+                        "futures",
+                        execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED,
+                    )
+        except Exception:
+            pass
+
+        if local_trades:
+            for lt in local_trades:
+                lt["quantity"] = eff_qty
+                pnl_usdt, pnl_pct = close_trade(lt, "manual", exit_price)
+            return {"pnl_usdt": pnl_usdt, "pnl_pct": pnl_pct, "symbol": norm_sym}
+
+        pnl_usdt, pnl_pct = _compute_pnl(eff_dir, entry_p, exit_price, eff_qty, lev)
+        return {"pnl_usdt": pnl_usdt, "pnl_pct": pnl_pct, "symbol": norm_sym}
+
+    if local_trades:
+        return close_trade_manual(int(local_trades[0]["id"]), user_id)
+    raise ValueError(f"Aucune position ouverte trouvée pour {norm_sym}.")
 
 
 def emergency_stop_all(user_id: int) -> int:

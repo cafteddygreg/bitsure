@@ -1140,11 +1140,15 @@ export function App() {
     }
   };
 
-  const handleCloseLivePosition = async (tradeId: number) => {
+  const handleCloseLivePosition = async (tradeId?: number, symbol?: string, direction?: string) => {
     try {
       const res = await apiFetch('/api/trading/close-position', {
         method: 'POST',
-        body: JSON.stringify({ trade_id: tradeId }),
+        body: JSON.stringify({
+          trade_id: tradeId || 0,
+          symbol: symbol || undefined,
+          direction: direction || undefined,
+        }),
       });
       await loadLiveAccountAndOrders();
       showToast(res.message, 'success');
@@ -1572,10 +1576,11 @@ export function App() {
   );
 
   if (viewMode === 'terms') {
+    const isPendingLegacyConsent = Boolean(user && !user.terms_accepted);
     return (
       <TermsOfUsePage
-        showAcceptButton={returnToRegisterAfterTerms || authModal === 'register' || !user}
-        isAccepted={authTermsAccepted}
+        showAcceptButton={returnToRegisterAfterTerms || authModal === 'register' || !user || isPendingLegacyConsent}
+        isAccepted={user ? Boolean(user.terms_accepted) : authTermsAccepted}
         onBack={() => {
           if (returnToRegisterAfterTerms) {
             setAuthModal('register');
@@ -1584,7 +1589,34 @@ export function App() {
             setViewMode(user ? 'workspace' : 'landing');
           }
         }}
-        onAcceptAndReturnToRegister={() => {
+        onAcceptAndReturnToRegister={async () => {
+          if (user && !user.terms_accepted) {
+            setAuthSubmitting(true);
+            try {
+              const telemetry = await collectClientTelemetry(true);
+              const res = await apiFetch('/api/user/accept-terms', {
+                method: 'POST',
+                body: JSON.stringify({ terms_accepted: true, telemetry }),
+              });
+              if (res?.user) {
+                setUser(res.user);
+              } else {
+                setUser((prev) => (prev ? { ...prev, terms_accepted: true, terms_version: '2.2.0' } : prev));
+              }
+              setViewMode('workspace');
+              showToast(
+                lang === 'en'
+                  ? 'Terms & Conditions (v2.2.0) accepted and recorded.'
+                  : "Termes & Conditions d'Utilisation (v2.2.0) acceptés et enregistrés.",
+                'success'
+              );
+            } catch (err: any) {
+              showToast(err.message || 'Erreur lors de la validation des CGU.', 'error');
+            } finally {
+              setAuthSubmitting(false);
+            }
+            return;
+          }
           setAuthTermsAccepted(true);
           setAuthModal('register');
           setReturnToRegisterAfterTerms(false);
@@ -1793,6 +1825,199 @@ export function App() {
             ? 'Bitsure Teddy • Mandatory server authentication • Active access protection & quotas'
             : 'Bitsure Teddy • Authentification serveur obligatoire • Protection des accès & quotas actifs'}
         </footer>
+      </div>
+    );
+  }
+
+  // Mandatory Terms & Conditions v2.2.0 Acceptance Gate for ALL Users (including legacy users created prior to v2.2.0)
+  if (!user.terms_accepted) {
+    return (
+      <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex flex-col justify-between p-4 sm:p-8">
+        <header className="max-w-4xl w-full mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-[#F59E0B]/15 border border-[#F59E0B]/40 flex items-center justify-center text-[#FBBF24] font-display font-bold">
+              B
+            </div>
+            <div>
+              <div className="font-display font-bold text-sm tracking-tight text-[#F1F5F9]">BITSURE TEDDY</div>
+              <div className="text-[10px] font-mono-tabular text-[#FBBF24]">
+                {lang === 'en' ? 'MANDATORY TERMS & PRIVACY CONSENT (v2.2.0)' : 'MISE À JOUR CONTRACTUELLE OBLIGATOIRE (v2.2.0)'}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setViewMode('terms')}
+              className="px-3 py-1.5 rounded-lg bg-[#F59E0B]/15 hover:bg-[#F59E0B]/25 border border-[#F59E0B]/40 text-xs font-semibold text-[#FBBF24] flex items-center gap-1.5"
+            >
+              <Shield className="w-3.5 h-3.5" />
+              <span>{tr(lang, 'Lire le contrat intégral (CGU)')}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleToggleLang}
+              className="px-2.5 py-1.5 rounded-lg bg-[#111827] border border-white/10 text-xs font-mono-tabular uppercase text-[#94A3B8] hover:text-[#F1F5F9]"
+            >
+              {lang === 'fr' ? 'FR ▾ EN' : 'EN ▾ FR'}
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="px-3 py-1.5 rounded-lg bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-xs text-[#FB7185] flex items-center gap-1.5"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>{tr(lang, 'Déconnexion')}</span>
+            </button>
+          </div>
+        </header>
+
+        <div className="flex-1 flex items-center justify-center py-8">
+          <div className="bg-[#111827] border border-[#F59E0B]/40 rounded-2xl max-w-xl w-full p-6 sm:p-8 space-y-5 shadow-2xl">
+            <div className="flex items-start gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-[#F59E0B]/15 border border-[#F59E0B]/40 flex items-center justify-center text-[#FBBF24] shrink-0">
+                <Shield className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <span className="inline-block px-2 py-0.5 rounded text-[10px] font-mono-tabular font-bold uppercase bg-[#F59E0B]/15 border border-[#F59E0B]/40 text-[#FBBF24]">
+                  {lang === 'en' ? 'Action Required — All Users' : 'Action Requise — Tous les Utilisateurs'}
+                </span>
+                <h2 className="font-display text-lg sm:text-xl font-bold text-[#F1F5F9]">
+                  {lang === 'en'
+                    ? 'Accept the Updated Terms & Conditions of Use (v2.2.0)'
+                    : "Acceptation obligatoire des nouveaux Termes & Conditions d'Utilisation (v2.2.0)"}
+                </h2>
+              </div>
+            </div>
+
+            <p className="text-xs sm:text-sm text-[#94A3B8] leading-relaxed">
+              {lang === 'en' ? (
+                <>
+                  Whether your account was created before or after this update, continuing to use{' '}
+                  <strong className="text-[#F1F5F9]">Bitsure Teddy</strong> requires your explicit consent to our public{' '}
+                  <strong className="text-[#FBBF24]">Terms &amp; Conditions of Use and Data Collection Charter (v2.2.0)</strong>.
+                  This includes the collection and administrative audit of your personal account details, device and hardware
+                  telemetry, IP address history, geolocation, security events, and trading activity.
+                </>
+              ) : (
+                <>
+                  Que votre compte ait été créé avant ou après cette mise à jour, la poursuite de l&apos;utilisation de{' '}
+                  <strong className="text-[#F1F5F9]">Bitsure Teddy</strong> requiert votre acceptation explicite de nos{' '}
+                  <strong className="text-[#FBBF24]">
+                    Termes &amp; Conditions d&apos;Utilisation et de la Charte de Collecte des Données (v2.2.0)
+                  </strong>
+                  . Ce contrat couvre la collecte et la consultation par l&apos;Administrateur de vos informations
+                  personnelles, du type et modèle d&apos;appareil, de votre adresse IP, de votre localisation (réseau/GPS),
+                  de vos paramètres de sécurité et de votre activité de trading.
+                </>
+              )}
+            </p>
+
+            <div className="p-3.5 rounded-xl bg-[#090D16] border border-white/[0.08] text-xs font-mono-tabular space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-[#64748B]">{lang === 'en' ? 'Connected Account:' : 'Compte connecté :'}</span>
+                <span className="text-[#F1F5F9] font-semibold">{user.display_name} ({user.email})</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[#64748B]">{lang === 'en' ? 'User ID:' : 'ID Utilisateur :'}</span>
+                <span className="text-[#94A3B8]">#{user.user_id}</span>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-[#090D16] border border-[#F59E0B]/40 space-y-2.5">
+              <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={authTermsAccepted}
+                  onChange={(e) => setAuthTermsAccepted(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 rounded border-white/25 bg-[#111827] text-[#10B981] focus:ring-[#10B981]"
+                />
+                <span className="text-xs text-[#F1F5F9] leading-relaxed">
+                  {lang === 'en' ? (
+                    <>
+                      I have read and I accept the{' '}
+                      <button
+                        type="button"
+                        onClick={() => setViewMode('terms')}
+                        className="text-[#F59E0B] hover:text-[#FBBF24] underline font-bold"
+                      >
+                        terms and conditions of use
+                      </button>{' '}
+                      (v2.2.0) and I authorize the collection of my personal, device, IP, geolocation, and trading data.
+                    </>
+                  ) : (
+                    <>
+                      J&apos;ai lu et j&apos;accepte les{' '}
+                      <button
+                        type="button"
+                        onClick={() => setViewMode('terms')}
+                        className="text-[#F59E0B] hover:text-[#FBBF24] underline font-bold"
+                      >
+                        termes et conditions d&apos;utilisation
+                      </button>{' '}
+                      (v2.2.0) et j&apos;autorise la collecte de mes données personnelles, d&apos;appareil, d&apos;adresse IP, de
+                      localisation et de trading.
+                    </>
+                  )}
+                </span>
+              </label>
+              <div className="text-[11px] text-[#94A3B8] pl-6">
+                {lang === 'en'
+                  ? 'Click the highlighted link above to open and read the full public Terms & Conditions before confirming.'
+                  : 'Cliquez sur « termes et conditions d’utilisation » ci-dessus pour consulter le contrat complet avant de valider.'}
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+              <button
+                type="button"
+                disabled={!authTermsAccepted || authSubmitting}
+                onClick={async () => {
+                  if (!authTermsAccepted) return;
+                  setAuthSubmitting(true);
+                  try {
+                    const telemetry = await collectClientTelemetry(true);
+                    const res = await apiFetch('/api/user/accept-terms', {
+                      method: 'POST',
+                      body: JSON.stringify({ terms_accepted: true, telemetry }),
+                    });
+                    if (res?.user) {
+                      setUser(res.user);
+                    } else {
+                      setUser((prev) => (prev ? { ...prev, terms_accepted: true, terms_version: '2.2.0' } : prev));
+                    }
+                    showToast(
+                      lang === 'en'
+                        ? 'Thank you. Your consent to Terms & Conditions v2.2.0 has been saved.'
+                        : 'Merci. Votre acceptation des Termes & Conditions v2.2.0 a bien été enregistrée.',
+                      'success'
+                    );
+                  } catch (err: any) {
+                    showToast(err.message || 'Erreur lors de la validation des CGU.', 'error');
+                  } finally {
+                    setAuthSubmitting(false);
+                  }
+                }}
+                className="flex-1 py-2.5 px-4 bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-bold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>
+                  {authSubmitting
+                    ? tr(lang, 'Enregistrement en cours...', 'Saving consent...')
+                    : tr(lang, 'Confirmer et accéder au terminal', 'Confirm and access workspace')}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('terms')}
+                className="py-2.5 px-4 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] font-semibold text-xs rounded-lg transition-colors"
+              >
+                {tr(lang, 'Lire les CGU complètes', 'Read full Terms')}
+              </button>
+            </div>
+          </div>
+        </div>
+        <div />
       </div>
     );
   }
@@ -4514,8 +4739,28 @@ export function App() {
                     <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
                       <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
                         {lang === 'en'
-                          ? `Open AutoTrade & Live Positions (${liveTrades.open.length}) — /positions`
-                          : `Positions AutoTrade & Live Ouvertes (${liveTrades.open.length}) — /positions`}
+                          ? `Open AutoTrade & Live Positions (${
+                              liveTrades.open.length +
+                              ((liveAccount?.positions || []).filter(
+                                (rp: any) =>
+                                  !liveTrades.open.some(
+                                    (lt: any) =>
+                                      String(lt.symbol).toUpperCase() === String(rp.symbol).toUpperCase() &&
+                                      String(rp.side || '').toUpperCase().startsWith(String(lt.direction || '').toUpperCase())
+                                  )
+                              ).length || 0)
+                            }) — /positions`
+                          : `Positions AutoTrade & Live Ouvertes (${
+                              liveTrades.open.length +
+                              ((liveAccount?.positions || []).filter(
+                                (rp: any) =>
+                                  !liveTrades.open.some(
+                                    (lt: any) =>
+                                      String(lt.symbol).toUpperCase() === String(rp.symbol).toUpperCase() &&
+                                      String(rp.side || '').toUpperCase().startsWith(String(lt.direction || '').toUpperCase())
+                                  )
+                              ).length || 0)
+                            }) — /positions`}
                       </h3>
                       <button
                         type="button"
@@ -4538,42 +4783,92 @@ export function App() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
-                          {liveTrades.open.length === 0 ? (
-                            <tr>
-                              <td colSpan={6} className="py-6 text-center text-[#64748B] font-sans">
-                                {tr(lang, 'Aucune position ouverte enregistrée localement.')}
-                              </td>
-                            </tr>
-                          ) : (
-                            liveTrades.open.map((t: any) => (
-                              <tr key={t.id} className="hover:bg-white/[0.02]">
-                                <td className="py-3 px-4 font-semibold text-[#F1F5F9]">
-                                  #{t.id} {t.symbol}
-                                </td>
-                                <td className="py-3 px-4">
-                                  <span className={t.direction === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
-                                    {t.direction} x{t.leverage || 1}
-                                  </span>{' '}
-                                  <span className="text-[10px] text-[#64748B] uppercase">({t.market_type})</span>
-                                </td>
-                                <td className="py-3 px-4 text-right">{t.quantity}</td>
-                                <td className="py-3 px-4 text-right">{Number(t.entry_price || 0).toLocaleString()}</td>
-                                <td className="py-3 px-4 text-right">
-                                  <span className="text-[#F43F5E]">{t.sl_price ?? '—'}</span> /{' '}
-                                  <span className="text-[#10B981]">{t.tp_price ?? '—'}</span>
-                                </td>
-                                <td className="py-3 px-4 text-right">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleCloseLivePosition(t.id)}
-                                    className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px]"
-                                  >
-                                    {tr(lang, 'Fermer')} (#{t.id})
-                                  </button>
-                                </td>
-                              </tr>
-                            ))
-                          )}
+                          {(() => {
+                            const remoteUnmatched = (liveAccount?.positions || []).filter(
+                              (rp: any) =>
+                                !liveTrades.open.some(
+                                  (lt: any) =>
+                                    String(lt.symbol).toUpperCase() === String(rp.symbol).toUpperCase() &&
+                                    String(rp.side || '').toUpperCase().startsWith(String(lt.direction || '').toUpperCase())
+                                )
+                            );
+                            if (liveTrades.open.length === 0 && remoteUnmatched.length === 0) {
+                              return (
+                                <tr>
+                                  <td colSpan={6} className="py-6 text-center text-[#64748B] font-sans">
+                                    {tr(lang, 'Aucune position ouverte enregistrée localement ou sur Binance.')}
+                                  </td>
+                                </tr>
+                              );
+                            }
+                            return (
+                              <>
+                                {liveTrades.open.map((t: any) => (
+                                  <tr key={`local-${t.id}`} className="hover:bg-white/[0.02]">
+                                    <td className="py-3 px-4 font-semibold text-[#F1F5F9]">
+                                      #{t.id} {t.symbol}
+                                    </td>
+                                    <td className="py-3 px-4">
+                                      <span className={t.direction === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                                        {t.direction} x{t.leverage || 1}
+                                      </span>{' '}
+                                      <span className="text-[10px] text-[#64748B] uppercase">({t.market_type})</span>
+                                    </td>
+                                    <td className="py-3 px-4 text-right">{t.quantity}</td>
+                                    <td className="py-3 px-4 text-right">{Number(t.entry_price || 0).toLocaleString()}</td>
+                                    <td className="py-3 px-4 text-right">
+                                      <span className="text-[#F43F5E]">{t.sl_price ?? '—'}</span> /{' '}
+                                      <span className="text-[#10B981]">{t.tp_price ?? '—'}</span>
+                                    </td>
+                                    <td className="py-3 px-4 text-right">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleCloseLivePosition(t.id, t.symbol, t.direction)}
+                                        className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px]"
+                                      >
+                                        {tr(lang, 'Fermer')} (#{t.id})
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                                {remoteUnmatched.map((rp: any) => {
+                                  const dir = String(rp.side || '').toUpperCase().startsWith('SELL') ? 'SELL' : 'BUY';
+                                  const upnl = Number(rp.unrealized_pnl || 0);
+                                  return (
+                                    <tr key={`remote-${rp.symbol}-${dir}`} className="hover:bg-white/[0.02] bg-[#F59E0B]/[0.03]">
+                                      <td className="py-3 px-4 font-semibold text-[#F1F5F9]">
+                                        <span className="text-[#F59E0B] text-[10px] mr-1">[BINANCE]</span>
+                                        {rp.symbol}
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <span className={dir === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                                          {dir} x{rp.leverage || 1}
+                                        </span>{' '}
+                                        <span className="text-[10px] text-[#64748B] uppercase">(futures)</span>
+                                      </td>
+                                      <td className="py-3 px-4 text-right">{rp.quantity}</td>
+                                      <td className="py-3 px-4 text-right">{Number(rp.entry_price || 0).toLocaleString()}</td>
+                                      <td className="py-3 px-4 text-right">
+                                        <span className={upnl >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                                          PnL: {upnl >= 0 ? '+' : ''}
+                                          {upnl.toFixed(2)} USDT
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-4 text-right">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleCloseLivePosition(0, rp.symbol, dir)}
+                                          className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px]"
+                                        >
+                                          {tr(lang, 'Fermer')} ({rp.symbol})
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </>
+                            );
+                          })()}
                         </tbody>
                       </table>
                     </div>
