@@ -40,8 +40,8 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     gain = delta.clip(lower=0.0)
     loss = -delta.clip(upper=0.0)
 
-    avg_gain = gain.rolling(window=period, min_periods=period).mean()
-    avg_loss = loss.rolling(window=period, min_periods=period).mean()
+    avg_gain = _wilder_smooth(gain, period)
+    avg_loss = _wilder_smooth(loss, period)
 
     rs = avg_gain / avg_loss.replace(0.0, np.nan)
     rsi_series = 100.0 - (100.0 / (1.0 + rs))

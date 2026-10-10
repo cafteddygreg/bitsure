@@ -33,7 +33,7 @@ def get_db():
 
 logger = logging.getLogger("strategy_lab")
 
-ENGINE_VERSION = "2.1.0"
+ENGINE_VERSION = "2.2.0"
 STRATEGY_VERSION = "teddy_confluence_v2"
 FORBIDDEN_LIVE_MODULES = ("live_trader", "position_manager")
 
@@ -1536,10 +1536,12 @@ def load_historical_candles(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     max_candles: int = 1000,
+    warmup_candles: int = 0,
 ) -> Tuple[pd.DataFrame, str, Dict[str, int]]:
     """
     Loads real historical OHLCV candles for the Strategy Lab with incremental PostgreSQL caching:
-    1. Queries `strategy_lab_ohlcv` for already stored candles matching (market_type, symbol, timeframe) in [start_ms, end_ms].
+    1. Queries `strategy_lab_ohlcv` for already stored candles matching (market_type, symbol, timeframe) in [query_start_ms, end_ms],
+       including `warmup_candles` prior to `start_date` so long-period EMAs (e.g. EMA 200) stabilize before the simulation window.
     2. Identifies missing time ranges and fetches ONLY missing candles from official Binance Spot (`/api/v3/klines`)
        or USD-M Futures (`/fapi/v1/klines`) endpoints with pagination and deduplication.
     3. Persists newly fetched closed candles into `strategy_lab_ohlcv` (`ON CONFLICT DO NOTHING`).
@@ -1552,6 +1554,8 @@ def load_historical_candles(
     if timeframe not in SUPPORTED_LAB_TIMEFRAMES:
         timeframe = "15m"
     max_candles = max(80, min(2500, int(max_candles or 800)))
+    warmup_extra = max(0, min(2000, int(warmup_candles or 0)))
+    total_limit = max_candles + warmup_extra
 
     now_ms = int(time.time() * 1000)
     tf_ms = TIMEFRAME_SECONDS.get(timeframe, 900) * 1000
@@ -1562,6 +1566,7 @@ def load_historical_candles(
     start_ms = _parse_date_to_ms(start_date, default_start_ms)
     if start_ms >= end_ms:
         start_ms = end_ms - (300 * tf_ms)
+    query_start_ms = start_ms - (warmup_extra * tf_ms)
 
     db = get_db()
     cached_rows = []
@@ -1574,7 +1579,7 @@ def load_historical_candles(
               AND open_time_ms >= %s AND open_time_ms <= %s
             ORDER BY open_time_ms ASC
             """,
-            (market_type, symbol, timeframe, start_ms, end_ms),
+            (market_type, symbol, timeframe, query_start_ms, end_ms),
         ).fetchall()
     except Exception as e:
         logger.debug("strategy_lab_ohlcv read skipped: %s", e)
@@ -1594,7 +1599,7 @@ def load_historical_candles(
         }
 
     cached_count = len(cached_by_open_ms)
-    expected_candles = max(1, min(max_candles, int((end_ms - start_ms) // tf_ms)))
+    expected_candles = max(1, min(total_limit, int((end_ms - query_start_ms) // tf_ms)))
 
     # Determine if we need to fetch missing ranges from Binance
     newly_fetched_count = 0
@@ -1606,12 +1611,12 @@ def load_historical_candles(
             max_cached_ms = max(cached_by_open_ms.keys())
             min_cached_ms = min(cached_by_open_ms.keys())
             # If we are missing recent candles after max_cached_ms, fetch only from max_cached_ms + tf_ms
-            if min_cached_ms <= start_ms + tf_ms * 2 and max_cached_ms < end_ms - tf_ms:
+            if min_cached_ms <= query_start_ms + tf_ms * 2 and max_cached_ms < end_ms - tf_ms:
                 fetch_start_ms = max_cached_ms + tf_ms
             else:
-                fetch_start_ms = start_ms
+                fetch_start_ms = query_start_ms
         else:
-            fetch_start_ms = start_ms
+            fetch_start_ms = query_start_ms
 
         import requests
         if market_type == "futures" and symbol != "XAUUSD":
@@ -1631,8 +1636,8 @@ def load_historical_candles(
             try:
                 cursor_ms = fetch_start_ms
                 fetched_batches = []
-                while cursor_ms < end_ms and sum(len(b) for b in fetched_batches) < max_candles:
-                    needed = min(1000, max_candles - sum(len(b) for b in fetched_batches))
+                while cursor_ms < end_ms and sum(len(b) for b in fetched_batches) < total_limit:
+                    needed = min(1000, total_limit - sum(len(b) for b in fetched_batches))
                     resp = requests.get(
                         url,
                         params={
@@ -1710,7 +1715,7 @@ def load_historical_candles(
                 logger.debug("Endpoint %s failed: %s", url, e)
 
     if cached_by_open_ms:
-        sorted_oms = sorted(cached_by_open_ms.keys())[-max_candles:]
+        sorted_oms = sorted(cached_by_open_ms.keys())[-total_limit:]
         rows = []
         for oms in sorted_oms:
             item = cached_by_open_ms[oms]
@@ -1742,7 +1747,7 @@ def load_historical_candles(
                 if "timestamp" in df.columns:
                     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
                     df.set_index("timestamp", inplace=True)
-                df = df.tail(max_candles).copy()
+                df = df.tail(total_limit).copy()
                 for col in ("Open", "High", "Low", "Close", "Volume"):
                     df[col] = pd.to_numeric(df[col], errors="coerce")
                 df.dropna(subset=["Open", "High", "Low", "Close"], inplace=True)
@@ -1765,7 +1770,7 @@ def load_historical_candles(
         if df is not None and not df.empty:
             if getattr(df.index, "tz", None) is None and hasattr(df.index, "tz_localize"):
                 df.index = df.index.tz_localize("UTC")
-            return df.tail(max_candles), f"{src} ({market_type.upper()})", {"cached": 0, "fetched": len(df)}
+            return df.tail(total_limit), f"{src} ({market_type.upper()})", {"cached": 0, "fetched": len(df)}
     except Exception as e:
         logger.error("DataFetcher fallback failed in Strategy Lab: %s", e)
 
@@ -2142,7 +2147,10 @@ def run_backtest_experiment(
         f"Actif {symbol} ({market_type.upper()} • {timeframe}) | Style {trading_style.upper()} | Score>={params['min_teddy_score']}",
     )
 
-    # Step 2 & 3: Search local storage & fetch missing candles
+    # Required warm-up proportional to longest EMA (3 * max(ema_trend, ema_slow))
+    required_warmup = max(60, 3 * max(int(params["ema_trend"]), int(params["ema_slow"])))
+
+    # Step 2 & 3: Search local storage & fetch missing candles (including warm-up history before start_date)
     if preloaded_df is not None:
         raw_df, data_source = preloaded_df
         cache_stats = {"cached": len(raw_df), "fetched": 0}
@@ -2156,6 +2164,7 @@ def run_backtest_experiment(
             start_date=start_date,
             end_date=end_date,
             max_candles=max_candles,
+            warmup_candles=required_warmup,
         )
         add_step(
             2,
@@ -2189,38 +2198,87 @@ def run_backtest_experiment(
             "Cochez « Forcer malgré les lacunes » si vous souhaitez tout de même exécuter ce test."
         )
 
-    # Step 5: Anti-overfitting sample split (Full / Dev 60% / Validation 20% / Test 20%)
-    total_n = len(cleaned_df)
+    # Step 5: Compute indicators on the FULL loaded history first (avoids resetting EMAs on split boundaries)
+    df = _compute_lab_indicators(cleaned_df, params)
+    total_n = len(df)
+    timestamps = list(df.index)
+
+    # Determine requested simulation window [req_start_idx, total_n)
+    req_start_idx = 0
+    if start_date:
+        req_start_ms = _parse_date_to_ms(start_date, 0)
+        if req_start_ms > 0:
+            for idx_pos, ts in enumerate(timestamps):
+                oms = int(ts.timestamp() * 1000) if hasattr(ts, "timestamp") else _parse_date_to_ms(str(ts), 0)
+                if oms >= req_start_ms:
+                    req_start_idx = idx_pos
+                    break
+    elif preloaded_df is None and total_n > max_candles:
+        # When load_historical_candles fetched max_candles + warmup_candles without an explicit start_date
+        req_start_idx = max(0, total_n - max_candles)
+
+    # Effective warm-up index on the full series if no start_date was cut
+    if req_start_idx == 0:
+        if total_n > required_warmup + 10:
+            base_sim_start = required_warmup
+        else:
+            base_sim_start = max(10, min(total_n - 1, max(25, min(80, int(params["ema_slow"]) + 2))))
+            if base_sim_start >= total_n:
+                base_sim_start = max(1, total_n // 5)
+    else:
+        base_sim_start = max(1, req_start_idx)
+
+    # Apply anti-overfitting sample split (Full / Dev 60% / Validation 20% / Test 20%) over the simulation window
+    # while keeping all preceding candles as indicator warm-up history.
     period_split = (period_split or "full").lower()
-    if period_split == "dev" and total_n >= 100:
-        df_slice = cleaned_df.iloc[: int(total_n * 0.60)].copy()
+    window_n = total_n - req_start_idx
+    if period_split == "dev" and window_n >= 100:
+        sim_start_idx = max(base_sim_start, req_start_idx)
+        sim_end_idx = req_start_idx + int(window_n * 0.60)
         split_label = "Développement In-Sample (60%)"
-    elif period_split == "validation" and total_n >= 100:
-        df_slice = cleaned_df.iloc[int(total_n * 0.60) : int(total_n * 0.80)].copy()
+    elif period_split == "validation" and window_n >= 100:
+        sim_start_idx = max(1, req_start_idx + int(window_n * 0.60))
+        sim_end_idx = req_start_idx + int(window_n * 0.80)
         split_label = "Validation Out-of-Sample (20%)"
-    elif period_split == "test" and total_n >= 100:
-        df_slice = cleaned_df.iloc[int(total_n * 0.80) :].copy()
+    elif period_split == "test" and window_n >= 100:
+        sim_start_idx = max(1, req_start_idx + int(window_n * 0.80))
+        sim_end_idx = total_n
         split_label = "Test Final Out-of-Sample (20%)"
     else:
-        df_slice = cleaned_df
+        sim_start_idx = base_sim_start
+        sim_end_idx = total_n
         period_split = "full"
         split_label = "Période Complète (100%)"
+
+    if sim_end_idx <= sim_start_idx:
+        sim_start_idx = max(1, min(sim_start_idx, total_n - 1))
+        sim_end_idx = total_n
+
+    actual_warmup_bars = sim_start_idx
+    data_quality["required_warmup_candles"] = required_warmup
+    data_quality["actual_warmup_candles"] = actual_warmup_bars
+    if actual_warmup_bars < required_warmup:
+        warmup_warn = (
+            f"Warm-up partiel des indicateurs : {actual_warmup_bars} bougies disponibles avant le début de la simulation "
+            f"contre {required_warmup} recommandées (3 × EMA {max(int(params['ema_trend']), int(params['ema_slow']))}). "
+            "L'EMA de tendance peut présenter un écart résiduel d'initialisation."
+        )
+        data_quality.setdefault("warnings", []).append(warmup_warn)
+        if data_quality.get("status") == "VALID":
+            data_quality["status"] = "WARNING"
 
     add_step(
         5,
         "Préparation de l'échantillon",
-        f"Segment sélectionné : {split_label} ({len(df_slice)} chandeliers).",
+        f"Segment sélectionné : {split_label} ({max(0, sim_end_idx - sim_start_idx)} chandeliers simulés, {actual_warmup_bars} bougies de warm-up).",
     )
 
-    # Step 6: Indicator calculation
-    df = _compute_lab_indicators(df_slice, params)
-    warmup = max(25, min(80, int(params["ema_slow"]) + 2))
-    if len(df) <= warmup + 10:
-        warmup = max(10, len(df) // 5)
+    # Step 6: Indicator calculation step log
     add_step(
         6,
         "Calcul des indicateurs techniques",
-        f"EMA({params['ema_fast']}/{params['ema_slow']}/{params['ema_trend']}), RSI({params['rsi_period']}), ADX({params['adx_period']}), ATR({params['atr_period']}), MACD, Bollinger calculés sans biais.",
+        f"EMA({params['ema_fast']}/{params['ema_slow']}/{params['ema_trend']}), RSI({params['rsi_period']}), ADX({params['adx_period']}), ATR({params['atr_period']}), MACD, Bollinger calculés sur l'historique complet ({total_n} bougies, warm-up {actual_warmup_bars}/{required_warmup}).",
+        status="warning" if actual_warmup_bars < required_warmup else "done",
     )
 
     # Step 7: Chronological Trade Simulation
@@ -2258,8 +2316,7 @@ def run_backtest_experiment(
     current_day_str = ""
     trades_today = 0
 
-    timestamps = list(df.index)
-    for i in range(warmup, len(df)):
+    for i in range(sim_start_idx, sim_end_idx):
         row = df.iloc[i]
         prev_row = df.iloc[i - 1]
         ts = timestamps[i]
@@ -2268,6 +2325,9 @@ def run_backtest_experiment(
         if day_str != current_day_str:
             current_day_str = day_str
             trades_today = 0
+            # Circuit breaker: if max_consecutive_losses was reached, keep blocking until this new UTC day rollover
+            if consecutive_losses >= int(params.get("max_consecutive_losses", 4)):
+                consecutive_losses = 0
 
         high = float(row["High"])
         low = float(row["Low"])
@@ -2325,59 +2385,71 @@ def run_backtest_experiment(
                 raw_exit_price = open_pos["tp_price"]
                 exit_reason = "TAKE_PROFIT"
 
-            # If position survived this candle's extremes, apply Partial TP, Break-Even & Trailing for subsequent candles
+            # If position survived this candle's extremes, apply Partial TP, Break-Even & Trailing for subsequent candles.
+            # Conservative intra-bar rule (D6): if Partial TP triggers on this candle, do NOT also activate Break-Even
+            # or Trailing Stop on this same candle (avoids assuming favorable intra-bar High -> Close ordering).
             if exit_reason is None:
+                partial_taken_this_bar = False
                 if (
                     bool(params.get("partial_tp_enabled", True))
                     and not open_pos["partial_taken"]
                     and current_r >= float(params.get("partial_tp_rr", 1.2))
                 ):
                     partial_pct = float(params.get("partial_tp_close_pct", 50.0)) / 100.0
-                    partial_price = (
+                    raw_partial_price = (
                         entry_p + init_sl_dist * float(params.get("partial_tp_rr", 1.2))
                         if side == "BUY"
                         else entry_p - init_sl_dist * float(params.get("partial_tp_rr", 1.2))
                     )
+                    exec_partial_price = (
+                        raw_partial_price * (1.0 - slippage_rate)
+                        if side == "BUY"
+                        else raw_partial_price * (1.0 + slippage_rate)
+                    )
                     qty_closed = open_pos["qty_remaining"] * partial_pct
                     raw_partial_pnl = (
-                        (partial_price - entry_p) * qty_closed
+                        (exec_partial_price - entry_p) * qty_closed
                         if side == "BUY"
-                        else (entry_p - partial_price) * qty_closed
+                        else (entry_p - exec_partial_price) * qty_closed
                     )
-                    partial_fee = partial_price * qty_closed * fee_rate
+                    partial_fee = exec_partial_price * qty_closed * fee_rate
+                    partial_slippage_cost = abs(raw_partial_price - exec_partial_price) * qty_closed
                     open_pos["realized_partial_pnl"] += raw_partial_pnl - partial_fee
                     open_pos["fees_paid"] += partial_fee
+                    open_pos["slippage_paid"] += partial_slippage_cost
                     open_pos["qty_remaining"] -= qty_closed
                     open_pos["partial_taken"] = True
+                    partial_taken_this_bar = True
                     balance += raw_partial_pnl - partial_fee
 
-                if (
-                    bool(params.get("breakeven_enabled", True))
-                    and not open_pos["be_activated"]
-                    and current_r >= float(params.get("breakeven_trigger_rr", 1.0))
-                ):
-                    be_buffer = entry_p * (fee_rate * 2.2)
-                    if side == "BUY":
-                        open_pos["sl_price"] = max(open_pos["sl_price"], entry_p + be_buffer)
-                    else:
-                        open_pos["sl_price"] = min(open_pos["sl_price"], entry_p - be_buffer)
-                    open_pos["be_activated"] = True
+                if not partial_taken_this_bar:
+                    if (
+                        bool(params.get("breakeven_enabled", True))
+                        and not open_pos["be_activated"]
+                        and current_r >= float(params.get("breakeven_trigger_rr", 1.0))
+                    ):
+                        be_buffer = entry_p * (fee_rate * 2.2)
+                        if side == "BUY":
+                            open_pos["sl_price"] = max(open_pos["sl_price"], entry_p + be_buffer)
+                        else:
+                            open_pos["sl_price"] = min(open_pos["sl_price"], entry_p - be_buffer)
+                        open_pos["be_activated"] = True
 
-                if (
-                    bool(params.get("trailing_stop_enabled", True))
-                    and current_r >= float(params.get("trailing_activation_rr", 1.3))
-                ):
-                    trail_dist = max(atr_val * float(params.get("trailing_distance_atr", 1.1)), entry_p * 0.002)
-                    if side == "BUY":
-                        new_sl = close - trail_dist
-                        if new_sl > open_pos["sl_price"]:
-                            open_pos["sl_price"] = new_sl
-                            open_pos["trailing_activated"] = True
-                    else:
-                        new_sl = close + trail_dist
-                        if new_sl < open_pos["sl_price"]:
-                            open_pos["sl_price"] = new_sl
-                            open_pos["trailing_activated"] = True
+                    if (
+                        bool(params.get("trailing_stop_enabled", True))
+                        and current_r >= float(params.get("trailing_activation_rr", 1.3))
+                    ):
+                        trail_dist = max(atr_val * float(params.get("trailing_distance_atr", 1.1)), entry_p * 0.002)
+                        if side == "BUY":
+                            new_sl = close - trail_dist
+                            if new_sl > open_pos["sl_price"]:
+                                open_pos["sl_price"] = new_sl
+                                open_pos["trailing_activated"] = True
+                        else:
+                            new_sl = close + trail_dist
+                            if new_sl < open_pos["sl_price"]:
+                                open_pos["sl_price"] = new_sl
+                                open_pos["trailing_activated"] = True
 
             if exit_reason is None and open_pos["bars_held"] >= int(params.get("max_bars_in_trade", 48)):
                 raw_exit_price = close
@@ -2393,6 +2465,10 @@ def run_backtest_experiment(
                 raw_exit_price = close
                 exit_reason = "OPPOSITE_SIGNAL"
 
+            if exit_reason is None and i == sim_end_idx - 1:
+                raw_exit_price = close
+                exit_reason = "END_OF_BACKTEST"
+
             if exit_reason is not None and raw_exit_price is not None:
                 exec_exit = (
                     raw_exit_price * (1.0 - slippage_rate)
@@ -2402,11 +2478,14 @@ def run_backtest_experiment(
                 qty_rem = open_pos["qty_remaining"]
                 rem_pnl = (exec_exit - entry_p) * qty_rem if side == "BUY" else (entry_p - exec_exit) * qty_rem
                 exit_fee = exec_exit * qty_rem * fee_rate
+                exit_slippage_cost = abs(raw_exit_price - exec_exit) * qty_rem
                 net_rem_pnl = rem_pnl - exit_fee
                 balance += net_rem_pnl
 
                 total_net_pnl = open_pos["realized_partial_pnl"] + net_rem_pnl - open_pos["entry_fee"]
                 total_fees = open_pos["fees_paid"] + exit_fee
+                total_slippage_cost = open_pos["slippage_paid"] + exit_slippage_cost
+                gross_pnl = total_net_pnl + total_fees + total_slippage_cost
                 notional = open_pos["initial_qty"] * entry_p
                 pnl_pct = (total_net_pnl / open_pos["margin_used"] * 100.0) if open_pos["margin_used"] > 0 else 0.0
                 r_multiple = (
@@ -2431,16 +2510,21 @@ def run_backtest_experiment(
                     "qty": round(open_pos["initial_qty"], 6),
                     "notional_usdt": round(notional, 2),
                     "margin_used": round(open_pos["margin_used"], 2),
+                    "gross_pnl_usdt": round(gross_pnl, 2),
                     "pnl_usdt": round(total_net_pnl, 2),
                     "pnl_pct": round(pnl_pct, 2),
                     "r_multiple": round(r_multiple, 2),
                     "fees_usdt": round(total_fees, 2),
+                    "slippage_cost_usdt": round(total_slippage_cost, 2),
                     "mfe_pct": round(open_pos["mfe_pct"], 2),
                     "mae_pct": round(open_pos["mae_pct"], 2),
                     "teddy_score": open_pos["teddy_score"],
                     "entry_reasons": open_pos["entry_reasons"],
                     "exit_reason": exit_reason,
                     "partial_taken": open_pos["partial_taken"],
+                    "risk_target_usdt": round(open_pos["risk_target_usdt"], 2),
+                    "risk_actual_usdt": round(open_pos["risk_actual_usdt"], 2),
+                    "leverage_cap_hit": bool(open_pos["leverage_cap_hit"]),
                 }
                 closed_trades.append(trade_record)
                 candle_marker = {
@@ -2477,11 +2561,11 @@ def run_backtest_experiment(
                 else:
                     consecutive_losses = 0
 
-                cooldown_until_idx = i + int(params.get("cooldown_candles", 2))
+                cooldown_until_idx = i + max(1, int(params.get("cooldown_candles", 2)))
                 open_pos = None
 
-        # 2. Evaluate Entry Signal When Flat
-        if open_pos is None:
+        # 2. Evaluate Entry Signal When Flat (never open a new position on the very last simulated candle)
+        if open_pos is None and i < sim_end_idx - 1:
             sig_eval = _evaluate_candle_signal(row, prev_row, params)
             if sig_eval["signal"] in ("BUY", "SELL"):
                 valid_signals_count += 1
@@ -2490,8 +2574,8 @@ def run_backtest_experiment(
                 elif trades_today >= int(params.get("max_trades_per_day", 8)):
                     rejection_counts["cooldown_or_limits"] += 1
                 elif consecutive_losses >= int(params.get("max_consecutive_losses", 4)):
+                    # Daily circuit breaker: block all entries until the next UTC day rollover
                     rejection_counts["cooldown_or_limits"] += 1
-                    consecutive_losses = max(0, consecutive_losses - 1)
                 else:
                     side = sig_eval["signal"]
                     exec_entry = close * (1.0 + slippage_rate) if side == "BUY" else close * (1.0 - slippage_rate)
@@ -2501,33 +2585,48 @@ def run_backtest_experiment(
                     tp_price = exec_entry + tp_dist if side == "BUY" else exec_entry - tp_dist
 
                     sizing_mode = params.get("position_sizing_mode", "risk_pct")
+                    max_notional = balance * leverage * 0.95
+                    leverage_cap_hit = False
                     if sizing_mode == "fixed_usdt":
-                        notional_usdt = min(float(params["fixed_position_usdt"]) * leverage, balance * leverage * 0.95)
+                        desired_notional = float(params["fixed_position_usdt"]) * leverage
+                        if desired_notional > max_notional:
+                            leverage_cap_hit = True
+                        notional_usdt = min(desired_notional, max_notional)
                         qty = notional_usdt / exec_entry if exec_entry > 0 else 0.0
+                        risk_target_usdt = (desired_notional / exec_entry * sl_dist) if exec_entry > 0 else 0.0
                         risk_usdt = qty * sl_dist
                     elif sizing_mode == "capital_pct":
                         alloc_usdt = balance * (float(params["capital_allocation_pct"]) / 100.0)
-                        notional_usdt = alloc_usdt * leverage
+                        desired_notional = alloc_usdt * leverage
+                        if desired_notional > max_notional:
+                            leverage_cap_hit = True
+                            notional_usdt = max_notional
+                        else:
+                            notional_usdt = desired_notional
                         qty = notional_usdt / exec_entry if exec_entry > 0 else 0.0
+                        risk_target_usdt = (desired_notional / exec_entry * sl_dist) if exec_entry > 0 else 0.0
                         risk_usdt = qty * sl_dist
                     else:
-                        risk_usdt = balance * (float(params["risk_per_trade_pct"]) / 100.0)
+                        risk_target_usdt = balance * (float(params["risk_per_trade_pct"]) / 100.0)
+                        risk_usdt = risk_target_usdt
                         qty = risk_usdt / sl_dist if sl_dist > 0 else 0.0
                         notional_usdt = qty * exec_entry
-                        max_notional = balance * leverage * 0.95
                         if notional_usdt > max_notional and exec_entry > 0:
+                            leverage_cap_hit = True
                             notional_usdt = max_notional
                             qty = notional_usdt / exec_entry
                             risk_usdt = qty * sl_dist
 
                     if qty > 0 and balance > 20.0:
                         entry_fee = notional_usdt * fee_rate
+                        entry_slippage_cost = abs(exec_entry - close) * qty
                         balance -= entry_fee
                         margin_used = notional_usdt / leverage if leverage > 0 else notional_usdt
                         open_pos = {
                             "side": side,
                             "entry_time": ts_iso,
                             "entry_index": i,
+                            "raw_entry_price": close,
                             "entry_price": exec_entry,
                             "initial_sl": sl_price,
                             "sl_price": sl_price,
@@ -2537,8 +2636,12 @@ def run_backtest_experiment(
                             "qty_remaining": qty,
                             "margin_used": margin_used,
                             "initial_risk_usdt": max(risk_usdt, 1.0),
+                            "risk_target_usdt": risk_target_usdt,
+                            "risk_actual_usdt": risk_usdt,
+                            "leverage_cap_hit": leverage_cap_hit,
                             "entry_fee": entry_fee,
                             "fees_paid": entry_fee,
+                            "slippage_paid": entry_slippage_cost,
                             "realized_partial_pnl": 0.0,
                             "partial_taken": False,
                             "be_activated": False,
@@ -2623,10 +2726,11 @@ def run_backtest_experiment(
             }
         )
 
+    sim_candles_count = max(0, sim_end_idx - sim_start_idx)
     add_step(
         7,
         "Simulation chronologique des transactions",
-        f"{len(df) - warmup} chandeliers simulés → {len(closed_trades)} transactions exécutées ({ambiguous_sl_tp_candles} conflit(s) SL/TP résolu(s) prudemment).",
+        f"{sim_candles_count} chandeliers simulés → {len(closed_trades)} transactions exécutées ({ambiguous_sl_tp_candles} conflit(s) SL/TP résolu(s) prudemment).",
     )
 
     # Step 8: Compute Comprehensive Institutional Metrics
@@ -2649,8 +2753,8 @@ def run_backtest_experiment(
     sampled_candles = _downsample_candles_preserving_markers(chart_candles, max_points=450)
     sampled_equity = _downsample_list(equity_curve, max_points=450)
 
-    first_ts = timestamps[warmup] if len(timestamps) > warmup else (timestamps[0] if timestamps else "")
-    last_ts = timestamps[-1] if timestamps else ""
+    first_ts = timestamps[sim_start_idx] if len(timestamps) > sim_start_idx else (timestamps[0] if timestamps else "")
+    last_ts = timestamps[sim_end_idx - 1] if (timestamps and sim_end_idx > 0) else ""
 
     return {
         "market_type": market_type,
@@ -2665,15 +2769,16 @@ def run_backtest_experiment(
         "data_source": data_source,
         "start_date": first_ts.isoformat() if hasattr(first_ts, "isoformat") else str(first_ts),
         "end_date": last_ts.isoformat() if hasattr(last_ts, "isoformat") else str(last_ts),
-        "candles_count": len(df) - warmup,
+        "candles_count": sim_candles_count,
         "execution_ms": elapsed_ms,
+        "warnings": list(data_quality.get("warnings", [])),
         "data_quality": data_quality,
         "execution_steps": execution_steps,
         "params": params,
         "metrics": metrics,
         "diagnostics": diagnostics,
         "signals_summary": {
-            "total_candles_evaluated": len(df) - warmup,
+            "total_candles_evaluated": sim_candles_count,
             "valid_signals": valid_signals_count,
             "executed_trades": len(closed_trades),
             "ambiguous_sl_tp_candles": ambiguous_sl_tp_candles,
@@ -2739,6 +2844,10 @@ def _compute_backtest_metrics(
     best_trade = max((t["pnl_usdt"] for t in closed_trades), default=0.0)
     worst_trade = min((t["pnl_usdt"] for t in closed_trades), default=0.0)
     total_fees = sum(t["fees_usdt"] for t in closed_trades)
+    total_slippage = sum(float(t.get("slippage_cost_usdt", 0.0)) for t in closed_trades)
+    total_gross_pnl = sum(float(t.get("gross_pnl_usdt", t["pnl_usdt"] + t["fees_usdt"])) for t in closed_trades)
+    gross_return_pct = (total_gross_pnl / initial_capital * 100.0) if initial_capital > 0 else 0.0
+    total_execution_costs = total_fees + total_slippage
     avg_bars_held = (sum(t["bars_held"] for t in closed_trades) / total_trades) if total_trades > 0 else 0.0
     tf_minutes = TIMEFRAME_SECONDS.get(timeframe, 900) / 60.0
     avg_duration_minutes = round(avg_bars_held * tf_minutes, 1)
@@ -2783,13 +2892,10 @@ def _compute_backtest_metrics(
             std_r = math.sqrt(var_r)
             if std_r > 1e-9:
                 sharpe_ratio = float((mean_r / std_r) * math.sqrt(periods_per_year))
-            downside = [r for r in rets if r < 0]
-            if len(downside) > 2:
-                mean_d = sum(downside) / len(downside)
-                var_d = sum((r - mean_d) ** 2 for r in downside) / max(1, len(downside) - 1)
-                std_d = math.sqrt(var_d)
-                if std_d > 1e-9:
-                    sortino_ratio = float((mean_r / std_d) * math.sqrt(periods_per_year))
+            downside_sq_sum = sum(min(0.0, r) ** 2 for r in rets)
+            downside_dev = math.sqrt(downside_sq_sum / len(rets))
+            if downside_dev > 1e-9:
+                sortino_ratio = float((mean_r / downside_dev) * math.sqrt(periods_per_year))
 
     calmar_ratio = round(total_return_pct / max_dd_pct, 2) if max_dd_pct > 0.05 else 0.0
 
@@ -2836,9 +2942,24 @@ def _compute_backtest_metrics(
         last_p = equity_curve[-1]["price"]
         buy_hold_return_pct = round(((last_p - first_p) / first_p) * 100.0, 2)
 
+    capped_count = sum(1 for t in closed_trades if t.get("leverage_cap_hit"))
+    leverage_capped_trades_pct = round((capped_count / total_trades * 100.0), 2) if total_trades > 0 else 0.0
+    actual_risks = sorted(float(t.get("risk_actual_usdt", 0.0)) for t in closed_trades)
+    if actual_risks:
+        mid_r = len(actual_risks) // 2
+        median_actual_risk_usdt = (
+            actual_risks[mid_r]
+            if len(actual_risks) % 2 == 1
+            else (actual_risks[mid_r - 1] + actual_risks[mid_r]) / 2.0
+        )
+    else:
+        median_actual_risk_usdt = 0.0
+
     return {
         "initial_capital": round(initial_capital, 2),
         "final_capital": round(final_equity, 2),
+        "gross_pnl_usdt": round(total_gross_pnl, 2),
+        "gross_return_pct": round(gross_return_pct, 2),
         "net_profit_usdt": round(net_profit, 2),
         "total_return_pct": round(total_return_pct, 2),
         "buy_hold_return_pct": buy_hold_return_pct,
@@ -2865,6 +2986,10 @@ def _compute_backtest_metrics(
         "avg_bars_held": round(avg_bars_held, 1),
         "avg_duration_minutes": avg_duration_minutes,
         "total_fees_usdt": round(total_fees, 2),
+        "total_slippage_usdt": round(total_slippage, 2),
+        "total_execution_costs_usdt": round(total_execution_costs, 2),
+        "leverage_capped_trades_pct": leverage_capped_trades_pct,
+        "median_actual_risk_usdt": round(median_actual_risk_usdt, 2),
         "long_trades": len(long_trades),
         "long_win_rate_pct": round((len(long_wins) / len(long_trades) * 100.0), 1) if long_trades else 0.0,
         "long_pnl_usdt": round(sum(t["pnl_usdt"] for t in long_trades), 2),
@@ -2979,9 +3104,28 @@ def run_parameter_sweep(
         "risk_per_trade_pct": "Risque par Trade (%)",
     }
     if param_name not in allowed_sweep_params:
-        param_name = "min_teddy_score"
+        raise ValueError(f"Unsupported sweep parameter: {param_name}")
 
-    clean_values = values[:8] if isinstance(values, list) and values else [50, 55, 60, 65, 70]
+    raw_values = values[:8] if isinstance(values, list) and values else [50, 55, 60, 65, 70]
+    norm_base = normalize_lab_params(base_params, style=trading_style)
+    clean_values = []
+    for raw_v in raw_values:
+        ok_val, typed_val, val_err = _coerce_strict_param_value(param_name, raw_v)
+        if not ok_val:
+            raise ValueError(val_err or f"Invalid sweep value '{raw_v}' for {param_name}.")
+        cand = dict(norm_base)
+        cand[param_name] = typed_val
+        if int(cand["ema_fast"]) >= int(cand["ema_slow"]):
+            raise ValueError(
+                f"Invalid EMA relationship for {param_name}={typed_val}: ema_fast ({cand['ema_fast']}) must be strictly less than ema_slow ({cand['ema_slow']})."
+            )
+        if float(cand["rsi_oversold"]) >= float(cand["rsi_overbought"]):
+            raise ValueError(
+                f"Invalid RSI relationship for {param_name}={typed_val}: rsi_oversold ({cand['rsi_oversold']}) must be strictly less than rsi_overbought ({cand['rsi_overbought']})."
+            )
+        clean_values.append(typed_val)
+
+    required_warmup = max(60, 3 * max(int(norm_base["ema_trend"]), int(norm_base["ema_slow"])))
     raw_df, data_source, _ = load_historical_candles(
         symbol=symbol,
         timeframe=timeframe,
@@ -2989,12 +3133,13 @@ def run_parameter_sweep(
         start_date=start_date,
         end_date=end_date,
         max_candles=max_candles,
+        warmup_candles=required_warmup,
     )
     preloaded = (raw_df, data_source)
 
     results = []
     for val in clean_values:
-        p = dict(base_params or {})
+        p = dict(norm_base)
         p[param_name] = val
         run_res = run_backtest_experiment(
             symbol=symbol,
