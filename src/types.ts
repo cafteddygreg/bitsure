@@ -434,13 +434,19 @@ export interface StrategyLabRun {
     adx: number;
     marker: {
       type: 'ENTRY' | 'EXIT';
+      trade_id?: number;
       side: 'BUY' | 'SELL';
       price: number;
+      entry_price?: number;
+      exit_price?: number;
       sl?: number;
       tp?: number;
       score?: number;
       reason?: string;
       pnl_usdt?: number;
+      pnl_pct?: number;
+      r_multiple?: number;
+      bars_held?: number;
       exit_reason?: string;
     } | null;
   }[];

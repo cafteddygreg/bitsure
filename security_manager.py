@@ -83,6 +83,23 @@ def set_initial_code(user_id: int, code: str) -> tuple[bool, str]:
         return False, f"Erreur lors de l'enregistrement du code : {exc}"
 
 
+def unlock_security_code(user_id: int) -> None:
+    """Réinitialise le compteur d'échecs et déverrouille le code PIN d'un utilisateur."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE user_security_codes SET failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
+                    (user_id,),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 def verify_code(user_id: int, code: str) -> tuple[bool, str]:
     """Vérifie le code PIN de l'utilisateur avec protection anti-bruteforce."""
     row = _row(user_id)
@@ -90,28 +107,19 @@ def verify_code(user_id: int, code: str) -> tuple[bool, str]:
         return True, ""
 
     code_hash, salt, failed_attempts, locked_until = row[0], row[1], int(row[2] or 0), row[3]
+    norm = _normalize_code(code)
+    if not norm:
+        return False, "Veuillez saisir votre code PIN de sécurité (6 chiffres) pour confirmer cette action."
+
     now = time.time()
     if locked_until and float(locked_until) > now:
         rem = int(float(locked_until) - now)
         return False, f"Trop de tentatives échouées. Réessaie dans {rem}s."
 
-    norm = _normalize_code(code)
     _, candidate_digest = _hash_code(norm, salt=salt)
     if hmac.compare_digest(candidate_digest, code_hash):
         if failed_attempts > 0 or locked_until:
-            try:
-                conn = get_connection()
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "UPDATE user_security_codes SET failed_attempts = 0, locked_until = NULL WHERE user_id = %s",
-                            (user_id,),
-                        )
-                    conn.commit()
-                finally:
-                    conn.close()
-            except Exception:
-                pass
+            unlock_security_code(user_id)
         return True, "Code validé."
 
     failed_attempts += 1

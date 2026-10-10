@@ -59,7 +59,14 @@ async def flush_safety_notifications(context) -> int:
     return sent
 
 
-def engage_safe_mode(user_id: int, reason: str, context=None) -> TradingConfig:
+def engage_safe_mode(
+    user_id: int,
+    reason: str,
+    context=None,
+    *,
+    disable_autotrade: bool = True,
+    **_kwargs,
+) -> TradingConfig:
     """Active le verrouillage critique (safety_lock) sans détruire les signaux en base.
 
     Désactive AutoTrade, conserve l'analyse en lecture seule, journalise l'incident
@@ -71,13 +78,14 @@ def engage_safe_mode(user_id: int, reason: str, context=None) -> TradingConfig:
         user_id,
         reason,
     )
-    cfg = update_config(
-        user_id,
-        auto_trade=False,
-        safety_lock=True,
-        safety_lock_reason=reason,
-        safety_lock_at=now,
-    )
+    updates = {
+        "safety_lock": True,
+        "safety_lock_reason": reason,
+        "safety_lock_at": now,
+    }
+    if disable_autotrade:
+        updates["auto_trade"] = False
+    cfg = update_config(user_id, **updates)
     msg = (
         "🚨 ALERTE SÉCURITÉ — SAFE MODE ACTIVÉ (Verrouillage Critique)\n\n"
         f"• Raison : {reason}\n"

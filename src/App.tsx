@@ -205,6 +205,9 @@ export function App() {
   const [binanceSecret, setBinanceSecret] = useState('');
   const [binanceTestnet, setBinanceTestnet] = useState(true);
   const [safetyPinInput, setSafetyPinInput] = useState('');
+  const [pinModalAction, setPinModalAction] = useState<'enable_autotrade' | 'unlock_safety' | null>(null);
+  const [pinModalValue, setPinModalValue] = useState('');
+  const [pinModalError, setPinModalError] = useState('');
   const [testingApiConn, setTestingApiConn] = useState(false);
   const [liveAccount, setLiveAccount] = useState<any | null>(null);
   const [liveOpenOrders, setLiveOpenOrders] = useState<any[]>([]);
@@ -884,6 +887,15 @@ export function App() {
   };
 
   const handleUpdateTradingConfig = async (patch: Partial<TradingConfigState> & { pin?: string }) => {
+    const wantsEnableAutoTrade = patch.enabled === true || patch.auto_trade === true;
+    const candidatePin = (patch.pin ?? safetyPinInput ?? '').trim();
+    if (wantsEnableAutoTrade && user?.has_pin && !candidatePin) {
+      setPinModalError('');
+      setPinModalValue('');
+      setPinModalAction('enable_autotrade');
+      return;
+    }
+
     try {
       await apiFetch('/api/trading/config', {
         method: 'POST',
@@ -892,22 +904,70 @@ export function App() {
       const cfgRes = await apiFetch('/api/trading/config');
       setTradingCfg(cfgRes.config);
       setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
+      if (pinModalAction === 'enable_autotrade') {
+        setPinModalAction(null);
+        setPinModalValue('');
+        setPinModalError('');
+      }
       showToast('Paramètres de trading mis à jour.', 'success');
     } catch (err: any) {
-      showToast(err.message, 'error');
+      const msg = String(err.message || '');
+      if (
+        wantsEnableAutoTrade &&
+        (msg.toLowerCase().includes('pin') || msg.toLowerCase().includes('tentatives'))
+      ) {
+        setPinModalError(msg);
+        setPinModalAction('enable_autotrade');
+      }
+      showToast(msg, 'error');
     }
   };
 
-  const handleSafetyAction = async (action: string, reason?: string) => {
+  const handleSafetyAction = async (action: string, reason?: string, customPin?: string) => {
+    const candidatePin = (customPin ?? safetyPinInput ?? '').trim();
+    if ((action === 'clearsafe' || action === 'unlock') && user?.has_pin && !candidatePin) {
+      setPinModalError('');
+      setPinModalValue('');
+      setPinModalAction('unlock_safety');
+      return;
+    }
+
     try {
       const res = await apiFetch('/api/trading/safety', {
         method: 'POST',
-        body: JSON.stringify({ action, reason, pin: safetyPinInput }),
+        body: JSON.stringify({ action, reason, pin: candidatePin }),
       });
       const cfgRes = await apiFetch('/api/trading/config');
       setTradingCfg(cfgRes.config);
       setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
+      if (pinModalAction === 'unlock_safety') {
+        setPinModalAction(null);
+        setPinModalValue('');
+        setPinModalError('');
+      }
       showToast(res.message, 'success');
+    } catch (err: any) {
+      const msg = String(err.message || '');
+      if (
+        (action === 'clearsafe' || action === 'unlock') &&
+        (msg.toLowerCase().includes('pin') || msg.toLowerCase().includes('tentatives'))
+      ) {
+        setPinModalError(msg);
+        setPinModalAction('unlock_safety');
+      }
+      showToast(msg, 'error');
+    }
+  };
+
+  const handleResetPinLockout = async () => {
+    try {
+      const res = await apiFetch('/api/user/pin', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'unlock' }),
+      });
+      if (res.user) setUser(res.user);
+      setPinModalError('');
+      showToast(res.message || 'Verrouillage du code PIN levé.', 'success');
     } catch (err: any) {
       showToast(err.message, 'error');
     }
@@ -4491,12 +4551,54 @@ export function App() {
                         required
                       />
                     </div>
-                    <button
-                      type="submit"
-                      className="px-4 py-2 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-[#F1F5F9] font-semibold"
-                    >
-                      {tr(lang, 'Enregistrer le Code PIN')}
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-[#F1F5F9] font-semibold"
+                      >
+                        {tr(lang, 'Enregistrer le Code PIN')}
+                      </button>
+                      {user.has_pin && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleResetPinLockout}
+                            className="px-3 py-2 bg-[#090D16] hover:bg-white/[0.05] border border-white/15 rounded-lg text-[#94A3B8] hover:text-[#F1F5F9]"
+                          >
+                            {lang === 'en' ? 'Reset PIN Lockout' : 'Débloquer essai PIN'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!newPin.trim()) {
+                                showToast(
+                                  lang === 'en'
+                                    ? 'Enter a new 6-digit PIN above first.'
+                                    : 'Saisissez d’abord votre nouveau code PIN (6 chiffres) ci-dessus.',
+                                  'info'
+                                );
+                                return;
+                              }
+                              try {
+                                const res = await apiFetch('/api/user/pin', {
+                                  method: 'POST',
+                                  body: JSON.stringify({ action: 'reset_force', pin: newPin.trim() }),
+                                });
+                                if (res.user) setUser(res.user);
+                                setNewPin('');
+                                setOldPin('');
+                                showToast(res.message, 'success');
+                              } catch (err: any) {
+                                showToast(err.message, 'error');
+                              }
+                            }}
+                            className="px-3 py-2 bg-[#F59E0B]/15 hover:bg-[#F59E0B]/25 border border-[#F59E0B]/40 rounded-lg text-[#FBBF24]"
+                          >
+                            {lang === 'en' ? 'Force Reset Forgotten PIN' : 'Réinitialiser PIN oublié'}
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </form>
                 </div>
               </div>
@@ -5568,6 +5670,126 @@ export function App() {
             );
           })}
         </nav>
+        {/* Interactive Security PIN Confirmation Modal for Auto-Trade & Safe Mode Unlock */}
+        {pinModalAction && (
+          <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-[#111827] border border-white/15 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+              <div className="flex items-center justify-between">
+                <h3 className="font-display text-base font-bold text-[#F1F5F9]">
+                  {pinModalAction === 'enable_autotrade'
+                    ? lang === 'en'
+                      ? 'Confirm Auto-Trade Activation'
+                      : 'Confirmer l’activation Auto-Trade'
+                    : lang === 'en'
+                    ? 'Unlock Safety Mode (/clearsafe)'
+                    : 'Déverrouiller le Safe Mode (/clearsafe)'}
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPinModalAction(null);
+                    setPinModalValue('');
+                    setPinModalError('');
+                  }}
+                  className="text-xs text-[#94A3B8] hover:text-[#F1F5F9]"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <p className="text-xs text-[#94A3B8] leading-relaxed">
+                {lang === 'en'
+                  ? 'Please enter your 6-digit Security PIN code to authorize this sensitive live trading action.'
+                  : 'Veuillez saisir votre code PIN de sécurité (6 chiffres) pour autoriser cette opération de trading réel.'}
+              </p>
+
+              {pinModalError && (
+                <div className="p-3 rounded-lg bg-[#F43F5E]/15 border border-[#F43F5E]/40 text-xs text-[#FB7185] space-y-2">
+                  <div>{pinModalError}</div>
+                  {pinModalError.toLowerCase().includes('tentatives') && (
+                    <button
+                      type="button"
+                      onClick={handleResetPinLockout}
+                      className="px-3 py-1.5 rounded bg-[#10B981] text-[#090D16] font-semibold text-xs inline-block"
+                    >
+                      {lang === 'en'
+                        ? 'Reset anti-bruteforce timer now'
+                        : 'Réinitialiser le compteur de blocage immédiatement'}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs text-[#94A3B8] mb-1.5">
+                  {lang === 'en' ? 'Security PIN (6 digits)' : 'Code PIN de Sécurité (6 chiffres)'}
+                </label>
+                <input
+                  type="password"
+                  maxLength={6}
+                  autoFocus
+                  value={pinModalValue}
+                  onChange={(e) => setPinModalValue(e.target.value)}
+                  placeholder="••••••"
+                  className="w-full px-3.5 py-2.5 bg-[#090D16] border border-white/20 rounded-xl font-mono-tabular text-base tracking-widest text-center text-[#F1F5F9] focus:outline-none focus:border-[#10B981]"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && pinModalValue.trim()) {
+                      const entered = pinModalValue.trim();
+                      setSafetyPinInput(entered);
+                      if (pinModalAction === 'enable_autotrade') {
+                        handleUpdateTradingConfig({ enabled: true, pin: entered });
+                      } else {
+                        handleSafetyAction('clearsafe', undefined, entered);
+                      }
+                    }
+                  }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPinModalAction(null);
+                    setActiveTab('account');
+                  }}
+                  className="text-xs text-[#60A5FA] hover:underline"
+                >
+                  {lang === 'en' ? 'Manage / Reset PIN in Account →' : 'Gérer / Réinitialiser mon PIN dans Compte →'}
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPinModalAction(null);
+                      setPinModalValue('');
+                      setPinModalError('');
+                    }}
+                    className="px-4 py-2 rounded-lg bg-[#1E293B] text-xs text-[#94A3B8] hover:text-[#F1F5F9]"
+                  >
+                    {lang === 'en' ? 'Cancel' : 'Annuler'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!pinModalValue.trim()}
+                    onClick={() => {
+                      const entered = pinModalValue.trim();
+                      setSafetyPinInput(entered);
+                      if (pinModalAction === 'enable_autotrade') {
+                        handleUpdateTradingConfig({ enabled: true, pin: entered });
+                      } else {
+                        handleSafetyAction('clearsafe', undefined, entered);
+                      }
+                    }}
+                    className="px-4 py-2 rounded-lg bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-semibold text-xs"
+                  >
+                    {lang === 'en' ? 'Confirm' : 'Valider'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

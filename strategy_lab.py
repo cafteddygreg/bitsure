@@ -1392,11 +1392,32 @@ def run_backtest_experiment(
                 closed_trades.append(trade_record)
                 candle_marker = {
                     "type": "EXIT",
+                    "trade_id": trade_record["id"],
                     "side": side,
                     "price": round(exec_exit, 4),
+                    "entry_price": trade_record["entry_price"],
+                    "exit_price": trade_record["exit_price"],
+                    "sl": trade_record["sl_initial"],
+                    "tp": trade_record["tp_initial"],
+                    "score": trade_record["teddy_score"],
                     "pnl_usdt": round(total_net_pnl, 2),
+                    "pnl_pct": trade_record["pnl_pct"],
+                    "r_multiple": trade_record["r_multiple"],
+                    "bars_held": trade_record["bars_held"],
                     "exit_reason": exit_reason,
+                    "reason": open_pos["entry_reasons"][0] if open_pos["entry_reasons"] else "Signal validé",
                 }
+                # Backfill the corresponding ENTRY marker in chart_candles with final trade outcome
+                for prev_c in reversed(chart_candles):
+                    m_prev = prev_c.get("marker")
+                    if m_prev and m_prev.get("type") == "ENTRY" and m_prev.get("trade_id") == trade_record["id"]:
+                        m_prev["exit_price"] = trade_record["exit_price"]
+                        m_prev["pnl_usdt"] = trade_record["pnl_usdt"]
+                        m_prev["pnl_pct"] = trade_record["pnl_pct"]
+                        m_prev["r_multiple"] = trade_record["r_multiple"]
+                        m_prev["bars_held"] = trade_record["bars_held"]
+                        m_prev["exit_reason"] = trade_record["exit_reason"]
+                        break
 
                 if total_net_pnl < 0:
                     consecutive_losses += 1
@@ -1478,8 +1499,10 @@ def run_backtest_experiment(
                         trades_today += 1
                         candle_marker = {
                             "type": "ENTRY",
+                            "trade_id": len(closed_trades) + 1,
                             "side": side,
                             "price": round(exec_entry, 4),
+                            "entry_price": round(exec_entry, 4),
                             "sl": round(sl_price, 4),
                             "tp": round(tp_price, 4),
                             "score": sig_eval["teddy_score"],

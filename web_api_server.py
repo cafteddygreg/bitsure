@@ -2116,6 +2116,33 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     valid, msg = security_manager.verify_code(user_id, pin)
                     self._send_json(200, {"ok": valid, "message": msg})
                     return
+                elif action == "unlock":
+                    security_manager.unlock_security_code(user_id)
+                    self._send_json(200, {
+                        "ok": True,
+                        "message": "Verrouillage anti-bruteforce du code PIN réinitialisé.",
+                        "user": _build_user_profile(user_id, csrf_token=sess.get("csrf_token", "")),
+                    })
+                    return
+                elif action == "reset_force":
+                    # Authenticated user resetting their own PIN directly from active session
+                    if not pin:
+                        self._send_json(400, {"ok": False, "error": "Veuillez saisir un nouveau code PIN à 6 chiffres."})
+                        return
+                    security_manager.unlock_security_code(user_id)
+                    conn = get_connection()
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute("DELETE FROM user_security_codes WHERE user_id = %s", (user_id,))
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    ok_pin, msg = security_manager.set_initial_code(user_id, pin)
+                    if not ok_pin:
+                        self._send_json(400, {"ok": False, "error": msg})
+                        return
+                    self._send_json(200, {"ok": True, "message": msg, "user": _build_user_profile(user_id, csrf_token=sess.get("csrf_token", ""))})
+                    return
                 else:
                     if security_manager.has_security_code(user_id):
                         old_pin = str(body.get("old_pin", "")).strip()
@@ -2283,9 +2310,16 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
                 if updates.get("auto_trade") is True and security_manager.has_security_code(user_id):
                     pin = str(body.get("pin", "")).strip()
+                    if not pin:
+                        self._send_json(403, {
+                            "ok": False,
+                            "require_pin": True,
+                            "error": "Code PIN de sécurité (6 chiffres) requis pour activer Auto-Trade.",
+                        })
+                        return
                     valid_pin, pin_msg = security_manager.verify_code(user_id, pin)
                     if not valid_pin:
-                        self._send_json(403, {"ok": False, "error": pin_msg or "Code PIN de sécurité requis pour activer Auto-Trade."})
+                        self._send_json(403, {"ok": False, "require_pin": True, "error": pin_msg or "Code PIN de sécurité requis pour activer Auto-Trade."})
                         return
 
                 cfg = trading_config.update_config(user_id, **updates)
@@ -2298,12 +2332,22 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 if action == "engage_lock":
                     trading_safety.engage_safe_mode(user_id, reason, disable_autotrade=True)
                     msg = "Mode Sécurité (Safety Lock) activé. Auto-trade suspendu."
+                elif action == "unlock_pin":
+                    security_manager.unlock_security_code(user_id)
+                    msg = "Verrouillage temporaire du code PIN levé. Vous pouvez saisir votre PIN."
                 elif action in ("unlock", "clearsafe"):
                     pin = str(body.get("pin", "")).strip()
                     if security_manager.has_security_code(user_id):
+                        if not pin:
+                            self._send_json(403, {
+                                "ok": False,
+                                "require_pin": True,
+                                "error": "Code PIN de sécurité (6 chiffres) requis pour déverrouiller le Safe Mode.",
+                            })
+                            return
                         valid_pin, pin_msg = security_manager.verify_code(user_id, pin)
                         if not valid_pin:
-                            self._send_json(403, {"ok": False, "error": pin_msg or "Code PIN de sécurité requis ou incorrect."})
+                            self._send_json(403, {"ok": False, "require_pin": True, "error": pin_msg or "Code PIN de sécurité requis ou incorrect."})
                             return
                     trading_config.update_config(
                         user_id,

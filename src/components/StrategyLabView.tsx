@@ -185,10 +185,23 @@ const EquityAndDrawdownChart: React.FC<{
 
 const LabCandlesSignalsChart: React.FC<{
   candles: NonNullable<StrategyLabRun['candles']>;
+  trades: StrategyLabTrade[];
   params: StrategyLabParams;
+  selectedTrade: StrategyLabTrade | null;
+  onSelectTrade: (trade: StrategyLabTrade | null) => void;
+  onInspectInJournal?: (trade: StrategyLabTrade) => void;
   lang?: AppLang;
-}> = ({ candles, params, lang = 'fr' }) => {
+}> = ({
+  candles,
+  trades,
+  params,
+  selectedTrade,
+  onSelectTrade,
+  onInspectInJournal,
+  lang = 'fr',
+}) => {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const [clickedMarkerCandleIdx, setClickedMarkerCandleIdx] = useState<number | null>(null);
 
   if (!candles || candles.length < 2) {
     return (
@@ -199,11 +212,11 @@ const LabCandlesSignalsChart: React.FC<{
   }
 
   const width = 920;
-  const height = 360;
+  const height = 380;
   const padL = 12;
   const padR = 68;
-  const padT = 16;
-  const padB = 22;
+  const padT = 18;
+  const padB = 24;
   const plotW = width - padL - padR;
   const plotH = height - padT - padB;
 
@@ -211,6 +224,10 @@ const LabCandlesSignalsChart: React.FC<{
   candles.forEach((c) => {
     prices.push(c.high, c.low, c.ema_fast, c.ema_slow);
   });
+  if (selectedTrade) {
+    if (selectedTrade.sl_initial) prices.push(selectedTrade.sl_initial);
+    if (selectedTrade.tp_initial) prices.push(selectedTrade.tp_initial);
+  }
   const minP = Math.min(...prices);
   const maxP = Math.max(...prices);
   const pRange = Math.max(0.0001, maxP - minP);
@@ -223,43 +240,116 @@ const LabCandlesSignalsChart: React.FC<{
   const emaSlowLine = candles.map((c, i) => `${getX(i).toFixed(1)},${getY(c.ema_slow).toFixed(1)}`).join(' ');
   const emaTrendLine = candles.map((c, i) => `${getX(i).toFixed(1)},${getY(c.ema_trend).toFixed(1)}`).join(' ');
 
-  const activeC = hoverIdx !== null && candles[hoverIdx] ? candles[hoverIdx] : candles[candles.length - 1];
+  // Resolve trade for a marker candle
+  const resolveTradeForCandle = (candleIdx: number): StrategyLabTrade | null => {
+    const c = candles[candleIdx];
+    if (!c || !c.marker) return null;
+    if (c.marker.trade_id) {
+      const byId = trades.find((t) => t.id === c.marker?.trade_id);
+      if (byId) return byId;
+    }
+    const byIndex = trades.find(
+      (t) => t.entry_index === c.index || t.exit_index === c.index
+    );
+    if (byIndex) return byIndex;
+    const byTime = trades.find(
+      (t) => t.entry_time === c.timestamp || t.exit_time === c.timestamp
+    );
+    return byTime || null;
+  };
+
+  // Find chart indices for selectedTrade entry and exit so we can draw a trade trajectory line
+  const selectedEntryChartIdx = selectedTrade
+    ? candles.findIndex(
+        (c) =>
+          (c.marker?.type === 'ENTRY' && c.marker?.trade_id === selectedTrade.id) ||
+          c.index === selectedTrade.entry_index ||
+          c.timestamp === selectedTrade.entry_time
+      )
+    : -1;
+
+  const selectedExitChartIdx = selectedTrade
+    ? candles.findIndex(
+        (c) =>
+          (c.marker?.type === 'EXIT' && c.marker?.trade_id === selectedTrade.id) ||
+          c.index === selectedTrade.exit_index ||
+          c.timestamp === selectedTrade.exit_time
+      )
+    : -1;
+
+  const markerIndices = candles
+    .map((c, idx) => (c.marker ? idx : -1))
+    .filter((idx) => idx >= 0);
+
+  const handleMarkerClick = (candleIdx: number, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setClickedMarkerCandleIdx(candleIdx);
+    const matched = resolveTradeForCandle(candleIdx);
+    if (matched) {
+      onSelectTrade(matched);
+    }
+  };
+
+  const activeC =
+    hoverIdx !== null && candles[hoverIdx]
+      ? candles[hoverIdx]
+      : clickedMarkerCandleIdx !== null && candles[clickedMarkerCandleIdx]
+      ? candles[clickedMarkerCandleIdx]
+      : candles[candles.length - 1];
+
+  const clickedCandle =
+    clickedMarkerCandleIdx !== null && candles[clickedMarkerCandleIdx]
+      ? candles[clickedMarkerCandleIdx]
+      : null;
 
   return (
-    <div className="space-y-2 select-none">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono-tabular px-3 py-2 rounded bg-[#090D16] border border-white/[0.06]">
-        <span className="text-[#94A3B8]">
-          {String(activeC.timestamp).slice(0, 16).replace('T', ' ')}
-        </span>
-        <span>
-          Close : <strong className="text-[#F1F5F9]">{activeC.close}</strong>
-        </span>
-        <span className="text-[#10B981]">
-          EMA({params.ema_fast}) : {activeC.ema_fast}
-        </span>
-        <span className="text-[#3B82F6]">
-          EMA({params.ema_slow}) : {activeC.ema_slow}
-        </span>
-        <span className="text-[#94A3B8]">
-          RSI : <strong className="text-[#F1F5F9]">{activeC.rsi}</strong> | ADX :{' '}
-          <strong className="text-[#F1F5F9]">{activeC.adx}</strong>
-        </span>
-        {activeC.marker && (
-          <span
-            className={`px-2 py-0.5 rounded font-bold ${
-              activeC.marker.side === 'BUY'
-                ? 'bg-[#10B981]/20 text-[#10B981]'
-                : 'bg-[#F43F5E]/20 text-[#FB7185]'
-            }`}
-          >
-            {activeC.marker.type} {activeC.marker.side} @ {activeC.marker.price}
+    <div className="space-y-3 select-none">
+      {/* Top live cursor readout bar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono-tabular px-3 py-2 rounded-lg bg-[#090D16] border border-white/[0.06]">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-[#94A3B8]">
+            {String(activeC.timestamp).slice(0, 16).replace('T', ' ')}
           </span>
-        )}
+          <span>
+            Close : <strong className="text-[#F1F5F9]">{activeC.close}</strong>
+          </span>
+          <span className="text-[#10B981]">
+            EMA({params.ema_fast}) : {activeC.ema_fast}
+          </span>
+          <span className="text-[#3B82F6]">
+            EMA({params.ema_slow}) : {activeC.ema_slow}
+          </span>
+          <span className="text-[#94A3B8]">
+            RSI : <strong className="text-[#F1F5F9]">{activeC.rsi}</strong> | ADX :{' '}
+            <strong className="text-[#F1F5F9]">{activeC.adx}</strong>
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {activeC.marker ? (
+            <span
+              className={`px-2 py-0.5 rounded font-bold ${
+                activeC.marker.side === 'BUY'
+                  ? 'bg-[#10B981]/20 text-[#10B981]'
+                  : 'bg-[#F43F5E]/20 text-[#FB7185]'
+              }`}
+            >
+              {activeC.marker.type} {activeC.marker.side} @ {activeC.marker.price}
+            </span>
+          ) : (
+            <span className="text-[11px] text-[#64748B]">
+              {lang === 'en'
+                ? `Click any marker (${markerIndices.length}) on the timeline to inspect trade`
+                : `Cliquez sur un marqueur (${markerIndices.length}) du graphique pour inspecter le trade`}
+            </span>
+          )}
+        </div>
       </div>
 
+      {/* Main SVG Price & Signals Timeline */}
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="w-full h-80 bg-[#090D16]/80 rounded-lg border border-white/[0.06]"
+        className="w-full h-88 bg-[#090D16]/85 rounded-xl border border-white/[0.07] cursor-crosshair"
         onMouseMove={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
           const relX = ((e.clientX - rect.left) / rect.width) * width;
@@ -267,6 +357,26 @@ const LabCandlesSignalsChart: React.FC<{
           if (idx >= 0 && idx < candles.length) setHoverIdx(idx);
         }}
         onMouseLeave={() => setHoverIdx(null)}
+        onClick={(e) => {
+          // Clicking anywhere near a marker on the price timeline selects that marker
+          const rect = e.currentTarget.getBoundingClientRect();
+          const relX = ((e.clientX - rect.left) / rect.width) * width;
+          const clickedIdx = Math.round(((relX - padL) / plotW) * (candles.length - 1));
+          if (markerIndices.length === 0) return;
+          let nearestIdx = -1;
+          let minDist = Infinity;
+          for (const mIdx of markerIndices) {
+            const dist = Math.abs(mIdx - clickedIdx);
+            if (dist < minDist) {
+              minDist = dist;
+              nearestIdx = mIdx;
+            }
+          }
+          const maxSnapDistance = Math.max(4, Math.round(candles.length * 0.03));
+          if (nearestIdx >= 0 && minDist <= maxSnapDistance) {
+            handleMarkerClick(nearestIdx);
+          }
+        }}
       >
         {[0, 0.25, 0.5, 0.75, 1].map((t) => {
           const y = padT + t * plotH;
@@ -281,12 +391,73 @@ const LabCandlesSignalsChart: React.FC<{
           );
         })}
 
+        {/* Selected Trade SL / TP / Entry horizontal reference lines & connecting path */}
+        {selectedTrade && (
+          <g>
+            {selectedTrade.tp_initial > 0 && (
+              <g>
+                <line
+                  x1={padL}
+                  y1={getY(selectedTrade.tp_initial)}
+                  x2={width - padR}
+                  y2={getY(selectedTrade.tp_initial)}
+                  stroke="rgba(16,185,129,0.45)"
+                  strokeWidth="1"
+                  strokeDasharray="4 4"
+                />
+                <text
+                  x={padL + 6}
+                  y={Math.max(padT + 10, getY(selectedTrade.tp_initial) - 4)}
+                  fill="#10B981"
+                  fontSize="9"
+                  fontFamily="JetBrains Mono, monospace"
+                >
+                  TP #{selectedTrade.id}: {selectedTrade.tp_initial}
+                </text>
+              </g>
+            )}
+            {selectedTrade.sl_initial > 0 && (
+              <g>
+                <line
+                  x1={padL}
+                  y1={getY(selectedTrade.sl_initial)}
+                  x2={width - padR}
+                  y2={getY(selectedTrade.sl_initial)}
+                  stroke="rgba(244,63,94,0.45)"
+                  strokeWidth="1"
+                  strokeDasharray="4 4"
+                />
+                <text
+                  x={padL + 6}
+                  y={Math.min(padT + plotH - 4, getY(selectedTrade.sl_initial) + 11)}
+                  fill="#FB7185"
+                  fontSize="9"
+                  fontFamily="JetBrains Mono, monospace"
+                >
+                  SL #{selectedTrade.id}: {selectedTrade.sl_initial}
+                </text>
+              </g>
+            )}
+            {selectedEntryChartIdx >= 0 && selectedExitChartIdx >= 0 && (
+              <line
+                x1={getX(selectedEntryChartIdx)}
+                y1={getY(candles[selectedEntryChartIdx].close)}
+                x2={getX(selectedExitChartIdx)}
+                y2={getY(candles[selectedExitChartIdx].close)}
+                stroke={selectedTrade.pnl_usdt >= 0 ? '#10B981' : '#F43F5E'}
+                strokeWidth="2.2"
+                strokeDasharray="3 3"
+              />
+            )}
+          </g>
+        )}
+
         <polyline fill="none" stroke="#F59E0B" strokeWidth="1.2" strokeDasharray="4 4" points={emaTrendLine} />
         <polyline fill="none" stroke="#3B82F6" strokeWidth="1.3" points={emaSlowLine} />
         <polyline fill="none" stroke="#10B981" strokeWidth="1.3" points={emaFastLine} />
         <polyline fill="none" stroke="#F1F5F9" strokeWidth="1.6" points={closeLine} />
 
-        {/* Entry & Exit Signal Markers */}
+        {/* Interactive Entry & Exit Signal Markers */}
         {candles.map((c, i) => {
           if (!c.marker) return null;
           const cx = getX(i);
@@ -294,16 +465,50 @@ const LabCandlesSignalsChart: React.FC<{
           const isBuy = c.marker.side === 'BUY';
           const isEntry = c.marker.type === 'ENTRY';
           const color = isBuy ? '#10B981' : '#F43F5E';
+          const matchedTrade = resolveTradeForCandle(i);
+          const isSelected =
+            clickedMarkerCandleIdx === i ||
+            (selectedTrade !== null && matchedTrade?.id === selectedTrade.id);
+
           return (
-            <g key={i}>
+            <g
+              key={i}
+              className="cursor-pointer"
+              onClick={(e) => handleMarkerClick(i, e)}
+            >
+              {/* Larger invisible hit target for easy clicking */}
+              <circle cx={cx} cy={cy} r={12} fill="transparent" />
+              {isSelected && (
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={10}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={1.8}
+                  strokeOpacity={0.75}
+                />
+              )}
               <circle
                 cx={cx}
                 cy={cy}
-                r={isEntry ? 5.5 : 4}
+                r={isSelected ? 7 : isEntry ? 5.5 : 4.5}
                 fill={isEntry ? color : '#090D16'}
-                stroke={color}
-                strokeWidth={2}
+                stroke={isSelected ? '#F8FAFC' : color}
+                strokeWidth={isSelected ? 2.4 : 2}
               />
+              {isSelected && (
+                <text
+                  x={Math.min(width - padR - 55, Math.max(padL + 4, cx - 22))}
+                  y={Math.max(padT + 12, cy - 12)}
+                  fill="#F8FAFC"
+                  fontSize="9.5"
+                  fontWeight="bold"
+                  fontFamily="JetBrains Mono, monospace"
+                >
+                  {isEntry ? '▲ IN' : '◆ OUT'} #{matchedTrade?.id || c.marker.trade_id || ''}
+                </text>
+              )}
             </g>
           );
         })}
@@ -319,6 +524,223 @@ const LabCandlesSignalsChart: React.FC<{
           />
         )}
       </svg>
+
+      {/* Quick timeline marker pills so user can also step through markers directly */}
+      {markerIndices.length > 0 && (
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 pt-0.5 text-[11px] font-mono-tabular">
+          <span className="text-[#64748B] shrink-0 mr-1">
+            {lang === 'en' ? 'Markers:' : 'Marqueurs :'}
+          </span>
+          {markerIndices.slice(0, 24).map((mIdx) => {
+            const mc = candles[mIdx];
+            const m = mc.marker!;
+            const tMatch = resolveTradeForCandle(mIdx);
+            const active =
+              clickedMarkerCandleIdx === mIdx ||
+              (selectedTrade !== null && tMatch?.id === selectedTrade.id);
+            return (
+              <button
+                key={mIdx}
+                type="button"
+                onClick={() => handleMarkerClick(mIdx)}
+                className={`px-2 py-1 rounded border shrink-0 transition-colors flex items-center gap-1 ${
+                  active
+                    ? 'bg-[#10B981]/20 border-[#10B981] text-[#F1F5F9]'
+                    : 'bg-[#090D16] border-white/10 text-[#94A3B8] hover:text-[#F1F5F9] hover:border-white/25'
+                }`}
+              >
+                <span className={m.side === 'BUY' ? 'text-[#10B981]' : 'text-[#FB7185]'}>
+                  {m.type === 'ENTRY' ? '▲' : '◆'} {m.type}
+                </span>
+                <span>#{tMatch?.id || m.trade_id || ''}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Interactive Clicked Marker / Selected Trade Inspector Panel */}
+      {(selectedTrade || clickedCandle?.marker) && (
+        <div className="bg-[#0B101B] border border-[#10B981]/40 rounded-xl p-4 space-y-3 shadow-lg">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {selectedTrade ? (
+                <>
+                  <span
+                    className={`px-2.5 py-0.5 rounded text-xs font-mono-tabular font-bold ${
+                      selectedTrade.side === 'BUY'
+                        ? 'bg-[#10B981]/20 text-[#10B981]'
+                        : 'bg-[#F43F5E]/20 text-[#FB7185]'
+                    }`}
+                  >
+                    TRADE #{selectedTrade.id} • {selectedTrade.side}
+                  </span>
+                  {clickedCandle?.marker && (
+                    <span className="px-2 py-0.5 rounded bg-white/[0.06] text-[11px] font-mono-tabular text-[#E2E8F0]">
+                      {clickedCandle.marker.type === 'ENTRY'
+                        ? tr(lang, "Marqueur d'Entrée sélectionné", 'Entry Marker selected')
+                        : tr(lang, 'Marqueur de Sortie sélectionné', 'Exit Marker selected')}
+                    </span>
+                  )}
+                  <span className="text-xs font-mono-tabular text-[#94A3B8]">
+                    Teddy Score : <strong className="text-[#F1F5F9]">{selectedTrade.teddy_score}/100</strong>
+                  </span>
+                  <span className="text-xs font-mono-tabular text-[#94A3B8]">
+                    • {tr(lang, ' Motif de sortie :', ' Exit reason:')}{' '}
+                    <strong className="text-[#F1F5F9]">{selectedTrade.exit_reason}</strong>
+                  </span>
+                </>
+              ) : (
+                clickedCandle?.marker && (
+                  <span className="px-2.5 py-0.5 rounded text-xs font-mono-tabular font-bold bg-[#10B981]/20 text-[#10B981]">
+                    {clickedCandle.marker.type} • {clickedCandle.marker.side} @ {clickedCandle.marker.price}
+                  </span>
+                )
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              {selectedTrade && onInspectInJournal && (
+                <button
+                  type="button"
+                  onClick={() => onInspectInJournal(selectedTrade)}
+                  className="px-2.5 py-1 rounded bg-[#1E293B] hover:bg-[#334155] text-[11px] text-[#60A5FA] font-medium transition-colors"
+                >
+                  {tr(lang, 'Ouvrir dans le Journal →', 'Open in Trade Journal →')}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setClickedMarkerCandleIdx(null);
+                  onSelectTrade(null);
+                }}
+                className="text-xs text-[#94A3B8] hover:text-[#F1F5F9] px-2 py-1"
+              >
+                {tr(lang, 'Fermer ✕', 'Close ✕')}
+              </button>
+            </div>
+          </div>
+
+          {selectedTrade ? (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs font-mono-tabular">
+                <div className="p-2.5 rounded-lg bg-[#111827] border border-white/[0.05]">
+                  <div className="text-[10px] text-[#64748B]">{tr(lang, 'Entrée (Date & Prix)', 'Entry (Time & Price)')}</div>
+                  <div className="text-[#F1F5F9] font-semibold mt-0.5">{selectedTrade.entry_price} USDT</div>
+                  <div className="text-[10px] text-[#94A3B8]">
+                    {String(selectedTrade.entry_time).slice(0, 16).replace('T', ' ')}
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-[#111827] border border-white/[0.05]">
+                  <div className="text-[10px] text-[#64748B]">{tr(lang, 'Sortie (Date & Prix)', 'Exit (Time & Price)')}</div>
+                  <div className="text-[#F1F5F9] font-semibold mt-0.5">{selectedTrade.exit_price} USDT</div>
+                  <div className="text-[10px] text-[#94A3B8]">
+                    {String(selectedTrade.exit_time).slice(0, 16).replace('T', ' ')}
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-[#111827] border border-white/[0.05]">
+                  <div className="text-[10px] text-[#64748B]">{tr(lang, 'Stop Loss / Take Profit', 'Stop Loss / Take Profit')}</div>
+                  <div className="mt-0.5">
+                    <span className="text-[#FB7185]">{selectedTrade.sl_initial}</span> /{' '}
+                    <span className="text-[#10B981]">{selectedTrade.tp_initial}</span>
+                  </div>
+                  <div className="text-[10px] text-[#94A3B8]">
+                    {tr(lang, 'Durée :', 'Held:')} {selectedTrade.bars_held} {tr(lang, 'bougies', 'candles')}
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-[#111827] border border-white/[0.05]">
+                  <div className="text-[10px] text-[#64748B]">{tr(lang, 'Taille & Marge', 'Size & Margin')}</div>
+                  <div className="text-[#F1F5F9] mt-0.5">
+                    {selectedTrade.qty} ({selectedTrade.notional_usdt}$)
+                  </div>
+                  <div className="text-[10px] text-[#94A3B8]">
+                    {tr(lang, 'Frais :', 'Fees:')} {selectedTrade.fees_usdt} USDT
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-[#111827] border border-white/[0.05]">
+                  <div className="text-[10px] text-[#64748B]">Excursion MFE / MAE</div>
+                  <div className="mt-0.5">
+                    <span className="text-[#10B981]">+{selectedTrade.mfe_pct}%</span> /{' '}
+                    <span className="text-[#F43F5E]">{selectedTrade.mae_pct}%</span>
+                  </div>
+                  <div className="text-[10px] text-[#94A3B8]">
+                    {selectedTrade.partial_taken
+                      ? tr(lang, 'TP partiel encaissé', 'Partial TP taken')
+                      : tr(lang, 'Sortie complète', 'Full exit')}
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-[#111827] border border-white/[0.05]">
+                  <div className="text-[10px] text-[#64748B]">{tr(lang, 'PnL Net & Multiple R', 'Net PnL & R Multiple')}</div>
+                  <div
+                    className={`font-bold mt-0.5 ${
+                      selectedTrade.pnl_usdt >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                    }`}
+                  >
+                    {selectedTrade.pnl_usdt >= 0 ? '+' : ''}
+                    {selectedTrade.pnl_usdt} USDT ({selectedTrade.pnl_pct >= 0 ? '+' : ''}
+                    {selectedTrade.pnl_pct}%)
+                  </div>
+                  <div
+                    className={`text-[10px] font-bold ${
+                      selectedTrade.r_multiple >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                    }`}
+                  >
+                    {selectedTrade.r_multiple >= 0 ? '+' : ''}
+                    {selectedTrade.r_multiple}R
+                  </div>
+                </div>
+              </div>
+
+              <div className="text-xs text-[#94A3B8] flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-white/[0.06]">
+                <div>
+                  <strong className="text-[#F1F5F9]">
+                    {tr(lang, "Confluence & Règles d'entrée :", 'Entry Confluence & Rules:')}
+                  </strong>{' '}
+                  {selectedTrade.entry_reasons?.join(' • ') || tr(lang, 'Signal validé', 'Validated signal')}
+                </div>
+              </div>
+            </>
+          ) : (
+            clickedCandle?.marker && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs font-mono-tabular">
+                <div className="p-2.5 rounded bg-[#111827]">
+                  <div className="text-[10px] text-[#64748B]">{tr(lang, 'Prix Exécution', 'Execution Price')}</div>
+                  <div className="text-[#F1F5F9] font-semibold">{clickedCandle.marker.price} USDT</div>
+                </div>
+                {clickedCandle.marker.sl && (
+                  <div className="p-2.5 rounded bg-[#111827]">
+                    <div className="text-[10px] text-[#64748B]">SL / TP</div>
+                    <div className="text-[#F1F5F9]">
+                      {clickedCandle.marker.sl} / {clickedCandle.marker.tp}
+                    </div>
+                  </div>
+                )}
+                {clickedCandle.marker.pnl_usdt !== undefined && (
+                  <div className="p-2.5 rounded bg-[#111827]">
+                    <div className="text-[10px] text-[#64748B]">PnL Net</div>
+                    <div className={clickedCandle.marker.pnl_usdt >= 0 ? 'text-[#10B981] font-bold' : 'text-[#F43F5E] font-bold'}>
+                      {clickedCandle.marker.pnl_usdt >= 0 ? '+' : ''}
+                      {clickedCandle.marker.pnl_usdt} USDT
+                    </div>
+                  </div>
+                )}
+                <div className="p-2.5 rounded bg-[#111827]">
+                  <div className="text-[10px] text-[#64748B]">{tr(lang, 'Détail', 'Detail')}</div>
+                  <div className="text-[#F1F5F9]">
+                    {clickedCandle.marker.exit_reason || clickedCandle.marker.reason || 'Signal'}
+                  </div>
+                </div>
+              </div>
+            )
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -2055,7 +2477,15 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
 
               <LabCandlesSignalsChart
                 candles={activeRun.candles || []}
+                trades={activeRun.trades || []}
                 params={activeRun.params}
+                selectedTrade={selectedTrade}
+                onSelectTrade={setSelectedTrade}
+                onInspectInJournal={(trade) => {
+                  setSelectedTrade(trade);
+                  setLabSection('trades');
+                }}
+                lang={lang}
               />
             </div>
           )}
