@@ -1758,6 +1758,17 @@ export function App() {
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={() => {
+                setReturnToRegisterAfterTerms(activeAuthMode === 'register');
+                setViewMode('terms');
+              }}
+              className="px-3 py-1.5 rounded-lg bg-[#F59E0B]/15 hover:bg-[#F59E0B]/25 border border-[#F59E0B]/40 text-xs font-semibold text-[#FBBF24] flex items-center gap-1.5"
+            >
+              <Shield className="w-3.5 h-3.5" />
+              <span>{tr(lang, 'Termes & Conditions (CGU)')}</span>
+            </button>
+            <button
+              type="button"
               onClick={handleToggleLang}
               className="px-3 py-1.5 rounded-lg bg-[#111827] border border-white/10 text-xs font-mono-tabular uppercase text-[#94A3B8] hover:text-[#F1F5F9]"
             >
@@ -2350,6 +2361,36 @@ export function App() {
               </div>
             )}
 
+            {isAdminUser && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('users_intelligence')}
+                className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                  activeTab === 'users_intelligence'
+                    ? 'bg-[#10B981] text-[#090D16] border-[#10B981]'
+                    : 'bg-[#10B981]/15 hover:bg-[#10B981]/25 text-[#10B981] border-[#10B981]/40'
+                }`}
+                title="Dossier Utilisateurs 360° (IP, Appareils, Localisation, CGU)"
+              >
+                <Users className="w-3.5 h-3.5 shrink-0" />
+                <span className="hidden sm:inline">{tr(lang, 'Utilisateurs 360°')}</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('terms')}
+              className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                activeTab === 'terms'
+                  ? 'bg-[#F59E0B] text-[#090D16] border-[#F59E0B]'
+                  : 'bg-[#111827] hover:bg-white/[0.05] text-[#FBBF24] border-[#F59E0B]/40'
+              }`}
+              title="Termes & Conditions d'Utilisation (CGU)"
+            >
+              <Shield className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">{tr(lang, 'CGU')}</span>
+            </button>
+
             <button
               onClick={() => {
                 handleToggleLang();
@@ -2385,7 +2426,11 @@ export function App() {
                 {currentMobileHub.tabs.findIndex((t) => t.id === activeTab) + 1}/{currentMobileHub.tabs.length}
               </span>
             </div>
-            <div className="grid grid-cols-2 gap-1.5 p-1 bg-[#111827] border border-white/[0.08] rounded-xl">
+            <div
+              className={`grid gap-1.5 p-1 bg-[#111827] border border-white/[0.08] rounded-xl ${
+                currentMobileHub.tabs.length >= 3 ? 'grid-cols-3' : 'grid-cols-2'
+              }`}
+            >
               {currentMobileHub.tabs.map((subTab) => {
                 const SubIcon = subTab.icon;
                 const isSubActive = activeTab === subTab.id;
@@ -4885,6 +4930,44 @@ export function App() {
              ========================================================= */}
           {activeTab === 'admin' && isAdminUser && (
             <div className="space-y-6">
+              {/* Direct Banner to Open Users 360° Dossier & Public Terms */}
+              <div className="bg-[#111827] border border-[#10B981]/40 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#10B981]/15 border border-[#10B981]/40 flex items-center justify-center text-[#10B981]">
+                    <Users className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-display font-bold text-[#F1F5F9]">
+                      {tr(lang, 'Dossier Utilisateurs 360° & Consentement CGU')}
+                    </div>
+                    <div className="text-xs text-[#94A3B8]">
+                      {tr(
+                        lang,
+                        'Consultez toutes les informations par utilisateur : appareil, OS, navigateur, batterie, IP, géolocalisation GPS/IP, preuves CGU et trading.'
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('users_intelligence')}
+                    className="px-3.5 py-2 rounded-lg bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold text-xs flex items-center gap-1.5"
+                  >
+                    <Users className="w-4 h-4" />
+                    <span>{tr(lang, 'Ouvrir Utilisateurs 360°')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('terms')}
+                    className="px-3 py-2 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#FBBF24] font-semibold text-xs flex items-center gap-1.5"
+                  >
+                    <Shield className="w-4 h-4" />
+                    <span>{tr(lang, 'Voir les CGU publiques')}</span>
+                  </button>
+                </div>
+              </div>
+
               {/* Top Summary Metrics for Admin */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                 <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-4">

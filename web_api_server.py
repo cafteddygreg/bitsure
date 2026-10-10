@@ -1957,6 +1957,9 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     content = f.read()
                 self.send_response(200)
                 self.send_header("Content-Type", mime_type or "application/octet-stream")
+                self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Expires", "0")
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)
@@ -2002,8 +2005,9 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     content, mime_type = asset
                     self.send_response(200)
                     self.send_header("Content-Type", mime_type)
-                    if path in ("", "/", "/index.html") or not path.startswith("/assets/"):
-                        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                    self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                    self.send_header("Pragma", "no-cache")
+                    self.send_header("Expires", "0")
                     self.send_header("Content-Length", str(len(content)))
                     self.end_headers()
                     self.wfile.write(content)
@@ -2025,6 +2029,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                                 "Content-Type",
                                 "application/javascript; charset=utf-8" if ext == ".js" else "text/css; charset=utf-8",
                             )
+                            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                             self.send_header("Content-Length", str(len(content)))
                             self.end_headers()
                             self.wfile.write(content)
@@ -2037,6 +2042,8 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Expires", "0")
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)
