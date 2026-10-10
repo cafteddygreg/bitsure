@@ -65,7 +65,7 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
     try {
       const res = await fetch(path, {
         ...options,
-        credentials: 'include',
+        credentials: 'same-origin',
         headers,
         signal: options.signal || controller.signal,
       });
@@ -79,7 +79,7 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
         rawMsg.includes('Failed to fetch') ||
         rawMsg.includes('NetworkError');
       if (!isRetry && isTransientNetworkErr) {
-        await new Promise((r) => setTimeout(r, 400));
+        await new Promise((r) => setTimeout(r, 500));
         return attemptFetch(true);
       }
       if (err?.name === 'AbortError') {
@@ -131,11 +131,9 @@ async function probeEndpoint(
   endpoint: string,
   label: string,
   validStatuses: number[] = [200],
-  timeoutMs = 6000
+  timeoutMs = 8000,
+  maxRetries = 6
 ): Promise<{ probe: EndpointProbeResult; payload: any }> {
-  const start = performance.now();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const token = getStoredToken();
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (token) {
@@ -143,52 +141,90 @@ async function probeEndpoint(
     headers['X-Session-Token'] = token;
   }
 
-  try {
-    const res = await fetch(endpoint, {
-      method: 'GET',
-      credentials: 'include',
-      headers,
-      signal: controller.signal,
-      cache: 'no-store',
-    });
-    const latencyMs = Math.round(performance.now() - start);
-    const contentType = res.headers.get('content-type') || '';
-    const isJson = contentType.includes('application/json');
-    const payload = isJson ? await res.json().catch(() => null) : null;
-    const statusOk = validStatuses.includes(res.status) && isJson && payload !== null;
+  let lastResult: { probe: EndpointProbeResult; payload: any } | null = null;
 
-    return {
-      probe: {
-        endpoint,
-        label,
-        reachable: statusOk,
-        status: res.status,
-        latencyMs,
-        detail: statusOk
-          ? `HTTP ${res.status} (${latencyMs} ms)`
-          : !isJson
-          ? `Réponse non-JSON (HTTP ${res.status})`
-          : payload?.error || `HTTP ${res.status}`,
-      },
-      payload,
-    };
-  } catch (err: any) {
-    const latencyMs = Math.round(performance.now() - start);
-    const isTimeout = err?.name === 'AbortError';
-    return {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const start = performance.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(endpoint, {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers,
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      clearTimeout(timer);
+      const latencyMs = Math.round(performance.now() - start);
+      const contentType = res.headers.get('content-type') || '';
+      const isJson = contentType.includes('application/json');
+      const payload = isJson ? await res.json().catch(() => null) : null;
+      const statusOk = validStatuses.includes(res.status) && isJson && payload !== null;
+
+      lastResult = {
+        probe: {
+          endpoint,
+          label,
+          reachable: statusOk,
+          status: res.status,
+          latencyMs,
+          detail: statusOk
+            ? `HTTP ${res.status} (${latencyMs} ms)`
+            : !isJson
+            ? `Réponse non-JSON (HTTP ${res.status})`
+            : payload?.error || `HTTP ${res.status}`,
+        },
+        payload,
+      };
+
+      if (statusOk) {
+        return lastResult;
+      }
+
+      // Retry on 502 / 503 / 504 (Python backend warming up)
+      if ([502, 503, 504].includes(res.status) && attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+        continue;
+      }
+      return lastResult;
+    } catch (err: any) {
+      clearTimeout(timer);
+      const latencyMs = Math.round(performance.now() - start);
+      const isTimeout = err?.name === 'AbortError';
+      lastResult = {
+        probe: {
+          endpoint,
+          label,
+          reachable: false,
+          status: 0,
+          latencyMs,
+          detail: isTimeout ? `Timeout après ${timeoutMs} ms` : err?.message || 'Connexion refusée',
+        },
+        payload: null,
+      };
+
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+        continue;
+      }
+    }
+  }
+
+  return (
+    lastResult || {
       probe: {
         endpoint,
         label,
         reachable: false,
         status: 0,
-        latencyMs,
-        detail: isTimeout ? `Timeout après ${timeoutMs} ms` : err?.message || 'Connexion refusée',
+        latencyMs: 0,
+        detail: 'Serveur en cours de démarrage',
       },
       payload: null,
-    };
-  } finally {
-    clearTimeout(timer);
-  }
+    }
+  );
 }
 
 export async function runCoreApiDiagnostic(): Promise<CoreApiDiagnosticReport> {
@@ -217,4 +253,5 @@ export async function runCoreApiDiagnostic(): Promise<CoreApiDiagnosticReport> {
     errorSummary,
   };
 }
+
 

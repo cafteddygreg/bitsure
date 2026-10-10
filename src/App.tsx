@@ -24,6 +24,8 @@ import {
 import { PriceChart } from './components/PriceChart';
 import { LandingPage } from './components/LandingPage';
 import { StrategyLabView } from './components/StrategyLabView';
+import { TermsOfUsePage } from './components/TermsOfUsePage';
+import { AdminUsersIntelligenceTab } from './components/AdminUsersIntelligenceTab';
 import {
   Activity,
   AlertTriangle,
@@ -74,7 +76,9 @@ type ActiveTab =
   | 'safety'
   | 'history'
   | 'account'
+  | 'terms'
   | 'strategy_lab'
+  | 'users_intelligence'
   | 'admin';
 
 const SYMBOLS = [
@@ -93,7 +97,8 @@ const STYLES = [
 ];
 
 export function App() {
-  const [viewMode, setViewMode] = useState<'landing' | 'workspace'>('workspace');
+  const [viewMode, setViewMode] = useState<'landing' | 'workspace' | 'terms'>('workspace');
+  const [returnToRegisterAfterTerms, setReturnToRegisterAfterTerms] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>('intelligence');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [lang, setLang] = useState<AppLang>(getInitialLang);
@@ -110,10 +115,95 @@ export function App() {
   const [authPassword, setAuthPassword] = useState('');
   const [authName, setAuthName] = useState('');
   const [authTelegram, setAuthTelegram] = useState('');
+  const [authTermsAccepted, setAuthTermsAccepted] = useState(false);
   const [googleOAuthEnabled, setGoogleOAuthEnabled] = useState(false);
   const [googlePendingToken, setGooglePendingToken] = useState<string | null>(null);
   const [capsLockOn, setCapsLockOn] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+
+  const collectClientTelemetry = useCallback(async (requestGeoPermission = false): Promise<Record<string, any>> => {
+    const nav: any = typeof navigator !== 'undefined' ? navigator : {};
+    const scr: any = typeof window !== 'undefined' && window.screen ? window.screen : {};
+    const intlTz =
+      typeof Intl !== 'undefined' && Intl.DateTimeFormat
+        ? Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+        : '';
+
+    const telemetry: Record<string, any> = {
+      timezone: intlTz,
+      screen_resolution: scr.width && scr.height ? `${scr.width}x${scr.height}` : '',
+      viewport_size:
+        typeof window !== 'undefined' ? `${window.innerWidth || 0}x${window.innerHeight || 0}` : '',
+      pixel_ratio: typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
+      color_depth: scr.colorDepth || 24,
+      hardware_concurrency: nav.hardwareConcurrency || 0,
+      device_memory: nav.deviceMemory || 0,
+      max_touch_points: nav.maxTouchPoints || 0,
+      platform: nav.platform || '',
+      language: nav.language || '',
+      languages: Array.isArray(nav.languages) ? nav.languages : [],
+      cookies_enabled: Boolean(nav.cookieEnabled),
+      do_not_track: String(nav.doNotTrack || ''),
+      referrer: typeof document !== 'undefined' ? document.referrer || '' : '',
+      geolocation_permission: 'prompt',
+    };
+
+    try {
+      const conn = nav.connection || nav.mozConnection || nav.webkitConnection;
+      if (conn) {
+        telemetry.connection_type = conn.effectiveType || conn.type || '';
+        telemetry.connection_downlink = conn.downlink || 0;
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (typeof nav.getBattery === 'function') {
+        const bat = await nav.getBattery();
+        if (bat) {
+          telemetry.battery_level = typeof bat.level === 'number' ? Math.round(bat.level * 100) : null;
+          telemetry.battery_charging = Boolean(bat.charging);
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (nav.permissions && typeof nav.permissions.query === 'function') {
+        const permStatus = await nav.permissions.query({ name: 'geolocation' as PermissionName });
+        telemetry.geolocation_permission = permStatus.state;
+        if (permStatus.state === 'granted' || requestGeoPermission) {
+          await new Promise<void>((resolve) => {
+            if (!nav.geolocation) {
+              resolve();
+              return;
+            }
+            nav.geolocation.getCurrentPosition(
+              (pos: GeolocationPosition) => {
+                telemetry.latitude = pos.coords.latitude;
+                telemetry.longitude = pos.coords.longitude;
+                telemetry.location_accuracy_m = pos.coords.accuracy;
+                telemetry.location_source = 'GPS Navigateur (Permission accordée)';
+                telemetry.geolocation_permission = 'granted';
+                resolve();
+              },
+              () => {
+                telemetry.geolocation_permission = 'denied';
+                resolve();
+              },
+              { enableHighAccuracy: true, timeout: 4500, maximumAge: 60000 }
+            );
+          });
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    return telemetry;
+  }, []);
 
   const handleToggleLang = useCallback(() => {
     const nextLang: AppLang = lang === 'fr' ? 'en' : 'fr';
@@ -572,10 +662,30 @@ export function App() {
 
   const isApprovedUser = Boolean(user && (user.approved || user.account_status === 'APPROVED' || user.is_admin));
 
+  // Auto-recover from transient startup / network errors if apiDiag initially failed
+  useEffect(() => {
+    if (!apiDiag || apiDiag.ok || apiDiagChecking) return;
+    const retryTimer = setTimeout(() => {
+      loadUserAndCoreData();
+    }, 2500);
+    return () => clearTimeout(retryTimer);
+  }, [apiDiag, apiDiagChecking, loadUserAndCoreData]);
+
   // Initial session check on mount + Google OAuth postMessage listener
   useEffect(() => {
     loadUserAndCoreData();
+  }, [loadUserAndCoreData]);
 
+  // Automatic recovery polling if preflight API diagnostic temporarily failed during server restart
+  useEffect(() => {
+    if (!apiDiag || apiDiag.ok || apiDiagChecking) return;
+    const retryTimer = setTimeout(() => {
+      loadUserAndCoreData();
+    }, 2500);
+    return () => clearTimeout(retryTimer);
+  }, [apiDiag, apiDiagChecking, loadUserAndCoreData]);
+
+  useEffect(() => {
     const applyGooglePending = (pending: any) => {
       if (!pending || !pending.google_pending_token) return;
       setGooglePendingToken(String(pending.google_pending_token));
@@ -716,8 +826,20 @@ export function App() {
   }, [isApprovedUser, activeTab]);
 
   useEffect(() => {
+    if (!user) return;
+    collectClientTelemetry(false)
+      .then((telemetry) => {
+        apiFetch('/api/user/telemetry', {
+          method: 'POST',
+          body: JSON.stringify({ telemetry }),
+        }).catch(() => {});
+      })
+      .catch(() => {});
+  }, [user?.user_id, collectClientTelemetry]);
+
+  useEffect(() => {
     if (!isApprovedUser) return;
-    if (activeTab === 'admin' && user && !user.is_admin && user.role !== 'admin') {
+    if ((activeTab === 'admin' || activeTab === 'users_intelligence') && user && !user.is_admin && user.role !== 'admin') {
       setActiveTab('intelligence');
       return;
     }
@@ -734,9 +856,19 @@ export function App() {
   const handleAuthSubmit = async (e: React.FormEvent, modeOverride?: 'login' | 'register') => {
     e.preventDefault();
     setAuthError(null);
-    setAuthSubmitting(true);
     const activeMode = modeOverride || authModal || 'login';
+    if (activeMode === 'register' && !authTermsAccepted) {
+      const msg =
+        lang === 'en'
+          ? 'You must read and accept the Terms and Conditions of Use before creating your account.'
+          : "Vous devez cocher la case « J'ai lu et j'accepte les termes et conditions d'utilisation » pour créer votre compte.";
+      setAuthError(msg);
+      showToast(msg, 'error');
+      return;
+    }
+    setAuthSubmitting(true);
     try {
+      const telemetry = await collectClientTelemetry(activeMode === 'register');
       const endpoint = activeMode === 'login' ? '/api/auth/login' : '/api/auth/register';
       const res = await apiFetch(endpoint, {
         method: 'POST',
@@ -746,6 +878,8 @@ export function App() {
           display_name: authName.trim(),
           telegram_handle: authTelegram.trim(),
           google_pending_token: googlePendingToken || undefined,
+          terms_accepted: activeMode === 'register' ? authTermsAccepted : true,
+          telemetry,
         }),
       });
       setStoredSession(res.token, res.csrf_token || res.user?.csrf_token || '');
@@ -1315,9 +1449,61 @@ export function App() {
             </p>
           )}
         </div>
+        {mode === 'register' && (
+          <div className="p-3.5 rounded-xl bg-[#090D16] border border-[#F59E0B]/40 space-y-2">
+            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={authTermsAccepted}
+                onChange={(e) => setAuthTermsAccepted(e.target.checked)}
+                className="mt-0.5 w-4 h-4 rounded border-white/25 bg-[#111827] text-[#10B981] focus:ring-[#10B981]"
+                required
+              />
+              <span className="text-xs text-[#F1F5F9] leading-relaxed">
+                {lang === 'en' ? (
+                  <>
+                    I have read and I accept the{' '}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReturnToRegisterAfterTerms(true);
+                        setViewMode('terms');
+                      }}
+                      className="text-[#F59E0B] hover:text-[#FBBF24] underline font-bold"
+                    >
+                      terms and conditions of use
+                    </button>{' '}
+                    (including the collection of personal, device, IP, geolocation, and trading data).
+                  </>
+                ) : (
+                  <>
+                    J&apos;ai lu et j&apos;accepte les{' '}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReturnToRegisterAfterTerms(true);
+                        setViewMode('terms');
+                      }}
+                      className="text-[#F59E0B] hover:text-[#FBBF24] underline font-bold"
+                    >
+                      termes et conditions d&apos;utilisation
+                    </button>{' '}
+                    (incluant la collecte des données personnelles, d&apos;appareil, d&apos;adresse IP, de localisation
+                    et de trading).
+                  </>
+                )}
+              </span>
+            </label>
+            <div className="text-[10px] text-[#94A3B8] pl-6">
+              {lang === 'en'
+                ? 'Last mandatory step: click the highlighted link above to read the full public contract.'
+                : "Dernière étape obligatoire : cliquez sur « termes et conditions d'utilisation » ci-dessus pour lire l'intégralité du contrat public."}
+            </div>
+          </div>
+        )}
         <button
           type="submit"
-          disabled={authSubmitting}
+          disabled={authSubmitting || (mode === 'register' && !authTermsAccepted)}
           className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-semibold rounded-lg transition-colors"
         >
           {authSubmitting
@@ -1385,12 +1571,39 @@ export function App() {
     </div>
   );
 
+  if (viewMode === 'terms') {
+    return (
+      <TermsOfUsePage
+        showAcceptButton={returnToRegisterAfterTerms || authModal === 'register' || !user}
+        isAccepted={authTermsAccepted}
+        onBack={() => {
+          if (returnToRegisterAfterTerms) {
+            setAuthModal('register');
+            setViewMode('workspace');
+          } else {
+            setViewMode(user ? 'workspace' : 'landing');
+          }
+        }}
+        onAcceptAndReturnToRegister={() => {
+          setAuthTermsAccepted(true);
+          setAuthModal('register');
+          setReturnToRegisterAfterTerms(false);
+          setViewMode('workspace');
+        }}
+      />
+    );
+  }
+
   if (viewMode === 'landing') {
     return (
       <>
         <LandingPage
           lang={lang}
           onToggleLang={handleToggleLang}
+          onOpenTerms={() => {
+            setReturnToRegisterAfterTerms(false);
+            setViewMode('terms');
+          }}
           onEnterWorkspace={() => {
             if (user) {
               setViewMode('workspace');
@@ -1720,8 +1933,10 @@ export function App() {
     },
     { id: 'history', label: tr(lang, 'Historique & Journal'), icon: BookOpen },
     { id: 'account', label: tr(lang, 'Compte, Plans & PIN'), icon: CreditCard },
+    { id: 'terms', label: tr(lang, 'Termes & Conditions (CGU)'), icon: Shield },
     ...(isAdminUser
       ? [
+          { id: 'users_intelligence', label: tr(lang, 'Utilisateurs 360° (Admin)'), icon: Users },
           { id: 'strategy_lab', label: tr(lang, 'Strategy Lab (Backtest)'), icon: FlaskConical },
           { id: 'admin', label: tr(lang, 'Admin & Log Doctor'), icon: Terminal },
         ]
@@ -1755,6 +1970,7 @@ export function App() {
       tabs: [
         { id: 'history' as ActiveTab, label: tr(lang, 'Historique & Journal'), icon: BookOpen },
         { id: 'account' as ActiveTab, label: tr(lang, 'Compte, Plans & PIN'), icon: CreditCard },
+        { id: 'terms' as ActiveTab, label: tr(lang, 'Termes & Conditions (CGU)'), icon: Shield },
       ],
     },
     ...(isAdminUser
@@ -1764,6 +1980,7 @@ export function App() {
             label: 'Admin & Lab',
             icon: FlaskConical,
             tabs: [
+              { id: 'users_intelligence' as ActiveTab, label: tr(lang, 'Utilisateurs 360° (Admin)'), icon: Users },
               { id: 'strategy_lab' as ActiveTab, label: tr(lang, 'Strategy Lab (Backtest)'), icon: FlaskConical },
               { id: 'admin' as ActiveTab, label: tr(lang, 'Admin & Log Doctor'), icon: Terminal },
             ],
@@ -1774,7 +1991,10 @@ export function App() {
             hubId: 'account_hub',
             label: tr(lang, 'Compte'),
             icon: CreditCard,
-            tabs: [{ id: 'account' as ActiveTab, label: tr(lang, 'Compte, Plans & PIN'), icon: CreditCard }],
+            tabs: [
+              { id: 'account' as ActiveTab, label: tr(lang, 'Compte, Plans & PIN'), icon: CreditCard },
+              { id: 'terms' as ActiveTab, label: tr(lang, 'Termes & Conditions (CGU)'), icon: Shield },
+            ],
           },
         ]),
   ];
@@ -5616,6 +5836,52 @@ export function App() {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* =========================================================
+              TAB 7B: PUBLIC TERMS & CONDITIONS OF USE (CGU & PRIVACY)
+             ========================================================= */}
+          {activeTab === 'terms' && (
+            <TermsOfUsePage
+              showAcceptButton={false}
+              isAccepted={Boolean(user?.terms_accepted)}
+              onBack={() => setActiveTab('intelligence')}
+            />
+          )}
+
+          {/* =========================================================
+              TAB 8A: USERS INTELLIGENCE 360° DOSSIER (ADMIN ONLY)
+             ========================================================= */}
+          {activeTab === 'users_intelligence' && Boolean(user?.is_admin || user?.role === 'admin') && (
+            <AdminUsersIntelligenceTab
+              apiFetch={apiFetch}
+              onOpenTermsPage={() => setActiveTab('terms')}
+              onAdminUserAction={async (action, targetUserId, extra = {}) => {
+                if (action === 'approve' || action === 'suspend' || action === 'reject' || action === 'reactivate') {
+                  const res = await apiFetch('/api/admin/user-status', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      target_user_id: targetUserId,
+                      action,
+                      role: extra.role || 'tester',
+                    }),
+                  });
+                  showToast(res.message || 'Statut utilisateur mis à jour.', 'success');
+                  loadAdminOverview();
+                } else if (action === 'set_plan') {
+                  const res = await apiFetch('/api/admin/user-role', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      target_user_id: targetUserId,
+                      action: 'set_role',
+                      role: extra.plan || 'pro',
+                    }),
+                  });
+                  showToast(res.message || 'Plan utilisateur mis à jour.', 'success');
+                  loadAdminOverview();
+                }
+              }}
+            />
           )}
 
           {/* =========================================================

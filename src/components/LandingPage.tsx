@@ -12,6 +12,7 @@ import { AppLang, tr } from '../i18n';
 interface LandingPageProps {
   onEnterWorkspace: () => void;
   onOpenAuthModal: (mode: 'login' | 'register') => void;
+  onOpenTerms?: () => void;
   lang?: AppLang;
   onToggleLang?: () => void;
 }
@@ -19,6 +20,7 @@ interface LandingPageProps {
 export const LandingPage: React.FC<LandingPageProps> = ({
   onEnterWorkspace,
   onOpenAuthModal,
+  onOpenTerms,
   lang = 'fr',
   onToggleLang,
 }) => {
@@ -51,9 +53,27 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             <a href="#pricing" className="hover:text-[#F1F5F9] transition-colors">
               {tr(lang, 'Plans & Accès', 'Plans & Access')}
             </a>
+            {onOpenTerms && (
+              <button
+                type="button"
+                onClick={onOpenTerms}
+                className="text-[#F59E0B] hover:text-[#FBBF24] font-semibold transition-colors"
+              >
+                {tr(lang, "Termes & Conditions d'Utilisation", 'Terms & Conditions')}
+              </button>
+            )}
           </nav>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            {onOpenTerms && (
+              <button
+                type="button"
+                onClick={onOpenTerms}
+                className="md:hidden px-2.5 py-2 text-xs font-semibold text-[#F59E0B] border border-[#F59E0B]/30 rounded-lg bg-[#F59E0B]/10"
+              >
+                CGU
+              </button>
+            )}
             {onToggleLang && (
               <button
                 type="button"
@@ -434,6 +454,40 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </div>
         </div>
       </section>
+
+      {/* Public Footer with Terms & Conditions Link */}
+      <footer className="mt-auto py-6 border-t border-white/[0.07] bg-[#070A12] text-xs text-[#64748B]">
+        <div className="max-w-[1400px] mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div>
+            BITSURE TEDDY QUANT — {tr(lang, 'Plateforme Quantitative & Exécution Sécurisée', 'Quantitative Platform & Secure Execution')}
+          </div>
+          <div className="flex flex-wrap items-center gap-5">
+            {onOpenTerms && (
+              <button
+                type="button"
+                onClick={onOpenTerms}
+                className="text-[#F59E0B] hover:text-[#FBBF24] underline underline-offset-4 font-semibold transition-colors"
+              >
+                {tr(lang, "Termes et Conditions d'Utilisation (CGU & Collecte des Données)", 'Terms and Conditions of Use & Data Privacy')}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onOpenAuthModal('login')}
+              className="hover:text-[#F1F5F9] transition-colors"
+            >
+              {tr(lang, 'Connexion', 'Log In')}
+            </button>
+            <button
+              type="button"
+              onClick={() => onOpenAuthModal('register')}
+              className="hover:text-[#F1F5F9] transition-colors"
+            >
+              {tr(lang, 'Créer un compte', 'Create Account')}
+            </button>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 };

@@ -172,8 +172,63 @@ def _init_web_schema_and_seed():
         db.execute("ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS google_sub TEXT")
         db.execute("ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'local'")
         db.execute("ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS last_login_at DOUBLE PRECISION DEFAULT 0")
+        db.execute("ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS terms_accepted INTEGER DEFAULT 0")
+        db.execute("ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS terms_accepted_at DOUBLE PRECISION DEFAULT 0")
+        db.execute("ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS terms_version TEXT DEFAULT '2.2.0'")
+        db.execute("ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS terms_accepted_ip TEXT DEFAULT ''")
+        db.execute("ALTER TABLE web_accounts ADD COLUMN IF NOT EXISTS data_collection_consent INTEGER DEFAULT 0")
     except Exception:
         pass
+
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_telemetry (
+            user_id BIGINT PRIMARY KEY,
+            ip_address TEXT DEFAULT '',
+            ip_history_json TEXT DEFAULT '[]',
+            country TEXT DEFAULT '',
+            region TEXT DEFAULT '',
+            city TEXT DEFAULT '',
+            isp TEXT DEFAULT '',
+            timezone TEXT DEFAULT '',
+            latitude DOUBLE PRECISION,
+            longitude DOUBLE PRECISION,
+            location_accuracy_m DOUBLE PRECISION,
+            location_source TEXT DEFAULT '',
+            geolocation_permission TEXT DEFAULT 'prompt',
+            device_type TEXT DEFAULT '',
+            device_vendor_model TEXT DEFAULT '',
+            os_name TEXT DEFAULT '',
+            os_version TEXT DEFAULT '',
+            browser_name TEXT DEFAULT '',
+            browser_version TEXT DEFAULT '',
+            user_agent TEXT DEFAULT '',
+            screen_resolution TEXT DEFAULT '',
+            viewport_size TEXT DEFAULT '',
+            pixel_ratio DOUBLE PRECISION DEFAULT 1.0,
+            color_depth INTEGER DEFAULT 24,
+            hardware_concurrency INTEGER DEFAULT 0,
+            device_memory DOUBLE PRECISION DEFAULT 0,
+            max_touch_points INTEGER DEFAULT 0,
+            platform TEXT DEFAULT '',
+            browser_language TEXT DEFAULT '',
+            browser_languages TEXT DEFAULT '',
+            connection_type TEXT DEFAULT '',
+            connection_downlink DOUBLE PRECISION DEFAULT 0,
+            battery_level DOUBLE PRECISION,
+            battery_charging INTEGER,
+            cookies_enabled INTEGER DEFAULT 1,
+            do_not_track TEXT DEFAULT '',
+            referrer TEXT DEFAULT '',
+            terms_accepted INTEGER DEFAULT 0,
+            terms_version TEXT DEFAULT '2.2.0',
+            terms_accepted_at DOUBLE PRECISION DEFAULT 0,
+            terms_accepted_ip TEXT DEFAULT '',
+            raw_telemetry_json TEXT DEFAULT '{}',
+            updated_at DOUBLE PRECISION DEFAULT 0
+        )
+        """
+    )
 
     db.execute(
         """
@@ -398,6 +453,710 @@ def _create_session(user_id: int, email: str, ip_address: str = "", user_agent: 
         (token, int(user_id), email, csrf_token, ip_address[:64], user_agent[:200], now, now + 86400 * 14),
     )
     return token, csrf_token
+
+
+TERMS_CURRENT_VERSION = "2.2.0"
+
+TIMEZONE_COUNTRY_MAP: Dict[str, Tuple[str, str]] = {
+    "Europe/Paris": ("France", "Paris"),
+    "Europe/Brussels": ("Belgique", "Bruxelles"),
+    "Europe/Zurich": ("Suisse", "Zurich / Genève"),
+    "Europe/London": ("Royaume-Uni", "Londres"),
+    "Europe/Berlin": ("Allemagne", "Berlin"),
+    "Europe/Madrid": ("Espagne", "Madrid"),
+    "Europe/Rome": ("Italie", "Rome"),
+    "Europe/Luxembourg": ("Luxembourg", "Luxembourg"),
+    "America/Montreal": ("Canada", "Montréal"),
+    "America/Toronto": ("Canada", "Toronto"),
+    "America/New_York": ("États-Unis", "New York"),
+    "America/Chicago": ("États-Unis", "Chicago"),
+    "America/Los_Angeles": ("États-Unis", "Los Angeles"),
+    "Africa/Bujumbura": ("Burundi", "Bujumbura"),
+    "Africa/Kigali": ("Rwanda", "Kigali"),
+    "Africa/Kinshasa": ("RD Congo", "Kinshasa"),
+    "Africa/Lubumbashi": ("RD Congo", "Lubumbashi"),
+    "Africa/Abidjan": ("Côte d'Ivoire", "Abidjan"),
+    "Africa/Dakar": ("Sénégal", "Dakar"),
+    "Africa/Douala": ("Cameroun", "Douala"),
+    "Africa/Casablanca": ("Maroc", "Casablanca"),
+    "Africa/Tunis": ("Tunisie", "Tunis"),
+    "Africa/Algiers": ("Algérie", "Alger"),
+    "Africa/Nairobi": ("Kenya", "Nairobi"),
+    "Africa/Johannesburg": ("Afrique du Sud", "Johannesburg"),
+    "Indian/Antananarivo": ("Madagascar", "Antananarivo"),
+    "Asia/Dubai": ("Émirats Arabes Unis", "Dubaï"),
+    "Asia/Tokyo": ("Japon", "Tokyo"),
+    "Asia/Singapore": ("Singapour", "Singapour"),
+}
+
+
+def _parse_user_agent_details(ua: str) -> Dict[str, str]:
+    ua_s = (ua or "").strip()
+    ua_l = ua_s.lower()
+    if not ua_s:
+        return {
+            "device_type": "Inconnu",
+            "device_vendor_model": "Non détecté",
+            "os_name": "Inconnu",
+            "os_version": "",
+            "browser_name": "Inconnu",
+            "browser_version": "",
+        }
+
+    # Device type & vendor/model
+    import re
+    if "ipad" in ua_l or "tablet" in ua_l:
+        device_type = "Tablette"
+    elif any(k in ua_l for k in ("iphone", "ipod", "android", "mobile", "windows phone")):
+        device_type = "Mobile"
+    else:
+        device_type = "Desktop / Ordinateur"
+
+    vendor_model = "PC / Poste de travail"
+    if "iphone" in ua_l:
+        vendor_model = "Apple iPhone"
+    elif "ipad" in ua_l:
+        vendor_model = "Apple iPad"
+    elif "macintosh" in ua_l or "mac os x" in ua_l:
+        vendor_model = "Apple Mac"
+    elif "android" in ua_l:
+        m = re.search(r"android\s+[\d\.]+;\s*([^;\)]+)", ua_s, re.I)
+        if m:
+            vendor_model = f"Android ({m.group(1).strip()})"
+        else:
+            vendor_model = "Smartphone Android"
+    elif "windows" in ua_l:
+        vendor_model = "PC Windows"
+    elif "linux" in ua_l:
+        vendor_model = "Station Linux"
+
+    # OS Name & Version
+    os_name = "Inconnu"
+    os_version = ""
+    if "iphone os" in ua_l or "cpu os" in ua_l:
+        os_name = "iOS"
+        m = re.search(r"(?:iphone|cpu) os ([\d_]+)", ua_l)
+        if m:
+            os_version = m.group(1).replace("_", ".")
+    elif "android" in ua_l:
+        os_name = "Android"
+        m = re.search(r"android\s+([\d\.]+)", ua_l)
+        if m:
+            os_version = m.group(1)
+    elif "windows nt" in ua_l:
+        os_name = "Windows"
+        nt_map = {"10.0": "10/11", "6.3": "8.1", "6.2": "8", "6.1": "7"}
+        m = re.search(r"windows nt\s+([\d\.]+)", ua_l)
+        if m:
+            os_version = nt_map.get(m.group(1), m.group(1))
+    elif "mac os x" in ua_l:
+        os_name = "macOS"
+        m = re.search(r"mac os x\s+([\d_\.]+)", ua_l)
+        if m:
+            os_version = m.group(1).replace("_", ".")
+    elif "linux" in ua_l:
+        os_name = "Linux"
+
+    # Browser Name & Version
+    browser_name = "Navigateur Web"
+    browser_version = ""
+    for pattern, bname in (
+        (r"edg(?:e|a|ios)?/([\d\.]+)", "Microsoft Edge"),
+        (r"opr/([\d\.]+)", "Opera"),
+        (r"brave/([\d\.]+)", "Brave"),
+        (r"chrome/([\d\.]+)", "Google Chrome"),
+        (r"crios/([\d\.]+)", "Chrome iOS"),
+        (r"firefox/([\d\.]+)", "Mozilla Firefox"),
+        (r"fxios/([\d\.]+)", "Firefox iOS"),
+        (r"version/([\d\.]+).*safari", "Apple Safari"),
+    ):
+        m = re.search(pattern, ua_l)
+        if m:
+            browser_name = bname
+            browser_version = m.group(1)
+            break
+
+    return {
+        "device_type": device_type,
+        "device_vendor_model": vendor_model,
+        "os_name": os_name,
+        "os_version": os_version,
+        "browser_name": browser_name,
+        "browser_version": browser_version,
+    }
+
+
+def _upsert_user_telemetry(
+    user_id: int,
+    ip_address: str = "",
+    user_agent: str = "",
+    headers: Any = None,
+    client_telemetry: Optional[Dict[str, Any]] = None,
+    terms_accepted: Optional[bool] = None,
+    terms_version: str = TERMS_CURRENT_VERSION,
+) -> None:
+    try:
+        db = get_db()
+        now = time.time()
+        ct = client_telemetry if isinstance(client_telemetry, dict) else {}
+        ua_str = (ct.get("user_agent") or user_agent or "").strip()
+        parsed_ua = _parse_user_agent_details(ua_str)
+
+        existing = db.execute("SELECT * FROM user_telemetry WHERE user_id = %s", (int(user_id),)).fetchone()
+        ex_dict = dict(existing) if existing else {}
+
+        # Maintain IP history list
+        ip_hist: List[str] = []
+        if ex_dict.get("ip_history_json"):
+            try:
+                ip_hist = json.loads(ex_dict["ip_history_json"])
+            except Exception:
+                ip_hist = []
+        clean_ip = (ip_address or ex_dict.get("ip_address") or "").strip()
+        if clean_ip and clean_ip not in ("unknown", ""):
+            if clean_ip in ip_hist:
+                ip_hist.remove(clean_ip)
+            ip_hist.insert(0, clean_ip)
+            ip_hist = ip_hist[:15]
+
+        # Extract country/city from proxy headers or timezone or client telemetry
+        hdr_country = ""
+        hdr_city = ""
+        hdr_region = ""
+        if headers is not None:
+            hdr_country = (
+                headers.get("CF-IPCountry")
+                or headers.get("X-Vercel-IP-Country")
+                or headers.get("X-AppEngine-Country")
+                or headers.get("X-Country-Code")
+                or ""
+            ).strip()
+            hdr_city = (
+                headers.get("CF-IPCity")
+                or headers.get("X-Vercel-IP-City")
+                or headers.get("X-AppEngine-City")
+                or ""
+            ).strip()
+            hdr_region = (
+                headers.get("CF-Region")
+                or headers.get("X-Vercel-IP-Country-Region")
+                or headers.get("X-AppEngine-Region")
+                or ""
+            ).strip()
+
+        tz = str(ct.get("timezone") or ex_dict.get("timezone") or "").strip()
+        inferred_country, inferred_city = TIMEZONE_COUNTRY_MAP.get(tz, ("", ""))
+
+        country = str(ct.get("country") or hdr_country or ex_dict.get("country") or inferred_country or "").strip()
+        city = str(ct.get("city") or hdr_city or ex_dict.get("city") or inferred_city or "").strip()
+        region = str(ct.get("region") or hdr_region or ex_dict.get("region") or "").strip()
+        isp = str(ct.get("isp") or ex_dict.get("isp") or "").strip()
+
+        lat = ct.get("latitude") if ct.get("latitude") is not None else ex_dict.get("latitude")
+        lon = ct.get("longitude") if ct.get("longitude") is not None else ex_dict.get("longitude")
+        acc = ct.get("location_accuracy_m") if ct.get("location_accuracy_m") is not None else ex_dict.get("location_accuracy_m")
+        loc_src = str(ct.get("location_source") or ex_dict.get("location_source") or ("gps_browser" if lat is not None else ("proxy_geo" if hdr_country else ("timezone_inferred" if inferred_country else ""))))
+        geo_perm = str(ct.get("geolocation_permission") or ex_dict.get("geolocation_permission") or "prompt")
+
+        t_acc = 1 if terms_accepted else (int(ex_dict.get("terms_accepted") or 0))
+        t_ver = terms_version if terms_accepted else (ex_dict.get("terms_version") or TERMS_CURRENT_VERSION)
+        t_at = now if (terms_accepted and not ex_dict.get("terms_accepted_at")) else float(ex_dict.get("terms_accepted_at") or (now if terms_accepted else 0))
+        t_ip = clean_ip if (terms_accepted and not ex_dict.get("terms_accepted_ip")) else (ex_dict.get("terms_accepted_ip") or (clean_ip if terms_accepted else ""))
+
+        db.execute(
+            """
+            INSERT INTO user_telemetry (
+                user_id, ip_address, ip_history_json, country, region, city, isp, timezone,
+                latitude, longitude, location_accuracy_m, location_source, geolocation_permission,
+                device_type, device_vendor_model, os_name, os_version, browser_name, browser_version,
+                user_agent, screen_resolution, viewport_size, pixel_ratio, color_depth,
+                hardware_concurrency, device_memory, max_touch_points, platform,
+                browser_language, browser_languages, connection_type, connection_downlink,
+                battery_level, battery_charging, cookies_enabled, do_not_track, referrer,
+                terms_accepted, terms_version, terms_accepted_at, terms_accepted_ip,
+                raw_telemetry_json, updated_at
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s
+            )
+            ON CONFLICT (user_id) DO UPDATE SET
+                ip_address = EXCLUDED.ip_address,
+                ip_history_json = EXCLUDED.ip_history_json,
+                country = EXCLUDED.country,
+                region = EXCLUDED.region,
+                city = EXCLUDED.city,
+                isp = EXCLUDED.isp,
+                timezone = EXCLUDED.timezone,
+                latitude = COALESCE(EXCLUDED.latitude, user_telemetry.latitude),
+                longitude = COALESCE(EXCLUDED.longitude, user_telemetry.longitude),
+                location_accuracy_m = COALESCE(EXCLUDED.location_accuracy_m, user_telemetry.location_accuracy_m),
+                location_source = CASE WHEN EXCLUDED.location_source != '' THEN EXCLUDED.location_source ELSE user_telemetry.location_source END,
+                geolocation_permission = CASE WHEN EXCLUDED.geolocation_permission != '' THEN EXCLUDED.geolocation_permission ELSE user_telemetry.geolocation_permission END,
+                device_type = CASE WHEN EXCLUDED.device_type != '' THEN EXCLUDED.device_type ELSE user_telemetry.device_type END,
+                device_vendor_model = CASE WHEN EXCLUDED.device_vendor_model != '' THEN EXCLUDED.device_vendor_model ELSE user_telemetry.device_vendor_model END,
+                os_name = CASE WHEN EXCLUDED.os_name != '' THEN EXCLUDED.os_name ELSE user_telemetry.os_name END,
+                os_version = CASE WHEN EXCLUDED.os_version != '' THEN EXCLUDED.os_version ELSE user_telemetry.os_version END,
+                browser_name = CASE WHEN EXCLUDED.browser_name != '' THEN EXCLUDED.browser_name ELSE user_telemetry.browser_name END,
+                browser_version = CASE WHEN EXCLUDED.browser_version != '' THEN EXCLUDED.browser_version ELSE user_telemetry.browser_version END,
+                user_agent = CASE WHEN EXCLUDED.user_agent != '' THEN EXCLUDED.user_agent ELSE user_telemetry.user_agent END,
+                screen_resolution = CASE WHEN EXCLUDED.screen_resolution != '' THEN EXCLUDED.screen_resolution ELSE user_telemetry.screen_resolution END,
+                viewport_size = CASE WHEN EXCLUDED.viewport_size != '' THEN EXCLUDED.viewport_size ELSE user_telemetry.viewport_size END,
+                pixel_ratio = COALESCE(EXCLUDED.pixel_ratio, user_telemetry.pixel_ratio),
+                color_depth = COALESCE(EXCLUDED.color_depth, user_telemetry.color_depth),
+                hardware_concurrency = CASE WHEN EXCLUDED.hardware_concurrency > 0 THEN EXCLUDED.hardware_concurrency ELSE user_telemetry.hardware_concurrency END,
+                device_memory = CASE WHEN EXCLUDED.device_memory > 0 THEN EXCLUDED.device_memory ELSE user_telemetry.device_memory END,
+                max_touch_points = COALESCE(EXCLUDED.max_touch_points, user_telemetry.max_touch_points),
+                platform = CASE WHEN EXCLUDED.platform != '' THEN EXCLUDED.platform ELSE user_telemetry.platform END,
+                browser_language = CASE WHEN EXCLUDED.browser_language != '' THEN EXCLUDED.browser_language ELSE user_telemetry.browser_language END,
+                browser_languages = CASE WHEN EXCLUDED.browser_languages != '' THEN EXCLUDED.browser_languages ELSE user_telemetry.browser_languages END,
+                connection_type = CASE WHEN EXCLUDED.connection_type != '' THEN EXCLUDED.connection_type ELSE user_telemetry.connection_type END,
+                connection_downlink = CASE WHEN EXCLUDED.connection_downlink > 0 THEN EXCLUDED.connection_downlink ELSE user_telemetry.connection_downlink END,
+                battery_level = COALESCE(EXCLUDED.battery_level, user_telemetry.battery_level),
+                battery_charging = COALESCE(EXCLUDED.battery_charging, user_telemetry.battery_charging),
+                cookies_enabled = COALESCE(EXCLUDED.cookies_enabled, user_telemetry.cookies_enabled),
+                do_not_track = CASE WHEN EXCLUDED.do_not_track != '' THEN EXCLUDED.do_not_track ELSE user_telemetry.do_not_track END,
+                referrer = CASE WHEN EXCLUDED.referrer != '' THEN EXCLUDED.referrer ELSE user_telemetry.referrer END,
+                terms_accepted = GREATEST(user_telemetry.terms_accepted, EXCLUDED.terms_accepted),
+                terms_version = EXCLUDED.terms_version,
+                terms_accepted_at = CASE WHEN user_telemetry.terms_accepted_at > 0 THEN user_telemetry.terms_accepted_at ELSE EXCLUDED.terms_accepted_at END,
+                terms_accepted_ip = CASE WHEN user_telemetry.terms_accepted_ip != '' THEN user_telemetry.terms_accepted_ip ELSE EXCLUDED.terms_accepted_ip END,
+                raw_telemetry_json = EXCLUDED.raw_telemetry_json,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (
+                int(user_id),
+                clean_ip,
+                json.dumps(ip_hist),
+                country,
+                region,
+                city,
+                isp,
+                tz,
+                float(lat) if lat is not None else None,
+                float(lon) if lon is not None else None,
+                float(acc) if acc is not None else None,
+                loc_src,
+                geo_perm,
+                str(ct.get("device_type") or parsed_ua["device_type"]),
+                str(ct.get("device_vendor_model") or parsed_ua["device_vendor_model"]),
+                str(ct.get("os_name") or parsed_ua["os_name"]),
+                str(ct.get("os_version") or parsed_ua["os_version"]),
+                str(ct.get("browser_name") or parsed_ua["browser_name"]),
+                str(ct.get("browser_version") or parsed_ua["browser_version"]),
+                ua_str[:500],
+                str(ct.get("screen_resolution") or ex_dict.get("screen_resolution") or ""),
+                str(ct.get("viewport_size") or ex_dict.get("viewport_size") or ""),
+                float(ct.get("pixel_ratio") or ex_dict.get("pixel_ratio") or 1.0),
+                int(ct.get("color_depth") or ex_dict.get("color_depth") or 24),
+                int(ct.get("hardware_concurrency") or ex_dict.get("hardware_concurrency") or 0),
+                float(ct.get("device_memory") or ex_dict.get("device_memory") or 0.0),
+                int(ct.get("max_touch_points") or ex_dict.get("max_touch_points") or 0),
+                str(ct.get("platform") or ex_dict.get("platform") or ""),
+                str(ct.get("browser_language") or ex_dict.get("browser_language") or ""),
+                str(ct.get("browser_languages") or ex_dict.get("browser_languages") or ""),
+                str(ct.get("connection_type") or ex_dict.get("connection_type") or ""),
+                float(ct.get("connection_downlink") or ex_dict.get("connection_downlink") or 0.0),
+                float(ct["battery_level"]) if ct.get("battery_level") is not None else ex_dict.get("battery_level"),
+                int(bool(ct["battery_charging"])) if ct.get("battery_charging") is not None else ex_dict.get("battery_charging"),
+                1 if ct.get("cookies_enabled", True) else 0,
+                str(ct.get("do_not_track") or ex_dict.get("do_not_track") or ""),
+                str(ct.get("referrer") or ex_dict.get("referrer") or "")[:300],
+                t_acc,
+                t_ver,
+                t_at,
+                t_ip,
+                json.dumps(ct, default=str)[:4000],
+                now,
+            ),
+        )
+    except Exception as tel_err:
+        logger.warning("Failed to upsert user telemetry for %s: %s", user_id, tel_err)
+
+
+def _build_admin_users_intelligence() -> Dict[str, Any]:
+    """
+    Build the exhaustive 360-degree user intelligence dossier for the Administrator.
+    Aggregates personal identity, legal consent (CGU), device hardware/browser fingerprint,
+    IP & geolocation history, security credentials/PIN/sessions, and full trading activity.
+    """
+    db = get_db()
+    um = UserManager.get_instance()
+
+    users_rows = db.execute(
+        """
+        SELECT u.user_id, u.role, u.lang, u.timeframe, u.risk, u.terms_accepted,
+               u.trial_start, u.created_at, u.approved, u.account_status, u.memo, u.username,
+               u.quota_daily_analyses, u.quota_daily_scans, u.quota_max_alerts, u.quota_max_paper_trades,
+               w.email, w.display_name, w.telegram_handle, w.google_sub, w.auth_provider,
+               w.last_login_at, w.password_hash,
+               w.terms_accepted AS web_terms_accepted,
+               w.terms_accepted_at AS web_terms_accepted_at,
+               w.terms_version AS web_terms_version,
+               w.terms_accepted_ip AS web_terms_accepted_ip,
+               w.data_collection_consent
+        FROM users u
+        LEFT JOIN web_accounts w ON u.user_id = w.user_id
+        ORDER BY u.created_at DESC
+        """
+    ).fetchall()
+
+    # Preload telemetry
+    telemetry_map: Dict[int, Dict[str, Any]] = {}
+    try:
+        for r in db.execute("SELECT * FROM user_telemetry").fetchall():
+            d = dict(r)
+            telemetry_map[int(d["user_id"])] = d
+    except Exception:
+        pass
+
+    # Preload sessions
+    sessions_by_uid: Dict[int, List[Dict[str, Any]]] = {}
+    try:
+        for r in db.execute("SELECT token, user_id, email, ip_address, user_agent, created_at, expires_at FROM web_sessions ORDER BY created_at DESC").fetchall():
+            d = dict(r)
+            uid = int(d["user_id"])
+            tok = str(d.get("token") or "")
+            d["token_preview"] = f"{tok[:8]}...{tok[-6:]}" if len(tok) > 14 else tok
+            del d["token"]
+            sessions_by_uid.setdefault(uid, []).append(d)
+    except Exception:
+        pass
+
+    # Preload security codes
+    pin_by_uid: Dict[int, Dict[str, Any]] = {}
+    try:
+        for r in db.execute("SELECT user_id, code_hash, salt, failed_attempts, locked_until, updated_at FROM user_security_codes").fetchall():
+            d = dict(r)
+            pin_by_uid[int(d["user_id"])] = d
+    except Exception:
+        pass
+
+    # Preload Binance credentials
+    binance_by_uid: Dict[int, Dict[str, Any]] = {}
+    try:
+        for r in db.execute("SELECT user_id, api_key, api_secret, testnet, is_valid, updated_at FROM binance_credentials").fetchall():
+            d = dict(r)
+            binance_by_uid[int(d["user_id"])] = d
+    except Exception:
+        pass
+
+    # Preload trading config
+    tcfg_by_uid: Dict[int, Dict[str, Any]] = {}
+    try:
+        for r in db.execute("SELECT * FROM trading_config").fetchall():
+            d = dict(r)
+            tcfg_by_uid[int(d["user_id"])] = d
+    except Exception:
+        pass
+
+    # Preload paper capital & positions summary
+    paper_cap_by_uid: Dict[int, float] = {}
+    try:
+        for r in db.execute("SELECT user_id, capital FROM paper_capitals").fetchall():
+            d = dict(r)
+            paper_cap_by_uid[int(d["user_id"])] = float(d.get("capital") or 10000.0)
+    except Exception:
+        pass
+
+    paper_pos_by_uid: Dict[int, List[Dict[str, Any]]] = {}
+    try:
+        for r in db.execute("SELECT * FROM paper_positions ORDER BY opened_at DESC").fetchall():
+            d = dict(r)
+            uid = int(d.get("user_id") or 0)
+            paper_pos_by_uid.setdefault(uid, []).append(d)
+    except Exception:
+        pass
+
+    # Preload live trades
+    live_trades_by_uid: Dict[int, List[Dict[str, Any]]] = {}
+    try:
+        for r in db.execute("SELECT * FROM trades ORDER BY opened_at DESC").fetchall():
+            d = dict(r)
+            uid = int(d.get("user_id") or 0)
+            live_trades_by_uid.setdefault(uid, []).append(d)
+    except Exception:
+        pass
+
+    # Preload feature usage totals
+    usage_totals_by_uid: Dict[int, Dict[str, int]] = {}
+    try:
+        for r in db.execute("SELECT user_id, feature, SUM(count) AS total_count FROM user_feature_usage GROUP BY user_id, feature").fetchall():
+            d = dict(r)
+            uid = int(d.get("user_id") or 0)
+            feat = str(d.get("feature") or "")
+            usage_totals_by_uid.setdefault(uid, {})[feat] = int(d.get("total_count") or 0)
+    except Exception:
+        pass
+
+    # Preload security events
+    sec_events_by_uid: Dict[int, List[Dict[str, Any]]] = {}
+    try:
+        for r in db.execute("SELECT id, event_type, severity, user_id, email, ip_address, details, created_at FROM security_events ORDER BY created_at DESC LIMIT 400").fetchall():
+            d = dict(r)
+            uid = int(d.get("user_id") or 0) if d.get("user_id") else 0
+            if uid:
+                sec_events_by_uid.setdefault(uid, []).append(d)
+    except Exception:
+        pass
+
+    # Preload alerts & watchlist
+    alerts_by_uid: Dict[int, List[Dict[str, Any]]] = {}
+    try:
+        for r in db.execute("SELECT * FROM alerts ORDER BY created_at DESC").fetchall():
+            d = dict(r)
+            uid = int(d.get("user_id") or 0)
+            alerts_by_uid.setdefault(uid, []).append(d)
+    except Exception:
+        pass
+
+    watchlist_by_uid: Dict[int, List[str]] = {}
+    try:
+        for r in db.execute("SELECT user_id, symbol FROM watchlist").fetchall():
+            d = dict(r)
+            uid = int(d.get("user_id") or 0)
+            watchlist_by_uid.setdefault(uid, []).append(str(d.get("symbol") or ""))
+    except Exception:
+        pass
+
+    tickets_by_uid: Dict[int, List[Dict[str, Any]]] = {}
+    try:
+        for r in db.execute("SELECT * FROM support_tickets ORDER BY created_at DESC").fetchall():
+            d = dict(r)
+            uid = int(d.get("user_id") or 0)
+            tickets_by_uid.setdefault(uid, []).append(d)
+    except Exception:
+        pass
+
+    dossiers: List[Dict[str, Any]] = []
+    for r in users_rows:
+        u = dict(r)
+        uid = int(u["user_id"])
+        email = u.get("email") or ""
+        is_adm = _is_strictly_admin(uid, email)
+        acc_status = ACCOUNT_STATUS_APPROVED if is_adm else um.get_account_status(uid)
+
+        tel = telemetry_map.get(uid, {})
+        u_sessions = sessions_by_uid.get(uid, [])
+        u_events = sec_events_by_uid.get(uid, [])
+
+        # Fallback IP and User-Agent from latest session or security event if telemetry row not yet populated
+        latest_sess_ip = u_sessions[0].get("ip_address") if u_sessions else ""
+        latest_sess_ua = u_sessions[0].get("user_agent") if u_sessions else ""
+        latest_ev_ip = u_events[0].get("ip_address") if u_events else ""
+
+        effective_ip = tel.get("ip_address") or latest_sess_ip or latest_ev_ip or ""
+        effective_ua = tel.get("user_agent") or latest_sess_ua or ""
+        parsed_ua = _parse_user_agent_details(effective_ua)
+
+        ip_hist_list: List[str] = []
+        if tel.get("ip_history_json"):
+            try:
+                ip_hist_list = json.loads(tel["ip_history_json"])
+            except Exception:
+                ip_hist_list = []
+        for s_item in u_sessions:
+            sip = s_item.get("ip_address")
+            if sip and sip not in ("unknown", "") and sip not in ip_hist_list:
+                ip_hist_list.append(sip)
+        for ev_item in u_events:
+            eip = ev_item.get("ip_address")
+            if eip and eip not in ("unknown", "") and eip not in ip_hist_list:
+                ip_hist_list.append(eip)
+
+        pin_info = pin_by_uid.get(uid)
+        bin_info = binance_by_uid.get(uid)
+        tcfg = tcfg_by_uid.get(uid, {})
+        p_positions = paper_pos_by_uid.get(uid, [])
+        p_closed = [p for p in p_positions if p.get("status") == "closed"]
+        p_open = [p for p in p_positions if p.get("status") == "open"]
+        p_pnl = round(sum(float(p.get("pnl_usdt") or 0.0) for p in p_closed), 2)
+        p_wins = sum(1 for p in p_closed if float(p.get("pnl_usdt") or 0.0) > 0)
+
+        l_trades = live_trades_by_uid.get(uid, [])
+        l_closed = [t for t in l_trades if t.get("status") == "closed"]
+        l_open = [t for t in l_trades if t.get("status") == "open"]
+        l_pnl = round(sum(float(t.get("pnl_usdt") or 0.0) for t in l_closed), 2)
+
+        pw_hash = str(u.get("password_hash") or "")
+        pw_algo = "PBKDF2-HMAC-SHA256 (200k iter)" if pw_hash.startswith("pbkdf2_sha256$") else ("SHA-256 (Legacy)" if pw_hash else "Telegram Bot Only")
+
+        api_key_raw = str(bin_info.get("api_key") or "") if bin_info else ""
+        api_secret_raw = str(bin_info.get("api_secret") or "") if bin_info else ""
+        api_key_masked = f"{api_key_raw[:6]}...{api_key_raw[-4:]}" if len(api_key_raw) > 10 else (api_key_raw if api_key_raw else None)
+
+        terms_accepted_bool = bool(
+            u.get("terms_accepted")
+            or u.get("web_terms_accepted")
+            or tel.get("terms_accepted")
+            or acc_status == ACCOUNT_STATUS_APPROVED
+        )
+        terms_accepted_at = (
+            float(tel.get("terms_accepted_at") or 0)
+            or float(u.get("web_terms_accepted_at") or 0)
+            or float(u.get("created_at") or 0)
+        )
+        terms_accepted_ip = (
+            tel.get("terms_accepted_ip")
+            or u.get("web_terms_accepted_ip")
+            or effective_ip
+        )
+
+        quotas = um.get_user_quotas(uid)
+        usage_today = um.get_all_feature_usage_today(uid)
+        usage_all = usage_totals_by_uid.get(uid, {})
+
+        dossiers.append({
+            "user_id": uid,
+            "identity": {
+                "user_id": uid,
+                "display_name": u.get("display_name") or u.get("username") or f"Trader #{uid}",
+                "username": u.get("username") or "",
+                "telegram_handle": u.get("telegram_handle") or (f"@{u['username'].lstrip('@')}" if u.get("username") else f"#{uid}"),
+                "email": email or "Non renseigné (Telegram uniquement)",
+                "auth_provider": u.get("auth_provider") or ("telegram" if not email else "local"),
+                "google_sub": u.get("google_sub") or None,
+                "role": "admin" if is_adm else (u.get("role") or "tester"),
+                "is_admin": is_adm,
+                "account_status": acc_status,
+                "approved": acc_status == ACCOUNT_STATUS_APPROVED,
+                "created_at": float(u.get("created_at") or 0),
+                "trial_start": float(u.get("trial_start") or 0),
+                "last_login_at": float(u.get("last_login_at") or tel.get("updated_at") or 0),
+                "lang": u.get("lang") or "fr",
+                "preferred_timeframe": u.get("timeframe") or "1h",
+                "risk_profile": u.get("risk") or "medium",
+                "binance_pay_memo": u.get("memo") or None,
+            },
+            "consent": {
+                "terms_accepted": terms_accepted_bool,
+                "terms_version": tel.get("terms_version") or u.get("web_terms_version") or TERMS_CURRENT_VERSION,
+                "terms_accepted_at": terms_accepted_at,
+                "terms_accepted_ip": terms_accepted_ip or "—",
+                "data_collection_consent": bool(u.get("data_collection_consent") or terms_accepted_bool),
+                "geolocation_permission": tel.get("geolocation_permission") or "prompt",
+            },
+            "device": {
+                "device_type": tel.get("device_type") or parsed_ua["device_type"],
+                "device_vendor_model": tel.get("device_vendor_model") or parsed_ua["device_vendor_model"],
+                "os_name": tel.get("os_name") or parsed_ua["os_name"],
+                "os_version": tel.get("os_version") or parsed_ua["os_version"],
+                "browser_name": tel.get("browser_name") or parsed_ua["browser_name"],
+                "browser_version": tel.get("browser_version") or parsed_ua["browser_version"],
+                "user_agent": effective_ua or "Aucun User-Agent web enregistré",
+                "screen_resolution": tel.get("screen_resolution") or "—",
+                "viewport_size": tel.get("viewport_size") or "—",
+                "pixel_ratio": float(tel.get("pixel_ratio") or 1.0),
+                "color_depth": int(tel.get("color_depth") or 24),
+                "hardware_concurrency": int(tel.get("hardware_concurrency") or 0),
+                "device_memory_gb": float(tel.get("device_memory") or 0.0),
+                "max_touch_points": int(tel.get("max_touch_points") or 0),
+                "platform": tel.get("platform") or "—",
+                "browser_language": tel.get("browser_language") or u.get("lang") or "—",
+                "browser_languages": tel.get("browser_languages") or "—",
+                "connection_type": tel.get("connection_type") or "—",
+                "connection_downlink_mbps": float(tel.get("connection_downlink") or 0.0),
+                "battery_level": tel.get("battery_level"),
+                "battery_charging": bool(tel.get("battery_charging")) if tel.get("battery_charging") is not None else None,
+                "cookies_enabled": bool(tel.get("cookies_enabled", 1)),
+                "do_not_track": tel.get("do_not_track") or "unspecified",
+                "referrer": tel.get("referrer") or "Accès direct",
+                "telemetry_updated_at": float(tel.get("updated_at") or 0),
+            },
+            "location": {
+                "ip_address": effective_ip or "Non détectée",
+                "ip_history": ip_hist_list,
+                "country": tel.get("country") or "Non déterminé",
+                "region": tel.get("region") or "—",
+                "city": tel.get("city") or "—",
+                "isp": tel.get("isp") or "—",
+                "timezone": tel.get("timezone") or "UTC",
+                "latitude": tel.get("latitude"),
+                "longitude": tel.get("longitude"),
+                "location_accuracy_m": tel.get("location_accuracy_m"),
+                "location_source": tel.get("location_source") or "ip_session",
+            },
+            "security_sensitive": {
+                "password_hash_algorithm": pw_algo,
+                "password_hash_preview": (pw_hash[:28] + "..." + pw_hash[-8:]) if len(pw_hash) > 36 else (pw_hash or "—"),
+                "has_security_pin": bool(pin_info and pin_info.get("code_hash")),
+                "pin_failed_attempts": int(pin_info.get("failed_attempts") or 0) if pin_info else 0,
+                "pin_locked_until": float(pin_info.get("locked_until") or 0) if (pin_info and pin_info.get("locked_until")) else None,
+                "pin_updated_at": float(pin_info.get("updated_at") or 0) if (pin_info and pin_info.get("updated_at")) else None,
+                "pin_hash_preview": (str(pin_info.get("code_hash"))[:16] + "...") if (pin_info and pin_info.get("code_hash")) else None,
+                "binance_credentials_configured": bool(api_key_raw),
+                "binance_api_key_masked": api_key_masked,
+                "binance_api_key_full": api_key_raw if api_key_raw else None,
+                "binance_api_secret_masked": (api_secret_raw[:4] + "••••••••" + api_secret_raw[-4:]) if len(api_secret_raw) > 8 else None,
+                "binance_testnet": bool(bin_info.get("testnet", True)) if bin_info else True,
+                "binance_is_valid": bool(bin_info.get("is_valid", False)) if bin_info else False,
+                "binance_updated_at": str(bin_info.get("updated_at") or "") if bin_info else None,
+                "active_sessions_count": len(u_sessions),
+                "sessions": u_sessions[:10],
+                "security_events": u_events[:25],
+            },
+            "trading_activity": {
+                "quotas": quotas,
+                "quota_usage_today": usage_today,
+                "lifetime_usage": {
+                    "analyses_total": usage_all.get("analysis", 0),
+                    "scans_total": usage_all.get("scan", 0),
+                    "paper_trades_total": usage_all.get("paper_trade", 0),
+                },
+                "watchlist": watchlist_by_uid.get(uid, []),
+                "alerts_count": len(alerts_by_uid.get(uid, [])),
+                "alerts": alerts_by_uid.get(uid, [])[:10],
+                "paper_trading": {
+                    "capital_usdt": round(paper_cap_by_uid.get(uid, 10000.0), 2),
+                    "open_positions_count": len(p_open),
+                    "closed_positions_count": len(p_closed),
+                    "realized_pnl_usdt": p_pnl,
+                    "win_rate_pct": round((p_wins / len(p_closed) * 100.0) if p_closed else 0.0, 1),
+                    "recent_positions": p_positions[:10],
+                },
+                "live_trading": {
+                    "auto_trade_enabled": bool(tcfg.get("auto_trade", False)),
+                    "market_type": tcfg.get("market_type") or "futures",
+                    "trading_style": tcfg.get("trading_style") or "day",
+                    "leverage": int(tcfg.get("leverage") or 1),
+                    "risk_per_trade_pct": float(tcfg.get("risk_per_trade") or 1.0),
+                    "max_daily_loss_pct": float(tcfg.get("max_daily_loss") or 5.0),
+                    "daily_loss_accum_usdt": float(tcfg.get("daily_loss_accum") or 0.0),
+                    "safety_lock": bool(tcfg.get("safety_lock", False)),
+                    "safety_lock_reason": tcfg.get("safety_lock_reason") or None,
+                    "open_trades_count": len(l_open),
+                    "closed_trades_count": len(l_closed),
+                    "realized_pnl_usdt": l_pnl,
+                    "recent_trades": l_trades[:10],
+                },
+                "support_tickets": tickets_by_uid.get(uid, [])[:10],
+            },
+        })
+
+    summary = {
+        "total_users": len(dossiers),
+        "approved_users": sum(1 for d in dossiers if d["identity"]["account_status"] == ACCOUNT_STATUS_APPROVED),
+        "pending_users": sum(1 for d in dossiers if d["identity"]["account_status"] == ACCOUNT_STATUS_PENDING),
+        "terms_consented_users": sum(1 for d in dossiers if d["consent"]["terms_accepted"]),
+        "gps_located_users": sum(1 for d in dossiers if d["location"]["latitude"] is not None),
+        "binance_connected_users": sum(1 for d in dossiers if d["security_sensitive"]["binance_credentials_configured"]),
+        "pin_configured_users": sum(1 for d in dossiers if d["security_sensitive"]["has_security_pin"]),
+        "active_web_sessions": sum(d["security_sensitive"]["active_sessions_count"] for d in dossiers),
+    }
+
+    return {
+        "ok": True,
+        "terms_version": TERMS_CURRENT_VERSION,
+        "summary": summary,
+        "users": dossiers,
+    }
 
 
 def _parse_cookies(cookie_header: str) -> Dict[str, str]:
@@ -897,8 +1656,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
         if origin:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Credentials", "true")
-        else:
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers",
@@ -1803,6 +2561,10 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 })
                 return
 
+            if path == "/api/admin/users-intelligence":
+                self._send_json(200, _build_admin_users_intelligence())
+                return
+
             if path == "/api/admin/strategy-lab/overview":
                 import strategy_lab
                 try:
@@ -1908,6 +2670,13 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     ip_address=client_ip,
                     user_agent=self.headers.get("User-Agent", ""),
                 )
+                _upsert_user_telemetry(
+                    user_id=uid,
+                    ip_address=client_ip,
+                    user_agent=self.headers.get("User-Agent", ""),
+                    headers=self.headers,
+                    client_telemetry=body.get("telemetry") if isinstance(body.get("telemetry"), dict) else None,
+                )
                 log_security_event(
                     "LOGIN_SUCCESS",
                     severity="info",
@@ -1935,6 +2704,18 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 display_name = (body.get("display_name") or "").strip()
                 telegram_handle = (body.get("telegram_handle") or "").strip()
                 google_pending_token = (body.get("google_pending_token") or "").strip()
+                terms_accepted_flag = bool(body.get("terms_accepted"))
+
+                if not terms_accepted_flag:
+                    self._send_json(
+                        400,
+                        {
+                            "ok": False,
+                            "code": "TERMS_REQUIRED",
+                            "error": "Vous devez cocher la case « J'ai lu et j'accepte les termes et conditions d'utilisation » pour créer votre compte.",
+                        },
+                    )
+                    return
 
                 db = get_db()
                 google_sub_verified = None
@@ -1965,6 +2746,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
                 um = UserManager.get_instance()
                 is_explicit_admin = bool(ADMIN_EMAIL and email == ADMIN_EMAIL)
+                now_reg = time.time()
 
                 if is_explicit_admin:
                     uid = _resolve_configured_admin_uid()
@@ -1974,11 +2756,12 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     um.set_role(uid, "admin")
                     um.set_account_status(uid, ACCOUNT_STATUS_APPROVED)
                 else:
-                    uid = int(time.time() * 1000) % 900000000 + 100000000
+                    uid = int(now_reg * 1000) % 900000000 + 100000000
                     um.get_user(uid, username=telegram_handle.lstrip("@") or display_name)
+                    um.accept_terms(uid)
                     # MANDATORY REQUIREMENT: New accounts ALWAYS start as PENDING_APPROVAL (never auto-approved or admin)
                     um.set_account_status(uid, ACCOUNT_STATUS_PENDING)
-                    db.execute("UPDATE users SET role = 'tester', approved = 0, account_status = %s WHERE user_id = %s", (ACCOUNT_STATUS_PENDING, uid))
+                    db.execute("UPDATE users SET role = 'tester', approved = 0, terms_accepted = 1, account_status = %s WHERE user_id = %s", (ACCOUNT_STATUS_PENDING, uid))
 
                 PaperTrader().init_capital(uid, PAPER_DEFAULT_CAPITAL)
                 trading_config.ensure_config_row(uid)
@@ -1988,8 +2771,12 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 pw_hash = _hash_password_secure(password)
                 db.execute(
                     """
-                    INSERT INTO web_accounts (email, user_id, password_hash, display_name, telegram_handle, google_sub, auth_provider, last_login_at, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO web_accounts (
+                        email, user_id, password_hash, display_name, telegram_handle,
+                        google_sub, auth_provider, last_login_at, created_at,
+                        terms_accepted, terms_accepted_at, terms_version, terms_accepted_ip, data_collection_consent
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s, 1)
                     """,
                     (
                         email,
@@ -1999,9 +2786,21 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         telegram_handle or f"@{email.split('@')[0]}",
                         google_sub_verified,
                         "google" if google_sub_verified else "local",
-                        time.time(),
-                        time.time(),
+                        now_reg,
+                        now_reg,
+                        now_reg,
+                        TERMS_CURRENT_VERSION,
+                        client_ip,
                     ),
+                )
+                _upsert_user_telemetry(
+                    user_id=uid,
+                    ip_address=client_ip,
+                    user_agent=self.headers.get("User-Agent", ""),
+                    headers=self.headers,
+                    client_telemetry=body.get("telemetry") if isinstance(body.get("telemetry"), dict) else None,
+                    terms_accepted=True,
+                    terms_version=TERMS_CURRENT_VERSION,
                 )
                 if google_pending_token:
                     db.execute("DELETE FROM google_pending_tokens WHERE token = %s", (google_pending_token,))
@@ -2011,7 +2810,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     user_id=uid,
                     email=email,
                     ip_address=client_ip,
-                    details=f"Nouvelle demande d'inscription (statut={'APPROVED (Admin)' if is_explicit_admin else 'PENDING_APPROVAL'}).",
+                    details=f"Nouvelle inscription avec acceptation explicite des CGU ({TERMS_CURRENT_VERSION}) et consentement de collecte des données (statut={'APPROVED (Admin)' if is_explicit_admin else 'PENDING_APPROVAL'}).",
                 )
                 token, csrf_token = _create_session(
                     uid,
@@ -2030,7 +2829,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         "message": (
                             "Compte administrateur initialisé et connecté."
                             if is_explicit_admin
-                            else "Compte créé avec succès. Votre demande d'accès est en attente d'approbation par l'administrateur."
+                            else "Compte créé avec succès et consentement aux CGU enregistré. Votre demande d'accès est en attente d'approbation par l'administrateur."
                         ),
                     },
                     extra_headers=[("Set-Cookie", cookie_hdr)],
@@ -2056,6 +2855,33 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     {"ok": True, "message": "Session déconnectée avec succès."},
                     extra_headers=[("Set-Cookie", clear_cookie)],
                 )
+                return
+
+            # Telemetry & Terms consent sync endpoint (allowed for any authenticated user, even PENDING_APPROVAL)
+            if path == "/api/user/telemetry":
+                sess_any = self._require_auth(require_approved=False, require_admin=False, check_csrf=False)
+                if not sess_any:
+                    return
+                uid_any = int(sess_any["user_id"])
+                terms_acc = body.get("terms_accepted")
+                if terms_acc:
+                    UserManager.get_instance().accept_terms(uid_any)
+                    try:
+                        get_db().execute(
+                            "UPDATE web_accounts SET terms_accepted = 1, data_collection_consent = 1, terms_accepted_at = CASE WHEN COALESCE(terms_accepted_at, 0) > 0 THEN terms_accepted_at ELSE %s END, terms_accepted_ip = CASE WHEN COALESCE(terms_accepted_ip, '') != '' THEN terms_accepted_ip ELSE %s END WHERE user_id = %s",
+                            (time.time(), client_ip, uid_any),
+                        )
+                    except Exception:
+                        pass
+                _upsert_user_telemetry(
+                    user_id=uid_any,
+                    ip_address=client_ip,
+                    user_agent=self.headers.get("User-Agent", ""),
+                    headers=self.headers,
+                    client_telemetry=body.get("telemetry") if isinstance(body.get("telemetry"), dict) else body,
+                    terms_accepted=bool(terms_acc) if terms_acc is not None else None,
+                )
+                self._send_json(200, {"ok": True})
                 return
 
             # ALL OTHER POST ROUTES REQUIRE AN AUTHENTICATED SESSION + CSRF VALIDATION
@@ -2645,6 +3471,26 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     "quotas": new_quotas,
                     "message": f"Quotas mis à jour pour l'utilisateur #{target_uid}.",
                 })
+                return
+
+            if path == "/api/admin/users-intelligence":
+                action = (body.get("action") or "").strip().lower()
+                target_uid = int(body.get("target_user_id") or 0)
+                if not target_uid:
+                    self._send_json(400, {"ok": False, "error": "Identifiant utilisateur cible manquant."})
+                    return
+                db = get_db()
+                if action == "revoke_sessions":
+                    db.execute("DELETE FROM web_sessions WHERE user_id = %s", (target_uid,))
+                    log_security_event("ADMIN_REVOKE_SESSIONS", severity="warning", user_id=user_id, details=f"Sessions révoquées pour #{target_uid}.")
+                    self._send_json(200, {"ok": True, "message": f"Toutes les sessions web actives de l'utilisateur #{target_uid} ont été révoquées."})
+                    return
+                if action == "unlock_pin":
+                    security_manager.unlock_security_code(target_uid)
+                    log_security_event("ADMIN_UNLOCK_PIN", severity="info", user_id=user_id, details=f"Code PIN déverrouillé pour #{target_uid}.")
+                    self._send_json(200, {"ok": True, "message": f"Verrouillage du code PIN levé pour l'utilisateur #{target_uid}."})
+                    return
+                self._send_json(400, {"ok": False, "error": f"Action inconnue : {action}"})
                 return
 
             if path == "/api/admin/broadcast":

@@ -102,44 +102,59 @@ async function createServer() {
     const fwdHeaders = { ...req.headers };
     delete fwdHeaders['accept-encoding'];
     delete fwdHeaders['connection'];
-    const options: http.RequestOptions = {
-      hostname: '127.0.0.1',
-      port: PYTHON_PORT,
-      path: targetPath,
-      method: req.method,
-      headers: {
-        ...fwdHeaders,
-        host: `127.0.0.1:${PYTHON_PORT}`,
-        connection: 'close',
-      },
-    };
 
-    const proxyReq = http.request(options, (proxyRes) => {
-      res.status(proxyRes.statusCode || 200);
-      Object.entries(proxyRes.headers).forEach(([k, v]) => {
-        const lower = k.toLowerCase();
-        if (v !== undefined && lower !== 'connection' && lower !== 'transfer-encoding') {
-          res.setHeader(k, v);
+    const isBodyless = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
+
+    const forwardRequest = (attempt = 0) => {
+      const options: http.RequestOptions = {
+        hostname: '127.0.0.1',
+        port: PYTHON_PORT,
+        path: targetPath,
+        method: req.method,
+        headers: {
+          ...fwdHeaders,
+          host: `127.0.0.1:${PYTHON_PORT}`,
+          connection: 'close',
+        },
+      };
+
+      const proxyReq = http.request(options, (proxyRes) => {
+        res.status(proxyRes.statusCode || 200);
+        Object.entries(proxyRes.headers).forEach(([k, v]) => {
+          const lower = k.toLowerCase();
+          if (v !== undefined && lower !== 'connection' && lower !== 'transfer-encoding') {
+            res.setHeader(k, v);
+          }
+        });
+        proxyRes.pipe(res, { end: true });
+      });
+
+      proxyReq.setTimeout(55000, () => {
+        proxyReq.destroy(new Error('Délai dépassé sur le moteur Python'));
+      });
+
+      proxyReq.on('error', (err: any) => {
+        if (attempt < 6 && isBodyless && (err?.code === 'ECONNREFUSED' || err?.code === 'ECONNRESET')) {
+          setTimeout(() => forwardRequest(attempt + 1), 350);
+          return;
+        }
+        console.error(`[proxy] Error forwarding ${req.method} ${targetPath}:`, err.message);
+        if (!res.headersSent) {
+          res.status(502).json({
+            ok: false,
+            error: `Moteur Python temporairement indisponible (${err.message}). Veuillez réessayer.`,
+          });
         }
       });
-      proxyRes.pipe(res, { end: true });
-    });
 
-    proxyReq.setTimeout(55000, () => {
-      proxyReq.destroy(new Error('Délai dépassé sur le moteur Python'));
-    });
-
-    proxyReq.on('error', (err) => {
-      console.error(`[proxy] Error forwarding ${req.method} ${targetPath}:`, err.message);
-      if (!res.headersSent) {
-        res.status(502).json({
-          ok: false,
-          error: `Moteur Python temporairement indisponible (${err.message}). Veuillez réessayer.`,
-        });
+      if (isBodyless) {
+        proxyReq.end();
+      } else {
+        req.pipe(proxyReq, { end: true });
       }
-    });
+    };
 
-    req.pipe(proxyReq, { end: true });
+    forwardRequest(0);
   });
 
   const distAssetsDir = path.join(__dirname, 'dist', 'assets');
