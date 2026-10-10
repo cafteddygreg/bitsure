@@ -1209,9 +1209,17 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 asset = None
                 if hasattr(web_frontend_bundle, "get_embedded_asset"):
                     asset = web_frontend_bundle.get_embedded_asset(path)
-                elif hasattr(web_frontend_bundle, "EMBEDDED_FRONTEND") or hasattr(web_frontend_bundle, "FRONTEND_BUNDLE"):
+                elif (
+                    hasattr(web_frontend_bundle, "EMBEDDED_FRONTEND")
+                    or hasattr(web_frontend_bundle, "EMBEDDED_FRONTEND_FILES")
+                    or hasattr(web_frontend_bundle, "FRONTEND_BUNDLE")
+                ):
                     import base64
-                    ef = getattr(web_frontend_bundle, "EMBEDDED_FRONTEND", None) or getattr(web_frontend_bundle, "FRONTEND_BUNDLE", {})
+                    ef = (
+                        getattr(web_frontend_bundle, "EMBEDDED_FRONTEND", None)
+                        or getattr(web_frontend_bundle, "EMBEDDED_FRONTEND_FILES", None)
+                        or getattr(web_frontend_bundle, "FRONTEND_BUNDLE", {})
+                    )
                     clean_p = "/index.html" if path in ("", "/") else path
                     b64 = ef.get(clean_p)
                     if not b64 and clean_p.startswith("/assets/"):
