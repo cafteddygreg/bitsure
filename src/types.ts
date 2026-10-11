@@ -191,6 +191,8 @@ export interface TradingConfigState {
   user_id: number;
   enabled: boolean;
   auto_trade?: boolean;
+  engine_online?: boolean;
+  engine_last_seen_seconds?: number | null;
   periodic_analysis_enabled: boolean;
   analysis_interval_minutes: number;
   analysis_timeframe: string;

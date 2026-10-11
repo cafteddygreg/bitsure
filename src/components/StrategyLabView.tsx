@@ -970,7 +970,31 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
   const [tradingStyle, setTradingStyle] = useState<string>('day');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
+  // Période de backtest : 'auto' = profondeur en bougies, sinon fenêtre glissante ou dates personnalisées
+  const [periodPreset, setPeriodPreset] = useState<string>('auto');
   const [maxCandles, setMaxCandles] = useState<number>(800);
+
+  const PERIOD_PRESET_DAYS: Record<string, number> = {
+    '7d': 7,
+    '30d': 30,
+    '90d': 90,
+    '180d': 180,
+    '365d': 365,
+  };
+  const periodRange = useMemo<{ start?: string; end?: string; invalid: boolean }>(() => {
+    if (periodPreset === 'custom') {
+      const start = startDate ? `${startDate}T00:00:00Z` : undefined;
+      const end = endDate ? `${endDate}T23:59:59Z` : undefined;
+      const invalid = !!(startDate && endDate && startDate > endDate);
+      return { start, end, invalid };
+    }
+    const days = PERIOD_PRESET_DAYS[periodPreset];
+    if (!days) return { invalid: false };
+    const now = new Date();
+    const from = new Date(now.getTime() - days * 86400000);
+    return { start: from.toISOString(), end: now.toISOString(), invalid: false };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [periodPreset, startDate, endDate]);
   const [params, setParams] = useState<StrategyLabParams>(DEFAULT_PARAMS);
   const [baselineParams, setBaselineParams] = useState<StrategyLabParams>(DEFAULT_PARAMS);
 
@@ -1145,8 +1169,8 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           symbol,
           timeframe,
           trading_style: tradingStyle,
-          start_date: startDate || undefined,
-          end_date: endDate || undefined,
+          start_date: periodRange.start,
+          end_date: periodRange.end,
           max_candles: maxCandles,
           params,
           selected_models: selectedModels,
@@ -1174,7 +1198,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
     } finally {
       setGeneratingAiPrompt(false);
     }
-  }, [symbol, timeframe, tradingStyle, startDate, endDate, maxCandles, params, selectedModels, activeRun, onShowToast, lang]);
+  }, [symbol, timeframe, tradingStyle, periodRange.start, periodRange.end, maxCandles, params, selectedModels, activeRun, onShowToast, lang]);
 
   // Automatically refresh AI Prompt when opening the AI Prompt tab or when parameters/run change
   useEffect(() => {
@@ -1235,6 +1259,10 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
         targetParams = val.params;
       }
 
+      if (periodRange.invalid) {
+        onShowToast('error', lang === 'en' ? 'Start date must be before end date.' : 'La date de début doit précéder la date de fin.');
+        return;
+      }
       if (isBaselineCompare) {
         setRunningCompare(true);
       } else {
@@ -1245,8 +1273,8 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           symbol,
           timeframe,
           trading_style: tradingStyle,
-          start_date: startDate || undefined,
-          end_date: endDate || undefined,
+          start_date: periodRange.start,
+          end_date: periodRange.end,
           max_candles: maxCandles,
           params: targetParams,
           reference_params: baselineParams,
@@ -1305,8 +1333,8 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
       symbol,
       timeframe,
       tradingStyle,
-      startDate,
-      endDate,
+      periodRange.start,
+      periodRange.end,
       maxCandles,
       params,
       baselineParams,
@@ -1491,8 +1519,8 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           symbol,
           timeframe,
           trading_style: tradingStyle,
-          start_date: startDate || undefined,
-          end_date: endDate || undefined,
+          start_date: periodRange.start,
+          end_date: periodRange.end,
           max_candles: Math.min(maxCandles, 700),
           params,
           param_name: sweepParamName,
@@ -1783,7 +1811,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           <select
             value={maxCandles}
             onChange={(e) => setMaxCandles(Number(e.target.value))}
-            className="w-full px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs font-mono-tabular text-[#F1F5F9]"
+            disabled={periodPreset !== 'auto'}
+            title={periodPreset !== 'auto' ? tr(lang, 'Désactivé : la période choisie détermine le nombre de bougies', 'Disabled: the selected period determines the number of candles') : undefined}
+            className="w-full px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs font-mono-tabular text-[#F1F5F9] disabled:opacity-40"
           >
             <option value={300}>{tr(lang, '300 bougies (Court terme)', '300 candles (Short term)')}</option>
             <option value={600}>{tr(lang, '600 bougies (Standard)', '600 candles (Standard)')}</option>
@@ -1845,6 +1875,78 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
             </button>
           </div>
         </div>
+      </div>
+
+      {/* =====================================================================
+          BACKTEST PERIOD SELECTOR
+         ===================================================================== */}
+      <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-4 flex flex-col gap-3">
+        <label className="block text-[11px] font-mono-tabular uppercase text-[#64748B]">
+          {tr(lang, 'Période du Backtest', 'Backtest Period')}
+        </label>
+        <div className="flex flex-wrap gap-1.5">
+          {[
+            { id: 'auto', fr: 'Auto (profondeur)', en: 'Auto (depth)' },
+            { id: '7d', fr: '7 jours', en: '7 days' },
+            { id: '30d', fr: '30 jours', en: '30 days' },
+            { id: '90d', fr: '3 mois', en: '3 months' },
+            { id: '180d', fr: '6 mois', en: '6 months' },
+            { id: '365d', fr: '1 an', en: '1 year' },
+            { id: 'custom', fr: 'Personnalisée', en: 'Custom' },
+          ].map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setPeriodPreset(opt.id)}
+              className={`px-3 py-1.5 rounded-lg text-[11px] font-mono-tabular border transition-colors ${
+                periodPreset === opt.id
+                  ? 'bg-[#10B981] text-[#090D16] font-bold border-[#10B981]'
+                  : 'bg-[#090D16] text-[#94A3B8] border-white/15 hover:text-[#F1F5F9]'
+              }`}
+            >
+              {tr(lang, opt.fr, opt.en)}
+            </button>
+          ))}
+        </div>
+        {periodPreset === 'custom' && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl">
+            <div>
+              <label className="block text-[11px] text-[#64748B] mb-1">{tr(lang, 'Date de début', 'Start date')}</label>
+              <input
+                type="date"
+                value={startDate}
+                max={endDate || undefined}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="w-full px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs font-mono-tabular text-[#F1F5F9]"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-[#64748B] mb-1">{tr(lang, 'Date de fin (incluse)', 'End date (inclusive)')}</label>
+              <input
+                type="date"
+                value={endDate}
+                min={startDate || undefined}
+                max={new Date().toISOString().slice(0, 10)}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="w-full px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs font-mono-tabular text-[#F1F5F9]"
+              />
+            </div>
+          </div>
+        )}
+        {periodRange.invalid && (
+          <p className="text-[11px] text-[#FB7185]">
+            {tr(lang, 'La date de début doit précéder la date de fin.', 'Start date must be before end date.')}
+          </p>
+        )}
+        <p className="text-[11px] text-[#64748B]">
+          {periodPreset === 'auto'
+            ? tr(lang, `Les ${maxCandles} dernières bougies clôturées sont simulées.`, `The last ${maxCandles} closed candles are simulated.`)
+            : tr(
+                lang,
+                'Seule la période choisie est simulée ; l’historique précédent sert uniquement au warm-up des indicateurs. Au-delà de 12 000 bougies, la fenêtre est tronquée (utilisez un timeframe plus large).',
+                'Only the selected period is simulated; earlier history is used only for indicator warm-up. Beyond 12,000 candles the window is truncated (use a larger timeframe).'
+              )}
+        </p>
       </div>
 
       {/* =====================================================================

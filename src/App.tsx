@@ -1058,10 +1058,13 @@ export function App() {
       const msg = String(err.message || '');
       if (
         wantsEnableAutoTrade &&
-        (msg.toLowerCase().includes('pin') || msg.toLowerCase().includes('tentatives'))
+        (err?.status === 403 ||
+          /pin|code|tentatives/i.test(msg))
       ) {
         setPinModalError(msg);
         setPinModalAction('enable_autotrade');
+        // Un PIN mémorisé devenu invalide ne doit pas être renvoyé tel quel au prochain clic.
+        setSafetyPinInput('');
       }
       showToast(msg, 'error');
     }
@@ -3800,9 +3803,21 @@ export function App() {
                       <p className="text-xs text-[#64748B]">
                         {tr(
                           lang,
-                          'Synchronisé en temps réel avec `/config`, `/autotrade` et `/periodic_analysis`. Toute modification critique suspend Auto-Trade par sécurité.'
+                          'Synchronisé en temps réel avec `/config`, `/autotrade` et `/periodic_analysis`.'
                         )}
                       </p>
+                      {tradingCfg.enabled && tradingCfg.engine_online === false && (
+                        <p className="mt-1.5 text-xs text-[#FBBF24] bg-[#F59E0B]/10 border border-[#F59E0B]/30 rounded-lg px-2.5 py-1.5">
+                          {lang === 'en'
+                            ? '⚠️ Auto-Trade is ON but the trading engine is offline: no order will be placed. Start the bot service (main.py), or set START_TELEGRAM_BOT=1 with TELEGRAM_TOKEN on the web service.'
+                            : '⚠️ Auto-Trade est activé mais le moteur de trading est hors ligne : aucun ordre ne sera passé. Démarrez le service bot (main.py), ou définissez START_TELEGRAM_BOT=1 avec TELEGRAM_TOKEN sur le service web.'}
+                        </p>
+                      )}
+                      {tradingCfg.enabled && tradingCfg.engine_online === true && (
+                        <p className="mt-1.5 text-xs text-[#10B981]">
+                          {lang === 'en' ? '● Trading engine online' : '● Moteur de trading en ligne'}
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       <button

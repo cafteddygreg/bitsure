@@ -221,10 +221,8 @@ def get_config(user_id: int) -> TradingConfig:
 def update_config(user_id: int, **fields) -> TradingConfig:
     """Met à jour un ou plusieurs champs de configuration.
 
-    Défense AutoTrade: toute modification de paramètre critique suspend
-    l'automatisation jusqu'à une nouvelle activation authentifiée, sauf si
-    l'appel désactive déjà explicitement AutoTrade ou correspond à une activation
-    authentifiée (`auto_trade=True`).
+    Note : cette fonction n'applique aucune suspension automatique d'AutoTrade ;
+    l'authentification par PIN est contrôlée par les appelants (API web, handlers Telegram).
     """
     ensure_config_row(user_id)
     if not fields:

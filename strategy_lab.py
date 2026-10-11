@@ -1358,6 +1358,10 @@ def generate_external_ai_prompt(
     }
 
 
+# Nombre maximal de bougies simulées sur une période explicite (protège le temps de calcul)
+LAB_MAX_PERIOD_CANDLES = 12000
+
+
 def _parse_date_to_ms(date_str: Optional[str], default_ms: int) -> int:
     if not date_str:
         return default_ms
@@ -1555,7 +1559,6 @@ def load_historical_candles(
         timeframe = "15m"
     max_candles = max(80, min(2500, int(max_candles or 800)))
     warmup_extra = max(0, min(2000, int(warmup_candles or 0)))
-    total_limit = max_candles + warmup_extra
 
     now_ms = int(time.time() * 1000)
     tf_ms = TIMEFRAME_SECONDS.get(timeframe, 900) * 1000
@@ -1566,6 +1569,19 @@ def load_historical_candles(
     start_ms = _parse_date_to_ms(start_date, default_start_ms)
     if start_ms >= end_ms:
         start_ms = end_ms - (300 * tf_ms)
+
+    period_clamped = False
+    if start_date:
+        # Période explicite : le nombre de bougies est dicté par la plage [start, end],
+        # et non plus plafonné par la « profondeur » (sinon la date de début était ignorée
+        # dès que la plage dépassait max_candles).
+        span_candles = max(80, int((end_ms - start_ms) // tf_ms) + 1)
+        if span_candles > LAB_MAX_PERIOD_CANDLES:
+            period_clamped = True
+            span_candles = LAB_MAX_PERIOD_CANDLES
+            start_ms = end_ms - (span_candles * tf_ms)
+        max_candles = span_candles
+    total_limit = max_candles + warmup_extra
     query_start_ms = start_ms - (warmup_extra * tf_ms)
 
     db = get_db()
@@ -1733,7 +1749,7 @@ def load_historical_candles(
         df = pd.DataFrame(rows)
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         df.set_index("timestamp", inplace=True)
-        return df, source_used, {"cached": cached_count, "fetched": newly_fetched_count}
+        return df, source_used, {"cached": cached_count, "fetched": newly_fetched_count, "period_clamped": period_clamped, "max_period_candles": LAB_MAX_PERIOD_CANDLES}
 
     # Fallback to local CSV archive (/scratch/btc_15m.csv)
     candidate_csvs = [
@@ -2177,6 +2193,13 @@ def run_backtest_experiment(
             f"{cache_stats.get('fetched', 0)} nouveaux chandeliers téléchargés depuis {data_source}.",
         )
 
+    period_clamped_warning = None
+    if cache_stats.get("period_clamped"):
+        period_clamped_warning = (
+            f"La période demandée dépasse {cache_stats.get('max_period_candles', LAB_MAX_PERIOD_CANDLES)} bougies : "
+            "le début de la fenêtre a été avancé. Utilisez un timeframe plus large pour couvrir toute la période."
+        )
+
     # Step 4: Validate candles & data quality
     cleaned_df, data_quality = validate_and_clean_ohlcv(
         raw_df,
@@ -2185,6 +2208,10 @@ def run_backtest_experiment(
         fetched_candles_count=cache_stats.get("fetched", 0),
         data_source=data_source,
     )
+    if period_clamped_warning:
+        data_quality.setdefault("warnings", []).append(period_clamped_warning)
+        if data_quality.get("status") == "VALID":
+            data_quality["status"] = "WARNING"
     add_step(
         4,
         "Validation des chandeliers OHLCV",

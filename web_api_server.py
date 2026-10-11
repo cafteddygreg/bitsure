@@ -2568,6 +2568,14 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 if cfg.safety_lock_at:
                     safety_age = max(0.0, time.time() - float(cfg.safety_lock_at))
 
+                try:
+                    from execution_engine import get_engine_heartbeat_age
+                    engine_age = get_engine_heartbeat_age()
+                except Exception:
+                    engine_age = None
+                # Le scan tourne toutes les 20 s : au-delà de 90 s sans battement, le moteur est considéré hors ligne.
+                engine_online = bool(engine_age is not None and engine_age <= 90)
+
                 creds_loaded = bool(creds and creds.get("api_key") and creds.get("api_secret"))
                 creds_valid = bool(creds and creds.get("is_valid"))
                 api_status_msg = "Clés API chargées et opérationnelles" if (creds_loaded and creds_valid) else "Aucune clé API configurée ou clés invalides"
@@ -2621,6 +2629,8 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         "safety_warn": cfg.safety_warn,
                         "safety_warn_reason": cfg.safety_warn_reason,
                         "safety_warn_at": cfg.safety_warn_at,
+                        "engine_online": engine_online,
+                        "engine_last_seen_seconds": engine_age,
                     },
                     "live_trades": {
                         "open": open_live,
@@ -4172,6 +4182,12 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 period_split = str(body.get("period_split") or "full").lower()
                 start_date = body.get("start_date") or None
                 end_date = body.get("end_date") or None
+                if start_date and end_date:
+                    _sd_ms = strategy_lab._parse_date_to_ms(start_date, 0)
+                    _ed_ms = strategy_lab._parse_date_to_ms(end_date, 0)
+                    if _sd_ms and _ed_ms and _sd_ms >= _ed_ms:
+                        self._send_json(400, {"ok": False, "error": "La date de début doit précéder la date de fin."})
+                        return
                 max_candles = int(body.get("max_candles") or 800)
                 selected_models = body.get("selected_models") if isinstance(body.get("selected_models"), list) else None
                 ref_params = body.get("reference_params") if isinstance(body.get("reference_params"), dict) else None

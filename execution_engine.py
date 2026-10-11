@@ -10,6 +10,7 @@ Ce module est appelé par un job APScheduler (voir main_integration.py) et par
 les callbacks des boutons "✅ Ouvrir" / "❌ Refuser".
 """
 
+import asyncio
 import time
 import uuid
 from typing import Any
@@ -43,6 +44,44 @@ from trading_safety import (
 )
 
 logger = get_trading_logger("execution_engine")
+
+
+ENGINE_HEARTBEAT_KEY = "autotrade_engine_heartbeat"
+
+
+def touch_engine_heartbeat() -> None:
+    """Signale que le moteur AutoTrade (scheduler) tourne : lu par le site web pour détecter un moteur hors ligne."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO settings (user_id, key, value) VALUES (0, %s, %s)
+                ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value
+                """,
+                (ENGINE_HEARTBEAT_KEY, str(time.time())),
+            )
+        conn.commit()
+    except Exception as exc:
+        logger.warning("engine heartbeat write failed: %s", exc)
+    finally:
+        conn.close()
+
+
+def get_engine_heartbeat_age() -> float | None:
+    """Âge (secondes) du dernier battement du moteur AutoTrade, ou None s'il n'a jamais tourné."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM settings WHERE user_id = 0 AND key = %s", (ENGINE_HEARTBEAT_KEY,))
+            row = cur.fetchone()
+        if not row or not row[0]:
+            return None
+        return max(0.0, time.time() - float(row[0]))
+    except Exception:
+        return None
+    finally:
+        conn.close()
 
 
 def fetch_pending_signals():
@@ -256,16 +295,21 @@ def execute_signal(signal: dict, config: TradingConfig, execution_context: str |
 async def process_signal_for_user(context: ContextTypes.DEFAULT_TYPE, signal: dict):
     """Point d'entrée appelé par le job planifié pour chaque signal en attente."""
     user_id = signal["user_id"]
-    config = get_config(user_id)
+    config = await asyncio.to_thread(get_config, user_id)
 
-    allowed, reason = validate_signal_for_execution(user_id, signal, config)
+    # Appels bloquants (DB / Binance) exécutés hors de la boucle asyncio pour ne pas figer le bot ni le scheduler.
+    allowed, reason = await asyncio.to_thread(validate_signal_for_execution, user_id, signal, config)
     if not allowed:
-        mark_signal_refused(signal["id"], reason or "Validation refusée")
+        await asyncio.to_thread(mark_signal_refused, signal["id"], reason or "Validation refusée")
         return
 
     if config.auto_trade:
-        trade = execute_signal(signal, config)
-        await _notify_trade_result(context, user_id, trade)
+        trade = await asyncio.to_thread(execute_signal, signal, config)
+        try:
+            await _notify_trade_result(context, user_id, trade)
+        except Exception as notify_err:
+            # Utilisateur web sans chat Telegram (user_id < 0) ou Telegram indisponible : le trade est déjà enregistré.
+            logger.warning("Notification Telegram impossible user=%s: %s", user_id, notify_err)
     else:
         await _send_confirmation_prompt(context, signal, config)
 
@@ -305,15 +349,20 @@ async def _send_confirmation_prompt(context: ContextTypes.DEFAULT_TYPE, signal: 
         f"Score : {signal['score']}\n\n"
         f"Que veux-tu faire ?"
     )
-    await context.bot.send_message(
-        chat_id=signal["user_id"], text=text, reply_markup=keyboard, parse_mode="Markdown"
-    )
-    mark_signal_status(signal["id"], "awaiting_confirmation")
+    try:
+        await context.bot.send_message(
+            chat_id=signal["user_id"], text=text, reply_markup=keyboard, parse_mode="Markdown"
+        )
+    except Exception as send_err:
+        # Sans cela, le signal restait 'pending' et était retraité toutes les 20 s indéfiniment.
+        logger.warning("Prompt de confirmation non envoyé user=%s: %s", signal["user_id"], send_err)
+    await asyncio.to_thread(mark_signal_status, signal["id"], "awaiting_confirmation")
 
 
 async def scheduled_signal_scan(context: ContextTypes.DEFAULT_TYPE):
     """Job APScheduler : à enregistrer toutes les 15-30s dans main.py."""
-    for signal in fetch_pending_signals():
+    await asyncio.to_thread(touch_engine_heartbeat)
+    for signal in await asyncio.to_thread(fetch_pending_signals):
         try:
             await process_signal_for_user(context, signal)
         except Exception as e:
