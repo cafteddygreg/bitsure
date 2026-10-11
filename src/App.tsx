@@ -295,7 +295,7 @@ export function App() {
   const [binanceSecret, setBinanceSecret] = useState('');
   const [binanceTestnet, setBinanceTestnet] = useState(true);
   const [safetyPinInput, setSafetyPinInput] = useState('');
-  const [pinModalAction, setPinModalAction] = useState<'enable_autotrade' | 'unlock_safety' | null>(null);
+  const [pinModalAction, setPinModalAction] = useState<'enable_autotrade' | 'unlock_safety' | 'execute_live_order' | null>(null);
   const [pinModalValue, setPinModalValue] = useState('');
   const [pinModalError, setPinModalError] = useState('');
   const [testingApiConn, setTestingApiConn] = useState(false);
@@ -554,17 +554,27 @@ export function App() {
     setLoadingLiveAccount(true);
     try {
       const [cfgRes, accRes] = await Promise.all([
-        apiFetch('/api/trading/config'),
-        apiFetch('/api/trading/account'),
+        apiFetch('/api/trading/config').catch((err) => {
+          console.error('Error loading /api/trading/config:', err);
+          return null;
+        }),
+        apiFetch('/api/trading/account').catch((err) => {
+          console.error('Error loading /api/trading/account:', err);
+          return null;
+        }),
       ]);
-      setTradingCfg(cfgRes.config);
-      setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
-      if (accRes.connected && accRes.account) {
+      if (cfgRes?.config) {
+        setTradingCfg(cfgRes.config);
+        setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
+      }
+      if (accRes?.connected && accRes?.account) {
         setLiveAccount(accRes.account);
-      } else {
+      } else if (accRes) {
         setLiveAccount(null);
       }
-      setLiveOpenOrders(accRes.open_orders || []);
+      if (accRes) {
+        setLiveOpenOrders(accRes.open_orders || []);
+      }
     } catch (err: any) {
       console.error(err);
     } finally {
@@ -1170,7 +1180,30 @@ export function App() {
     }
   };
 
-  const handleLiveOrderAction = async (action: 'validate' | 'execute') => {
+  const handleLiveOrderAction = async (action: 'validate' | 'execute', customPin?: string) => {
+    const candidatePin = (customPin ?? safetyPinInput ?? '').trim();
+    if (action === 'execute' && !candidatePin) {
+      if (!user?.has_pin) {
+        showToast(
+          lang === 'en'
+            ? 'Please configure a 6-digit Security PIN in the Account tab before executing a real order.'
+            : "Veuillez d'abord configurer un code PIN de sécurité (6 chiffres) dans l'onglet Compte avant d'exécuter un ordre réel.",
+          'error'
+        );
+        setActiveTab('account');
+        return;
+      }
+      setPinModalError('');
+      setPinModalValue('');
+      setPinModalAction('execute_live_order');
+      return;
+    }
+
+    const idempotencyKey =
+      action === 'execute'
+        ? `web-${liveOrderSymbol}-${liveOrderSide}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+        : undefined;
+
     try {
       const res = await apiFetch('/api/trading/live-order', {
         method: 'POST',
@@ -1187,6 +1220,8 @@ export function App() {
           leverage: parseInt(liveOrderLeverage, 10) || 1,
           margin_type: liveOrderMarginType,
           reduce_only: liveOrderReduceOnly,
+          pin: action === 'execute' ? candidatePin : undefined,
+          idempotency_key: idempotencyKey,
         }),
       });
       if (action === 'validate') {
@@ -1194,11 +1229,24 @@ export function App() {
         showToast(res.message, 'info');
       } else {
         setLiveOrderDraftCheck(null);
+        if (pinModalAction === 'execute_live_order') {
+          setPinModalAction(null);
+          setPinModalValue('');
+          setPinModalError('');
+        }
         await loadLiveAccountAndOrders();
         showToast(res.message, 'success');
       }
     } catch (err: any) {
-      showToast(err.message, 'error');
+      const msg = String(err.message || '');
+      if (
+        action === 'execute' &&
+        (msg.toLowerCase().includes('pin') || msg.toLowerCase().includes('tentatives'))
+      ) {
+        setPinModalError(msg);
+        setPinModalAction('execute_live_order');
+      }
+      showToast(msg, 'error');
     }
   };
 
@@ -3570,6 +3618,32 @@ export function App() {
           {/* =========================================================
               TAB 4: AUTO-TRADE & SAFETY CENTER
              ========================================================= */}
+          {activeTab === 'safety' && !tradingCfg && (
+            <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <RefreshCw className={`w-5 h-5 text-[#10B981] ${loadingLiveAccount ? 'animate-spin' : ''}`} />
+                <div>
+                  <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
+                    {lang === 'en'
+                      ? 'Loading Auto-Trade & Safety Center configuration...'
+                      : 'Chargement de la configuration Auto-Trade & Safety Center...'}
+                  </h3>
+                  <p className="text-xs text-[#94A3B8]">
+                    {lang === 'en'
+                      ? 'Synchronizing risk guardrails, API keys, and live positions with the server.'
+                      : 'Synchronisation des garde-fous de risque, des clés API et des positions avec le serveur.'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => loadLiveAccountAndOrders()}
+                className="px-4 py-2 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold text-xs rounded-lg transition-colors"
+              >
+                {tr(lang, 'Réessayer maintenant')}
+              </button>
+            </div>
+          )}
           {activeTab === 'safety' && tradingCfg && (
             <div className="space-y-6">
               {/* Top Status & Safety State Banner */}
@@ -3700,10 +3774,12 @@ export function App() {
                   </button>
                   <button
                     onClick={() =>
-                      apiFetch('/api/trading/reconcile', { method: 'POST' }).then(() => {
-                        loadLiveAccountAndOrders();
-                        showToast(tr(lang, 'Réconciliation DB ↔ Binance exécutée.'), 'success');
-                      })
+                      apiFetch('/api/trading/reconcile', { method: 'POST' })
+                        .then(() => {
+                          loadLiveAccountAndOrders();
+                          showToast(tr(lang, 'Réconciliation DB ↔ Binance exécutée.'), 'success');
+                        })
+                        .catch((err: any) => showToast(err.message || 'Erreur lors de la réconciliation.', 'error'))
                     }
                     className="px-3.5 py-2 bg-[#111827] hover:bg-[#1E293B] border border-white/15 text-[#F1F5F9] rounded-lg transition-colors"
                   >
@@ -6324,6 +6400,10 @@ export function App() {
                     ? lang === 'en'
                       ? 'Confirm Auto-Trade Activation'
                       : 'Confirmer l’activation Auto-Trade'
+                    : pinModalAction === 'execute_live_order'
+                    ? lang === 'en'
+                      ? 'Confirm Live Order Execution'
+                      : 'Confirmer l’envoi de l’ordre réel'
                     : lang === 'en'
                     ? 'Unlock Safety Mode (/clearsafe)'
                     : 'Déverrouiller le Safe Mode (/clearsafe)'}
@@ -6382,6 +6462,8 @@ export function App() {
                       setSafetyPinInput(entered);
                       if (pinModalAction === 'enable_autotrade') {
                         handleUpdateTradingConfig({ enabled: true, pin: entered });
+                      } else if (pinModalAction === 'execute_live_order') {
+                        handleLiveOrderAction('execute', entered);
                       } else {
                         handleSafetyAction('clearsafe', undefined, entered);
                       }
@@ -6421,6 +6503,8 @@ export function App() {
                       setSafetyPinInput(entered);
                       if (pinModalAction === 'enable_autotrade') {
                         handleUpdateTradingConfig({ enabled: true, pin: entered });
+                      } else if (pinModalAction === 'execute_live_order') {
+                        handleLiveOrderAction('execute', entered);
                       } else {
                         handleSafetyAction('clearsafe', undefined, entered);
                       }

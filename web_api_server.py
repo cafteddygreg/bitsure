@@ -1808,7 +1808,12 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             return None
         allowed = {o.strip().rstrip("/") for o in (ALLOWED_ORIGINS or []) if o and o.strip()}
         if APP_URL:
-            allowed.add(APP_URL.strip().rstrip("/"))
+            app_norm = APP_URL.strip().rstrip("/")
+            allowed.add(app_norm)
+            if "://ais-dev-" in app_norm:
+                allowed.add(app_norm.replace("://ais-dev-", "://ais-pre-", 1))
+            elif "://ais-pre-" in app_norm:
+                allowed.add(app_norm.replace("://ais-pre-", "://ais-dev-", 1))
         return raw if raw in allowed else None
 
     def _apply_cors_headers(self) -> None:
@@ -3258,13 +3263,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         self._send_json(400, {"ok": False, "error": "Veuillez saisir un nouveau code PIN à 6 chiffres."})
                         return
                     security_manager.unlock_security_code(user_id)
-                    conn = get_connection()
-                    try:
-                        with conn.cursor() as cur:
-                            cur.execute("DELETE FROM user_security_codes WHERE user_id = %s", (user_id,))
-                        conn.commit()
-                    finally:
-                        conn.close()
+                    get_db().execute("DELETE FROM user_security_codes WHERE user_id = %s", (user_id,))
                     ok_pin, msg = security_manager.set_initial_code(user_id, pin)
                     if not ok_pin:
                         self._send_json(400, {"ok": False, "error": msg})
