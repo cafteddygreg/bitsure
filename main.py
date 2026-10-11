@@ -28,7 +28,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import TELEGRAM_TOKEN
+from config import ADMIN_ID, TELEGRAM_TOKEN
 from data_fetcher import DataFetcher
 
 # Handler /myid accessible à tous sans aucune restriction
@@ -153,6 +153,34 @@ from position_manager import monitor_open_positions, reconcile_all_accounts
 
 autotrade_scheduler = None
 
+
+async def scheduled_paper_exits_job(context=None):
+    """Job 15s : met à jour les prix des symboles ayant des positions paper ouvertes puis appelle PaperTrader().check_exits()."""
+    try:
+        from paper_trader import PaperTrader
+
+        pt = PaperTrader.get_instance()
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT DISTINCT symbol FROM paper_positions WHERE status = 'open'"
+        ).fetchall()
+        symbols = [str(r["symbol"]).upper() for r in rows if r and r.get("symbol")]
+        if not symbols:
+            return
+        fetcher = DataFetcher.get_instance()
+        for sym in symbols:
+            try:
+                price_info = fetcher.get_current_price(sym)
+                live_price = float((price_info or {}).get("price") or 0.0)
+                if live_price > 0:
+                    pt.update_price(sym, live_price)
+            except Exception as price_err:
+                logger.debug(f"Paper price update skipped for {sym}: {price_err}")
+        pt.check_exits()
+    except Exception as e:
+        logger.warning(f"Paper exits scheduler job failed: {e}")
+
+
 async def scheduled_subscription_expiry_job(context=None):
     """Job quotidien : rétrograde en 'free' les abonnements expirés et notifie l'utilisateur."""
     try:
@@ -205,6 +233,11 @@ def start_autotrade_scheduler(app):
         id="monitor_open_positions", replace_existing=True
     )
     autotrade_scheduler.add_job(
+        scheduled_paper_exits_job, "interval", seconds=15,
+        kwargs={"context": app},
+        id="scheduled_paper_exits", replace_existing=True
+    )
+    autotrade_scheduler.add_job(
         reconcile_all_accounts, "interval", minutes=1,
         kwargs={"context": app},
         id="reconcile_all_accounts", replace_existing=True
@@ -241,12 +274,16 @@ from log_doctor import install_log_buffer
 install_log_buffer()
 
 logger = logging.getLogger(__name__)
+if ADMIN_ID == 0:
+    logger.warning("⚠️ ADMIN_ID == 0 : aucun ID Telegram administrateur numérique configuré.")
 
 # =========================================================
 # MAIN
 # =========================================================
 
 def main():
+    if ADMIN_ID == 0:
+        logger.warning("⚠️ ADMIN_ID == 0 au démarrage : veuillez définir un ADMIN_ID numérique dans l'environnement.")
     if os.environ.get("DISABLE_EMBEDDED_WEB") != "1" and not os.environ.get("WEBHOOK_URL"):
         try:
             from web_api_server import start_background_web_server

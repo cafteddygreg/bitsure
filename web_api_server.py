@@ -234,6 +234,7 @@ def _init_web_schema_and_seed():
         """
         CREATE TABLE IF NOT EXISTS web_sessions (
             token TEXT PRIMARY KEY,
+            token_hash TEXT,
             user_id BIGINT NOT NULL,
             email TEXT,
             csrf_token TEXT,
@@ -245,9 +246,11 @@ def _init_web_schema_and_seed():
         """
     )
     try:
+        db.execute("ALTER TABLE web_sessions ADD COLUMN IF NOT EXISTS token_hash TEXT")
         db.execute("ALTER TABLE web_sessions ADD COLUMN IF NOT EXISTS csrf_token TEXT")
         db.execute("ALTER TABLE web_sessions ADD COLUMN IF NOT EXISTS ip_address TEXT")
         db.execute("ALTER TABLE web_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_web_sessions_token_hash ON web_sessions (token_hash)")
     except Exception:
         pass
 
@@ -440,19 +443,68 @@ def _hash_password(password: str) -> str:
     return _hash_password_secure(password)
 
 
+_AUTH_RATE_LIMIT_MAX_FAILURES = 5
+_AUTH_RATE_LIMIT_WINDOW_SECONDS = 900  # 15 minutes
+_auth_rate_limit_lock = threading.Lock()
+_auth_failed_attempts: Dict[Tuple[str, str], List[float]] = {}
+
+
+def _auth_rate_limit_key(ip_address: str, email: str) -> Tuple[str, str]:
+    return ((ip_address or "unknown").strip(), (email or "").strip().lower())
+
+
+def _is_auth_rate_limited(ip_address: str, email: str, now_ts: Optional[float] = None) -> bool:
+    now = float(now_ts if now_ts is not None else time.time())
+    cutoff = now - _AUTH_RATE_LIMIT_WINDOW_SECONDS
+    key = _auth_rate_limit_key(ip_address, email)
+    with _auth_rate_limit_lock:
+        timestamps = [t for t in _auth_failed_attempts.get(key, []) if t > cutoff]
+        if timestamps:
+            _auth_failed_attempts[key] = timestamps
+        else:
+            _auth_failed_attempts.pop(key, None)
+        return len(timestamps) >= _AUTH_RATE_LIMIT_MAX_FAILURES
+
+
+def _record_auth_failure(ip_address: str, email: str, now_ts: Optional[float] = None) -> int:
+    now = float(now_ts if now_ts is not None else time.time())
+    cutoff = now - _AUTH_RATE_LIMIT_WINDOW_SECONDS
+    key = _auth_rate_limit_key(ip_address, email)
+    with _auth_rate_limit_lock:
+        timestamps = [t for t in _auth_failed_attempts.get(key, []) if t > cutoff]
+        timestamps.append(now)
+        _auth_failed_attempts[key] = timestamps
+        return len(timestamps)
+
+
+def _clear_auth_failures(ip_address: str, email: str) -> None:
+    key = _auth_rate_limit_key(ip_address, email)
+    with _auth_rate_limit_lock:
+        _auth_failed_attempts.pop(key, None)
+
+
+def _hash_session_token(raw_token: str) -> str:
+    return hashlib.sha256((raw_token or "").encode("utf-8")).hexdigest()
+
+
 def _create_session(user_id: int, email: str, ip_address: str = "", user_agent: str = "") -> Tuple[str, str]:
-    token = secrets.token_hex(32)
+    raw_token = secrets.token_hex(32)
+    token_hash = _hash_session_token(raw_token)
     csrf_token = secrets.token_hex(24)
     now = time.time()
     db = get_db()
+    try:
+        db.execute("ALTER TABLE web_sessions ADD COLUMN IF NOT EXISTS token_hash TEXT")
+    except Exception:
+        pass
     db.execute(
         """
-        INSERT INTO web_sessions (token, user_id, email, csrf_token, ip_address, user_agent, created_at, expires_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO web_sessions (token, token_hash, user_id, email, csrf_token, ip_address, user_agent, created_at, expires_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (token, int(user_id), email, csrf_token, ip_address[:64], user_agent[:200], now, now + 86400 * 14),
+        (token_hash, token_hash, int(user_id), email, csrf_token, ip_address[:64], user_agent[:200], now, now + 86400 * 14),
     )
-    return token, csrf_token
+    return raw_token, csrf_token
 
 
 TERMS_CURRENT_VERSION = "2.2.0"
@@ -1283,27 +1335,30 @@ def _extract_session_token(headers) -> str:
 def _resolve_authenticated_session(headers) -> Optional[Dict[str, Any]]:
     """
     Strictly resolve user identity from server-stored session token ONLY.
+    Looks up sha256(token) in web_sessions.token_hash (or token).
     NEVER trusts X-User-Id, client role claims, or fallback admin accounts.
     """
     token = _extract_session_token(headers)
     if not token:
         return None
+    token_hash = _hash_session_token(token)
     db = get_db()
     row = db.execute(
-        "SELECT token, user_id, email, csrf_token, expires_at FROM web_sessions WHERE token = %s",
-        (token,),
+        "SELECT token, token_hash, user_id, email, csrf_token, expires_at FROM web_sessions WHERE token_hash = %s OR token = %s",
+        (token_hash, token_hash),
     ).fetchone()
     if not row:
         return None
     expires_at = float(row["expires_at"] or 0)
     if expires_at <= time.time():
         try:
-            db.execute("DELETE FROM web_sessions WHERE token = %s", (token,))
+            db.execute("DELETE FROM web_sessions WHERE token_hash = %s OR token = %s", (token_hash, token_hash))
         except Exception:
             pass
         return None
     return {
-        "token": row["token"],
+        "token": token,
+        "token_hash": row.get("token_hash") or row["token"],
         "user_id": int(row["user_id"]),
         "email": row["email"],
         "csrf_token": row["csrf_token"] or "",
@@ -2789,6 +2844,17 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 password = body.get("password") or ""
                 google_pending_token = (body.get("google_pending_token") or "").strip()
 
+                if _is_auth_rate_limited(client_ip, email):
+                    self._send_json(
+                        429,
+                        {
+                            "ok": False,
+                            "code": "RATE_LIMITED",
+                            "error": "Trop de tentatives échouées (max 5 / 15 min). Veuillez patienter 15 minutes avant de réessayer.",
+                        },
+                    )
+                    return
+
                 db = get_db()
                 google_sub_verified = None
                 if google_pending_token:
@@ -2797,17 +2863,30 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         (google_pending_token,),
                     ).fetchone()
                     if not gp_row or float(gp_row["expires_at"] or 0) < time.time():
+                        _record_auth_failure(client_ip, email)
                         self._send_json(400, {"ok": False, "error": "La session de vérification Google a expiré. Veuillez recommencer."})
                         return
                     email = str(gp_row["email"]).strip().lower()
                     google_sub_verified = gp_row.get("google_sub")
+                    if _is_auth_rate_limited(client_ip, email):
+                        self._send_json(
+                            429,
+                            {
+                                "ok": False,
+                                "code": "RATE_LIMITED",
+                                "error": "Trop de tentatives échouées (max 5 / 15 min). Veuillez patienter 15 minutes avant de réessayer.",
+                            },
+                        )
+                        return
 
                 if not email or not password:
+                    _record_auth_failure(client_ip, email)
                     self._send_json(400, {"ok": False, "error": "Veuillez saisir votre adresse email et votre mot de passe."})
                     return
 
                 row = db.execute("SELECT * FROM web_accounts WHERE LOWER(email) = %s", (email,)).fetchone()
                 if not row or not _verify_password_secure(password, row["password_hash"] or ""):
+                    _record_auth_failure(client_ip, email)
                     log_security_event(
                         "LOGIN_FAILED",
                         severity="warning",
@@ -2818,6 +2897,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     self._send_json(401, {"ok": False, "error": "Email ou mot de passe incorrect."})
                     return
 
+                _clear_auth_failures(client_ip, email)
                 uid = int(row["user_id"])
                 # Upgrade legacy SHA-256 hash to PBKDF2-HMAC-SHA256 transparently on valid login
                 if not str(row["password_hash"] or "").startswith("pbkdf2_sha256$"):
@@ -2876,7 +2956,19 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 google_pending_token = (body.get("google_pending_token") or "").strip()
                 terms_accepted_flag = bool(body.get("terms_accepted"))
 
+                if _is_auth_rate_limited(client_ip, email):
+                    self._send_json(
+                        429,
+                        {
+                            "ok": False,
+                            "code": "RATE_LIMITED",
+                            "error": "Trop de tentatives échouées (max 5 / 15 min). Veuillez patienter 15 minutes avant de réessayer.",
+                        },
+                    )
+                    return
+
                 if not terms_accepted_flag:
+                    _record_auth_failure(client_ip, email)
                     self._send_json(
                         400,
                         {
@@ -2895,6 +2987,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         (google_pending_token,),
                     ).fetchone()
                     if not gp_row or float(gp_row["expires_at"] or 0) < time.time():
+                        _record_auth_failure(client_ip, email)
                         self._send_json(400, {"ok": False, "error": "La session de vérification Google a expiré. Veuillez recommencer."})
                         return
                     email = str(gp_row["email"]).strip().lower()
@@ -2903,16 +2996,21 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         display_name = str(gp_row["display_name"]).strip()
 
                 if not email or "@" not in email or "." not in email.split("@")[-1]:
+                    _record_auth_failure(client_ip, email)
                     self._send_json(400, {"ok": False, "error": "Veuillez saisir une adresse email valide."})
                     return
                 if len(password) < 8:
+                    _record_auth_failure(client_ip, email)
                     self._send_json(400, {"ok": False, "error": "Le mot de passe doit contenir au moins 8 caractères."})
                     return
 
                 existing = db.execute("SELECT email FROM web_accounts WHERE LOWER(email) = %s", (email,)).fetchone()
                 if existing:
+                    _record_auth_failure(client_ip, email)
                     self._send_json(400, {"ok": False, "error": "Cette adresse email est déjà associée à un compte. Veuillez basculer sur Connexion et saisir votre mot de passe."})
                     return
+
+                _clear_auth_failures(client_ip, email)
 
                 um = UserManager.get_instance()
                 is_explicit_admin = bool(ADMIN_EMAIL and email == ADMIN_EMAIL)
@@ -3010,7 +3108,8 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 sess = _resolve_authenticated_session(self.headers)
                 if sess:
                     db = get_db()
-                    db.execute("DELETE FROM web_sessions WHERE token = %s", (sess["token"],))
+                    tok_hash = sess.get("token_hash") or _hash_session_token(sess["token"])
+                    db.execute("DELETE FROM web_sessions WHERE token_hash = %s OR token = %s", (tok_hash, tok_hash))
                     log_security_event(
                         "LOGOUT",
                         severity="info",
@@ -3208,6 +3307,29 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             # 3. Paper Trading Actions (with per-user daily paper trade quota)
             if path == "/api/paper/open":
+                symbol = normalize_symbol(body.get("symbol", "BTCUSDT"))
+                side = (body.get("side") or "BUY").upper()
+                qty = float(body.get("qty") or 0.05)
+                leverage = float(body.get("leverage") or 1.0)
+                # Ignore any client-supplied body["entry_price"]; use server price only (no hardcoded fallback)
+                try:
+                    entry_price = _extract_price_float(
+                        run_coro(DataFetcher.get_instance().get_realtime_price(symbol)),
+                        0.0,
+                    )
+                except Exception:
+                    entry_price = 0.0
+                if entry_price <= 0:
+                    self._send_json(
+                        503,
+                        {
+                            "ok": False,
+                            "code": "PRICE_UNAVAILABLE",
+                            "error": f"Prix de marché temps réel indisponible pour {symbol}. Ouverture refusée.",
+                        },
+                    )
+                    return
+
                 um = UserManager.get_instance()
                 allowed, used_q, limit_q = um.check_and_consume_feature_quota(user_id, "paper_trade", consume=True)
                 if not allowed:
@@ -3218,13 +3340,6 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     })
                     return
 
-                symbol = normalize_symbol(body.get("symbol", "BTCUSDT"))
-                side = (body.get("side") or "BUY").upper()
-                qty = float(body.get("qty") or 0.05)
-                leverage = float(body.get("leverage") or 1.0)
-                entry_price = float(body.get("entry_price") or 0.0)
-                if entry_price <= 0:
-                    entry_price = _extract_price_float(run_coro(DataFetcher.get_instance().get_realtime_price(symbol)), 83000.0)
                 sl = float(body.get("sl") or (entry_price * 0.985 if side == "BUY" else entry_price * 1.015))
                 tp = float(body.get("tp") or (entry_price * 1.03 if side == "BUY" else entry_price * 0.97))
 

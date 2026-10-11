@@ -10,15 +10,19 @@ import os
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 
-_raw_admin_id = os.environ.get("ADMIN_ID", "@btsrteddy").strip()
+_raw_admin_id = os.environ.get("ADMIN_ID", "").strip()
 try:
-    ADMIN_ID = int(_raw_admin_id)
+    ADMIN_ID = int(_raw_admin_id) if _raw_admin_id else 0
 except ValueError:
     ADMIN_ID = 0
 
-ADMIN_USERNAME = _raw_admin_id if not _raw_admin_id.lstrip("-").isdigit() else "@btsrteddy"
-if not ADMIN_USERNAME.startswith("@"):
-    ADMIN_USERNAME = f"@{ADMIN_USERNAME}"
+if ADMIN_ID == 0:
+    import logging as _cfg_logging
+    _cfg_logging.getLogger(__name__).warning(
+        "⚠️ ADMIN_ID == 0 : aucun identifiant Telegram administrateur numérique configuré (définissez ADMIN_ID=<id_numérique>)."
+    )
+
+ADMIN_USERNAME = "@btsrteddy"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 

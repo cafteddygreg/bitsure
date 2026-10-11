@@ -197,6 +197,13 @@ class BacktestSignalEngine:
 
     @staticmethod
     def analyze(df: pd.DataFrame, symbol: str = "", style: str = "day") -> Dict:
+        try:
+            from signal_engine import SignalEngine
+
+            return SignalEngine.analyze(df, symbol=symbol, style=style)
+        except ImportError:
+            pass
+
         raw_symbol = symbol.upper()
         normalized = strategy_symbol(raw_symbol)
         df = BacktestSignalEngine._normalize_df(df)

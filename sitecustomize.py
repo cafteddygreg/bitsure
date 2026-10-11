@@ -116,6 +116,7 @@ except ImportError:
     np_mod.maximum = _np_maximum
     np_mod.minimum = _np_minimum
     np_mod.abs = _np_abs
+    np_mod.sqrt = lambda x: [math.sqrt(float(v)) for v in _to_np_list(x)] if isinstance(x, (list, tuple)) or hasattr(x, "_values") else math.sqrt(float(x))
     np_mod.arange = lambda n, dtype=float: [float(i) for i in range(int(n))]
     np_mod.sin = lambda arr: [math.sin(float(x)) for x in _to_np_list(arr)]
     np_mod.full = lambda n, val: [float(val) for _ in range(int(n))]
@@ -240,6 +241,12 @@ except ImportError:
 
         def isoformat(self) -> str:
             return self._dt.isoformat()
+
+        def date(self) -> _dt.date:
+            return self._dt.date()
+
+        def to_pydatetime(self) -> _dt.datetime:
+            return self._dt
 
         @property
         def year(self) -> int:
@@ -494,12 +501,26 @@ except ImportError:
             buckets, bucket_order = self._df_resampler._build_buckets()
             return Series([len(buckets[b]["_v"]) for b in bucket_order], index=DatetimeIndex(bucket_order), dtype=float)
 
+        def last(self) -> "Series":
+            buckets, bucket_order = self._df_resampler._build_buckets()
+            vals = [buckets[b]["_v"][-1] if buckets[b]["_v"] else float("nan") for b in bucket_order]
+            return Series(vals, index=DatetimeIndex(bucket_order), dtype=float)
+
+        def first(self) -> "Series":
+            buckets, bucket_order = self._df_resampler._build_buckets()
+            vals = [buckets[b]["_v"][0] if buckets[b]["_v"] else float("nan") for b in bucket_order]
+            return Series(vals, index=DatetimeIndex(bucket_order), dtype=float)
+
     class Series:
         def __init__(self, data=None, index=None, dtype=None):
             if isinstance(data, Series):
                 vals = list(data._values)
                 if index is None:
                     index = data.index
+            elif isinstance(data, dict):
+                if index is None:
+                    index = list(data.keys())
+                vals = [data.get(k) for k in index]
             elif data is None:
                 vals = []
             elif isinstance(data, (list, tuple, DatetimeIndex)):
@@ -570,7 +591,16 @@ except ImportError:
                     idx = [k for k, m in zip(self.index, mask) if m]
                     new_idx = DatetimeIndex(idx) if isinstance(self.index, DatetimeIndex) else idx
                     return Series(vals, index=new_idx, dtype=self.dtype)
+            if isinstance(item, str) and item in self.index:
+                pos = list(self.index).index(item)
+                return self._values[pos]
             return self._values[item]
+
+        def get(self, key, default=None):
+            if key in self.index:
+                pos = list(self.index).index(key)
+                return self._values[pos]
+            return default
 
         def astype(self, dtype) -> "Series":
             if dtype is bool:
@@ -610,6 +640,20 @@ except ImportError:
                     else:
                         out.append(a - b)
             return Series(out, index=self.index, dtype=self.dtype)
+
+        def pct_change(self, periods: int = 1) -> "Series":
+            out = []
+            vals = self._values
+            for i in range(len(vals)):
+                if i < periods:
+                    out.append(float("nan"))
+                else:
+                    a, b = vals[i], vals[i - periods]
+                    if a is None or b is None or _is_nan(a) or _is_nan(b) or float(b) == 0.0:
+                        out.append(float("nan"))
+                    else:
+                        out.append((float(a) - float(b)) / float(b))
+            return Series(out, index=self.index, dtype=float)
 
         def shift(self, periods: int = 1) -> "Series":
             vals = self._values
@@ -677,9 +721,64 @@ except ImportError:
             valid = [float(v) for v in self._values if v is not None and not _is_nan(v)]
             return max(valid) if valid else float("nan")
 
+        def idxmax(self):
+            best_idx = None
+            best_val = None
+            for k, v in zip(self.index, self._values):
+                if v is not None and not _is_nan(v):
+                    fv = float(v)
+                    if best_val is None or fv > best_val:
+                        best_val = fv
+                        best_idx = k
+            return best_idx
+
+        def idxmin(self):
+            best_idx = None
+            best_val = None
+            for k, v in zip(self.index, self._values):
+                if v is not None and not _is_nan(v):
+                    fv = float(v)
+                    if best_val is None or fv < best_val:
+                        best_val = fv
+                        best_idx = k
+            return best_idx
+
+        def cummax(self) -> "Series":
+            out = []
+            cur = None
+            for v in self._values:
+                if v is None or _is_nan(v):
+                    out.append(cur if cur is not None else float("nan"))
+                else:
+                    fv = float(v)
+                    cur = fv if cur is None else max(cur, fv)
+                    out.append(cur)
+            return Series(out, index=self.index, dtype=float)
+
+        def cummin(self) -> "Series":
+            out = []
+            cur = None
+            for v in self._values:
+                if v is None or _is_nan(v):
+                    out.append(cur if cur is not None else float("nan"))
+                else:
+                    fv = float(v)
+                    cur = fv if cur is None else min(cur, fv)
+                    out.append(cur)
+            return Series(out, index=self.index, dtype=float)
+
         def mean(self) -> float:
             valid = [float(v) for v in self._values if v is not None and not _is_nan(v)]
             return sum(valid) / len(valid) if valid else float("nan")
+
+        def std(self, ddof: int = 1) -> float:
+            valid = [float(v) for v in self._values if v is not None and not _is_nan(v)]
+            n = len(valid)
+            if n <= ddof:
+                return float("nan")
+            m = sum(valid) / n
+            var = sum((x - m) ** 2 for x in valid) / (n - ddof)
+            return math.sqrt(var)
 
         def sum(self) -> float:
             valid = [float(v) for v in self._values if v is not None and not _is_nan(v)]

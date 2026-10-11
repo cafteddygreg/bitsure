@@ -159,19 +159,19 @@ class UserManager:
         return row is not None
 
     def is_admin(self, user_id: int, username: Optional[str] = None) -> bool:
-        if ADMIN_ID and int(user_id) == int(ADMIN_ID):
-            return True
-        target_handle = (ADMIN_USERNAME or "@btsrteddy").lstrip("@").lower()
-        if username and username.lstrip("@").lower() == target_handle:
+        try:
+            uid_int = int(user_id)
+        except (TypeError, ValueError):
+            return False
+        if ADMIN_ID and int(ADMIN_ID) != 0 and uid_int == int(ADMIN_ID):
             return True
         try:
             row = self.conn.execute(
-                "SELECT username, role FROM users WHERE user_id = %s", (user_id,)
+                "SELECT role FROM users WHERE user_id = %s", (uid_int,)
             ).fetchone()
             if row:
-                db_user = (row["username"] or "").lstrip("@").lower()
                 role_norm = str(row["role"] or "").strip().lower()
-                if db_user == target_handle or role_norm == "admin":
+                if role_norm == "admin":
                     return True
         except Exception:
             pass
