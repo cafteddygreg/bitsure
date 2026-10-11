@@ -391,7 +391,8 @@ def _ensure_schema(conn):
             approved INTEGER DEFAULT 0,
             memo TEXT,
             username TEXT,
-            pin TEXT
+            pin TEXT,
+            plan_expires_at DOUBLE PRECISION DEFAULT 0
         )
         """,
         """
@@ -498,6 +499,26 @@ def _ensure_schema(conn):
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_daily_scans INTEGER DEFAULT 10",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_max_alerts INTEGER DEFAULT 10",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_max_paper_trades INTEGER DEFAULT 25",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_expires_at DOUBLE PRECISION DEFAULT 0",
+        """
+        CREATE TABLE IF NOT EXISTS promo_redemptions (
+            user_id BIGINT NOT NULL,
+            code TEXT NOT NULL,
+            redeemed_at DOUBLE PRECISION NOT NULL,
+            UNIQUE(user_id, code)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS payment_log (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            plan TEXT NOT NULL,
+            amount DOUBLE PRECISION DEFAULT 0,
+            method TEXT NOT NULL,
+            confirmed_by BIGINT,
+            created_at DOUBLE PRECISION NOT NULL
+        )
+        """,
         """
         CREATE TABLE IF NOT EXISTS user_feature_usage (
             user_id BIGINT,
@@ -568,6 +589,8 @@ def _ensure_schema(conn):
             cooldown_seconds INT DEFAULT 0,
             daily_loss_accum DOUBLE PRECISION DEFAULT 0.0,
             daily_loss_reset_at DOUBLE PRECISION,
+            daily_pnl DOUBLE PRECISION DEFAULT 0.0,
+            daily_pnl_day TEXT DEFAULT '',
             safety_lock BOOLEAN DEFAULT FALSE,
             safety_lock_reason TEXT,
             safety_lock_at DOUBLE PRECISION,
@@ -587,6 +610,8 @@ def _ensure_schema(conn):
         "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_warn_at DOUBLE PRECISION",
         "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_lock_ttl_seconds INT DEFAULT 3600",
         "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_lock_reminded BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS daily_pnl DOUBLE PRECISION DEFAULT 0.0",
+        "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS daily_pnl_day TEXT DEFAULT ''",
         """
         CREATE TABLE IF NOT EXISTS binance_credentials (
             user_id BIGINT PRIMARY KEY,

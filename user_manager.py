@@ -7,6 +7,9 @@ from config import (
     ADMIN_ID,
     ADMIN_USERNAME,
     TRIAL_DAYS,
+    PLAN_DURATION_DAYS,
+    PLAN_PRICES_USDT,
+    PROMO_CODES,
     ACCESS_MODE,
     ALLOW_AUTO_REGISTER,
     MAX_WATCHLIST_SYMBOLS_FREE,
@@ -71,7 +74,14 @@ class UserManager:
             is_paid_role = role_norm in ("pro", "paid", "premium", "vip", "admin")
             is_app = bool(user_dict.get("approved")) or is_paid_role or (raw_status == ACCOUNT_STATUS_APPROVED)
             if is_app and (not user_dict.get("approved") or not user_dict.get("terms_accepted") or raw_status != ACCOUNT_STATUS_APPROVED):
-                canon_role = "pro" if role_norm in ("pro", "paid", "premium", "vip") else ("admin" if role_norm == "admin" else user_dict.get("role", "tester"))
+                if role_norm == "vip":
+                    canon_role = "vip"
+                elif role_norm in ("pro", "paid", "premium"):
+                    canon_role = "pro"
+                elif role_norm == "admin":
+                    canon_role = "admin"
+                else:
+                    canon_role = user_dict.get("role", "tester")
                 try:
                     self.conn.execute(
                         "UPDATE users SET approved = 1, terms_accepted = 1, account_status = %s, role = %s WHERE user_id = %s",
@@ -268,48 +278,106 @@ class UserManager:
         if not user:
             return "blocked"
         raw_role = str(user.get("role") or "tester").strip().lower()
-        if raw_role in ("pro", "paid", "premium", "vip"):
+        if raw_role == "vip":
+            return "vip"
+        if raw_role in ("pro", "paid", "premium"):
             return "pro"
         if raw_role == "admin":
             return "admin"
         return raw_role or "tester"
 
-    def set_role(self, user_id: int, role: str) -> bool:
+    def set_role(self, user_id: int, role: str, *, duration_days: Optional[int] = None) -> bool:
         """Définit le rôle d'un utilisateur et déverrouille automatiquement son accès (approved=1, terms_accepted=1)."""
         norm_role = str(role or "tester").strip().lower()
-        if norm_role in ("pro", "paid", "premium", "vip"):
+        if norm_role in ("pro", "paid", "premium"):
             norm_role = "pro"
+        elif norm_role == "vip":
+            norm_role = "vip"
         now = time.time()
-        self.get_user(user_id)
-        self.conn.execute(
-            """
-            UPDATE users
-            SET role = %s,
-                approved = 1,
-                account_status = %s,
-                terms_accepted = 1,
-                trial_start = COALESCE(NULLIF(trial_start, 0), %s)
-            WHERE user_id = %s
-            """,
-            (norm_role, ACCOUNT_STATUS_APPROVED, now, user_id),
-        )
+        user = self.get_user(user_id) or {}
+        if norm_role in ("pro", "vip"):
+            days = int(duration_days if duration_days is not None else PLAN_DURATION_DAYS)
+            current_exp = 0.0
+            try:
+                current_exp = float(user.get("plan_expires_at") or 0.0)
+            except (TypeError, ValueError):
+                current_exp = 0.0
+            new_exp = max(now, current_exp) + (days * 86400)
+            self.conn.execute(
+                """
+                UPDATE users
+                SET role = %s,
+                    approved = 1,
+                    account_status = %s,
+                    terms_accepted = 1,
+                    trial_start = COALESCE(NULLIF(trial_start, 0), %s),
+                    plan_expires_at = %s
+                WHERE user_id = %s
+                """,
+                (norm_role, ACCOUNT_STATUS_APPROVED, now, new_exp, user_id),
+            )
+        else:
+            self.conn.execute(
+                """
+                UPDATE users
+                SET role = %s,
+                    approved = 1,
+                    account_status = %s,
+                    terms_accepted = 1,
+                    trial_start = COALESCE(NULLIF(trial_start, 0), %s)
+                WHERE user_id = %s
+                """,
+                (norm_role, ACCOUNT_STATUS_APPROVED, now, user_id),
+            )
         self.conn.commit()
         return True
 
-    def get_premium_users(self) -> List[int]:
-        """Retourne la liste des user_id ayant un accès PRO ou Admin."""
+    def _is_user_plan_active(self, user: Dict, now: Optional[float] = None) -> bool:
+        now_ts = float(now if now is not None else time.time())
+        raw_role = str(user.get("role") or "").strip().lower()
+        if raw_role == "admin":
+            return True
+        if raw_role not in ("pro", "paid", "premium", "vip"):
+            return False
+        raw_exp = user.get("plan_expires_at")
+        if raw_exp is None:
+            # Rétrocompatibilité pour les lignes de test/legacy créées sans colonne plan_expires_at
+            return True
         try:
+            exp_val = float(raw_exp)
+        except (TypeError, ValueError):
+            exp_val = 0.0
+        return exp_val > now_ts
+
+    def get_premium_users(self) -> List[int]:
+        """Retourne la liste des user_id ayant un accès PRO, VIP ou Admin actif (non expiré)."""
+        try:
+            now_ts = time.time()
             rows = self.conn.execute(
-                "SELECT user_id FROM users WHERE LOWER(TRIM(COALESCE(role, ''))) IN ('pro', 'paid', 'premium', 'vip', 'admin') AND user_id > 0"
+                "SELECT * FROM users WHERE LOWER(TRIM(COALESCE(role, ''))) IN ('pro', 'paid', 'premium', 'vip', 'admin') AND user_id > 0"
             ).fetchall()
-            return [int(r["user_id"]) for r in rows]
+            result: List[int] = []
+            for r in rows:
+                r_dict = dict(r)
+                uid = int(r_dict["user_id"])
+                if self.is_admin(uid) or self._is_user_plan_active(r_dict, now=now_ts):
+                    result.append(uid)
+            return result
         except Exception:
             return []
 
     def is_premium(self, user_id: int) -> bool:
         if self.is_admin(user_id):
             return True
-        return self.get_role(user_id) in ["pro", "admin"]
+        user = self.get_user(user_id)
+        if not user:
+            return False
+        role = self.get_role(user_id)
+        if role == "admin":
+            return True
+        if role not in ("pro", "vip"):
+            return False
+        return self._is_user_plan_active(user)
 
     # =========================================================
     # TRIAL
@@ -422,10 +490,11 @@ class UserManager:
                 "max_paper_trades": 999999,
             }
         role = self.get_role(user_id)
-        default_analyses = 200 if role == "pro" else DEFAULT_DAILY_ANALYSIS_LIMIT
-        default_scans = 100 if role == "pro" else DEFAULT_DAILY_SCAN_LIMIT
-        default_alerts = MAX_ALERTS_PRO if role == "pro" else DEFAULT_MAX_ALERTS_LIMIT
-        default_paper = 100 if role == "pro" else DEFAULT_MAX_PAPER_TRADES_LIMIT
+        is_paid = role in ("pro", "vip")
+        default_analyses = 200 if is_paid else DEFAULT_DAILY_ANALYSIS_LIMIT
+        default_scans = 100 if is_paid else DEFAULT_DAILY_SCAN_LIMIT
+        default_alerts = MAX_ALERTS_PRO if is_paid else DEFAULT_MAX_ALERTS_LIMIT
+        default_paper = 100 if is_paid else DEFAULT_MAX_PAPER_TRADES_LIMIT
 
         def _val(col: str, fallback: int) -> int:
             raw = user.get(col)
@@ -545,7 +614,7 @@ class UserManager:
 
     def get_watchlist_limit(self, user_id: int) -> int:
         role = self.get_role(user_id)
-        if role == "pro":
+        if role in ("pro", "vip"):
             return MAX_WATCHLIST_SYMBOLS_PRO
         if role == "tester":
             return MAX_WATCHLIST_SYMBOLS_TESTER
@@ -603,18 +672,41 @@ class UserManager:
     # =========================================================
 
     def redeem_promo(self, user_id: int, code: str):
-        promos = {"TRADERBURUNDI": {"days": 5}}
-        code = code.upper()
+        code = str(code or "").strip().upper()
         lang = self.get_setting(user_id, "lang", "en")
-        if code not in promos:
+        promo_cfg = PROMO_CODES.get(code)
+        if not promo_cfg:
             return False, get_text(lang, "redeem_invalid")
         user = self.get_user(user_id)
         if not user:
             return False, "User not found"
-        new_trial = user.get("trial_start", time.time()) - promos[code]["days"] * 86400
+
+        now = time.time()
+        try:
+            existing = self.conn.execute(
+                "SELECT 1 FROM promo_redemptions WHERE user_id = %s AND code = %s",
+                (user_id, code),
+            ).fetchone()
+            if existing:
+                return False, "Ce code promotionnel a déjà été utilisé sur votre compte."
+            cur = self.conn.execute(
+                """
+                INSERT INTO promo_redemptions (user_id, code, redeemed_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, code) DO NOTHING
+                """,
+                (user_id, code, now),
+            )
+            if getattr(cur, "rowcount", 1) == 0:
+                return False, "Ce code promotionnel a déjà été utilisé sur votre compte."
+        except Exception:
+            return False, "Ce code promotionnel a déjà été utilisé sur votre compte."
+
+        days = int(promo_cfg.get("days", 5) if isinstance(promo_cfg, dict) else 5)
+        new_trial = float(user.get("trial_start") or now) - days * 86400
         self.conn.execute(
             "UPDATE users SET trial_start = %s WHERE user_id = %s",
-            (new_trial, user_id)
+            (new_trial, user_id),
         )
         self.conn.commit()
         return True, get_text(lang, "redeem_success")
@@ -648,26 +740,120 @@ class UserManager:
         ).fetchone()
         return bool(row and row.get("memo"))
 
-    def confirm_binance_payment(self, user_id: int, *, force: bool = False) -> bool:
-        """Passe un utilisateur en rôle 'pro', approuvé=1 et terms_accepted=1 après validation admin."""
+    def record_payment(
+        self,
+        user_id: int,
+        plan: str,
+        amount: float,
+        method: str,
+        confirmed_by: Optional[int] = None,
+    ) -> None:
+        """Trace un paiement confirmé dans payment_log."""
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO payment_log (user_id, plan, amount, method, confirmed_by, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (int(user_id), str(plan), float(amount), str(method), confirmed_by, time.time()),
+            )
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def confirm_binance_payment(
+        self,
+        user_id: int,
+        *,
+        force: bool = False,
+        plan: Optional[str] = None,
+        confirmed_by: Optional[int] = None,
+        method: str = "binance_pay",
+        amount: Optional[float] = None,
+    ) -> bool:
+        """Passe un utilisateur en rôle 'pro' ou 'vip', prolonge plan_expires_at (+30j) et trace dans payment_log."""
         user = self.get_user(user_id)
         if not user:
             return False
-        if not force and not user.get("memo"):
+        memo_str = str(user.get("memo") or "").upper()
+        if not force and not memo_str:
             return False
+
+        if plan:
+            target_plan = "vip" if str(plan).strip().lower() == "vip" else "pro"
+        elif "VIP" in memo_str:
+            target_plan = "vip"
+        else:
+            target_plan = "pro"
+
+        now = time.time()
+        current_exp = 0.0
+        try:
+            current_exp = float(user.get("plan_expires_at") or 0.0)
+        except (TypeError, ValueError):
+            current_exp = 0.0
+        new_expires_at = max(now, current_exp) + (PLAN_DURATION_DAYS * 86400)
+        paid_amount = float(amount if amount is not None else PLAN_PRICES_USDT.get(target_plan, 19.0))
+
         self.conn.execute(
-            "UPDATE users SET role = 'pro', approved = 1, account_status = %s, terms_accepted = 1, memo = NULL WHERE user_id = %s",
-            (ACCOUNT_STATUS_APPROVED, user_id)
+            """
+            UPDATE users
+            SET role = %s,
+                approved = 1,
+                account_status = %s,
+                terms_accepted = 1,
+                memo = NULL,
+                plan_expires_at = %s
+            WHERE user_id = %s
+            """,
+            (target_plan, ACCOUNT_STATUS_APPROVED, new_expires_at, user_id),
         )
         self.conn.commit()
+        self.record_payment(
+            user_id=user_id,
+            plan=target_plan,
+            amount=paid_amount,
+            method=method,
+            confirmed_by=confirmed_by,
+        )
         return True
+
+    def expire_subscriptions(self, now: Optional[float] = None) -> List[int]:
+        """Passe en rôle 'free' tous les comptes PRO/VIP dont plan_expires_at est expiré (> 0 et <= now)."""
+        now_ts = float(now if now is not None else time.time())
+        expired_uids: List[int] = []
+        try:
+            rows = self.conn.execute(
+                "SELECT * FROM users WHERE LOWER(TRIM(COALESCE(role, ''))) IN ('pro', 'paid', 'premium', 'vip')"
+            ).fetchall()
+            for r in rows:
+                r_dict = dict(r)
+                uid = int(r_dict["user_id"])
+                if self.is_admin(uid):
+                    continue
+                raw_exp = r_dict.get("plan_expires_at")
+                try:
+                    exp_val = float(raw_exp or 0.0)
+                except (TypeError, ValueError):
+                    exp_val = 0.0
+                if exp_val > 0 and exp_val <= now_ts:
+                    self.conn.execute(
+                        "UPDATE users SET role = 'free' WHERE user_id = %s",
+                        (uid,),
+                    )
+                    expired_uids.append(uid)
+            if expired_uids:
+                self.conn.commit()
+        except Exception:
+            pass
+        return expired_uids
 
     # =========================================================
     # ADMIN: APPROVE TESTER
     # =========================================================
 
     def approve_user(self, user_id: int, role: str = "tester") -> bool:
-        """Approuve un utilisateur, valide les CGU (terms_accepted=1) et réinitialise sa période d'essai sans rétrograder un compte PRO."""
+        """Approuve un utilisateur, valide les CGU (terms_accepted=1) et réinitialise sa période d'essai sans rétrograder un compte PRO/VIP."""
         now = time.time()
         user = self.get_user(user_id)
         if not user:
@@ -684,7 +870,9 @@ class UserManager:
             return True
         current_role = str(user.get("role") or "").strip().lower()
         effective_role = role
-        if current_role in ("pro", "paid", "premium", "vip") and role == "tester":
+        if current_role == "vip" and role == "tester":
+            effective_role = "vip"
+        elif current_role in ("pro", "paid", "premium") and role == "tester":
             effective_role = "pro"
         elif current_role == "admin":
             effective_role = "admin"

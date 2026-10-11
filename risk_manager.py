@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from config import MAX_POSITION_EXPOSURE_PCT
-from trading_config import TradingConfig, record_daily_loss
+from trading_config import TradingConfig, record_daily_loss, record_daily_pnl
 from binance_manager import (
     get_account_balance,
     get_available_balance,
@@ -354,19 +354,40 @@ def check_can_open_position(
             f"Nombre max de positions atteint ({config.max_positions}).",
         )
 
-    if config.daily_loss_accum and config.max_daily_loss:
-        try:
-            balance = get_account_balance(user_id, market_type=config.market_type)
-        except Exception:
-            balance = None
-        if balance and balance > 0:
-            loss_pct = (config.daily_loss_accum / balance) * 100.0
-            if loss_pct >= config.max_daily_loss:
-                return RiskCheckResult(
-                    False,
-                    f"Perte quotidienne max atteinte ({config.max_daily_loss}%). "
-                    f"Trading suspendu jusqu'à demain.",
-                )
+    try:
+        balance = float(get_account_balance(user_id, market_type=config.market_type))
+    except Exception as e:
+        logger.warning("Risk check blocked user=%s: balance unavailable: %s", user_id, e)
+        return RiskCheckResult(
+            False,
+            "Solde Binance indisponible, ouverture refusée par sécurité.",
+        )
+    if balance <= 0:
+        return RiskCheckResult(
+            False,
+            "Solde Binance nul ou insuffisant, ouverture refusée.",
+        )
+
+    if config.max_daily_loss and float(config.max_daily_loss) > 0:
+        today_utc = time.strftime("%Y-%m-%d", time.gmtime(time.time()))
+        cfg_day = getattr(config, "daily_pnl_day", "") or ""
+        raw_pnl = getattr(config, "daily_pnl", None)
+        if cfg_day and cfg_day != today_utc:
+            effective_daily_pnl = 0.0
+        elif raw_pnl is not None and (raw_pnl != 0.0 or cfg_day):
+            effective_daily_pnl = float(raw_pnl)
+        elif config.daily_loss_accum:
+            effective_daily_pnl = -abs(float(config.daily_loss_accum))
+        else:
+            effective_daily_pnl = 0.0
+
+        max_loss_usdt = (float(config.max_daily_loss) / 100.0) * balance
+        if effective_daily_pnl <= -max_loss_usdt:
+            return RiskCheckResult(
+                False,
+                f"Perte quotidienne max atteinte ({config.max_daily_loss}%). "
+                f"Trading suspendu jusqu'à demain.",
+            )
 
     if config.cooldown_seconds:
         last_trade = get_last_trade_time(user_id)
@@ -594,6 +615,11 @@ async def calculate_position_size_async(
         direction=direction,
         tick_size=tick_size,
     )
+
+
+def record_trade_pnl(user_id: int, pnl_usdt: float) -> float:
+    """Enregistre le PnL réalisé net (gain ou perte) dans le cumul journalier UTC."""
+    return record_daily_pnl(user_id, float(pnl_usdt or 0.0))
 
 
 def record_trade_loss(user_id: int, loss_usdt: float) -> float:

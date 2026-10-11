@@ -2031,10 +2031,21 @@ async def send_invoice(query, title: str, price_eur: int, payload: str):
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = update.effective_user
-    user_mgr.set_role(user_id, "pro")
+    sp = getattr(update.message, "successful_payment", None)
+    payload = str(getattr(sp, "invoice_payload", "") or "").lower()
+    target_plan = "vip" if "vip" in payload else "pro"
+    amount = float(getattr(sp, "total_amount", 0) or 0)
+    user_mgr.set_role(user_id, target_plan)
+    user_mgr.record_payment(
+        user_id=user_id,
+        plan=target_plan,
+        amount=amount,
+        method="telegram_stars",
+        confirmed_by=user_id,
+    )
     lang = user_mgr.get_setting(user_id, "lang", "en")
-    await update.message.reply_text(get_text(lang, "payment_success", role="PRO"), parse_mode=ParseMode.MARKDOWN)
-    await notify_admin_new_premium(context, user, "pro", "Telegram Stars")
+    await update.message.reply_text(get_text(lang, "payment_success", role=target_plan.upper()), parse_mode=ParseMode.MARKDOWN)
+    await notify_admin_new_premium(context, user, target_plan, "Telegram Stars")
 
 @check_limit
 async def plan_binance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

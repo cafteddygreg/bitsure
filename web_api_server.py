@@ -51,15 +51,14 @@ from config import (
     GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET,
     PAPER_DEFAULT_CAPITAL,
+    PLAN_PRICES_STARS,
+    PLAN_PRICES_USDT,
+    PROMO_CODES,
     SESSION_SECRET,
     SYMBOL_CONFIGS,
     TRIAL_DAYS,
 )
 from payments import generate_binance_payment
-
-PLAN_PRICES_USDT = {"pro": 19, "vip": 49}
-PLAN_PRICES_STARS = {"pro": 1000, "vip": 2500}
-PROMO_CODES = {"TEDDYPRO": "pro", "TEDDYVIP": "vip", "WELCOME": "tester"}
 from data_fetcher import DataFetcher
 from database import get_connection, get_db
 from decision_journal import decision_journal
@@ -1367,7 +1366,7 @@ def _build_user_profile(user_id: int, csrf_token: str = "") -> Dict[str, Any]:
     role = "admin" if is_admin else um.get_role(user_id)
     account_status = ACCOUNT_STATUS_APPROVED if is_admin else um.get_account_status(user_id)
     is_approved = account_status == ACCOUNT_STATUS_APPROVED
-    is_premium = is_admin or (is_approved and role in ("pro", "admin"))
+    is_premium = is_admin or (is_approved and um.is_premium(user_id))
     watchlist = um.get_watchlist(user_id)
 
     quotas = um.get_user_quotas(user_id)
@@ -3722,7 +3721,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     um.set_account_status(target_uid, ACCOUNT_STATUS_PENDING)
                     msg = f"Compte #{target_uid} placé en attente (PENDING_APPROVAL)."
                 elif action == "confirm_binance":
-                    um.confirm_binance_payment(target_uid, force=True)
+                    um.confirm_binance_payment(target_uid, force=True, confirmed_by=user_id)
                     msg = f"Paiement Binance Pay confirmé pour #{target_uid} (PRO + APPROVED)."
                     log_security_event("ADMIN_CONFIRM_PAYMENT", user_id=user_id, details=f"Paiement Binance confirmé pour #{target_uid}.")
                 elif action == "delete":

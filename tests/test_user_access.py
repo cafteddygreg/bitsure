@@ -26,6 +26,8 @@ class InMemoryUsersDB:
         self.users = {}
         self.settings = {}
         self.usage = {}
+        self.promo_redemptions = set()
+        self.payment_log = []
 
     def commit(self):
         pass
@@ -36,9 +38,40 @@ class InMemoryUsersDB:
             uid = int(params[0])
             row = self.users.get(uid)
             return FakeCursor([dict(row)] if row else [])
+        if q.startswith("SELECT * FROM USERS WHERE LOWER(TRIM(COALESCE(ROLE, ''))) IN"):
+            rows = [
+                dict(u)
+                for uid, u in self.users.items()
+                if str(u.get("role") or "").strip().lower() in ("pro", "paid", "premium", "vip", "admin")
+                and ("USER_ID > 0" not in q or uid > 0)
+            ]
+            return FakeCursor(rows)
         if q.startswith("SELECT 1 FROM USERS WHERE USER_ID ="):
             uid = int(params[0])
             return FakeCursor([{"1": 1}] if uid in self.users else [])
+        if q.startswith("SELECT 1 FROM PROMO_REDEMPTIONS WHERE USER_ID ="):
+            uid, code = int(params[0]), str(params[1]).upper()
+            return FakeCursor([{"1": 1}] if (uid, code) in self.promo_redemptions else [])
+        if q.startswith("INSERT INTO PROMO_REDEMPTIONS"):
+            uid, code = int(params[0]), str(params[1]).upper()
+            if (uid, code) in self.promo_redemptions:
+                cur = FakeCursor([])
+                cur.rowcount = 0
+                return cur
+            self.promo_redemptions.add((uid, code))
+            cur = FakeCursor([])
+            cur.rowcount = 1
+            return cur
+        if q.startswith("INSERT INTO PAYMENT_LOG"):
+            self.payment_log.append({
+                "user_id": int(params[0]),
+                "plan": params[1],
+                "amount": float(params[2]),
+                "method": params[3],
+                "confirmed_by": params[4],
+                "created_at": float(params[5]),
+            })
+            return FakeCursor([])
         if q.startswith("SELECT USERNAME, ROLE FROM USERS WHERE USER_ID ="):
             uid = int(params[0])
             row = self.users.get(uid)
@@ -138,16 +171,37 @@ class InMemoryUsersDB:
                 self.users[uid]["terms_accepted"] = 1
                 self.users[uid]["memo"] = None
             return FakeCursor([])
+        if q.startswith("UPDATE USERS SET ROLE = 'FREE' WHERE USER_ID ="):
+            uid = int(params[0])
+            if uid in self.users:
+                self.users[uid]["role"] = "free"
+            return FakeCursor([])
         if q.startswith("UPDATE USERS SET ROLE = %S, APPROVED = 1"):
             role = params[0]
-            trial_start = params[-2]
             uid = int(params[-1])
             if uid in self.users:
                 self.users[uid]["role"] = role
                 self.users[uid]["approved"] = 1
                 self.users[uid]["account_status"] = "APPROVED"
                 self.users[uid]["terms_accepted"] = 1
+                if "MEMO = NULL" in q:
+                    self.users[uid]["memo"] = None
+                    self.users[uid]["plan_expires_at"] = float(params[2])
+                elif "PLAN_EXPIRES_AT = %S" in q:
+                    self.users[uid]["trial_start"] = params[2]
+                    self.users[uid]["plan_expires_at"] = float(params[3])
+                else:
+                    self.users[uid]["trial_start"] = params[-2]
+            return FakeCursor([])
+        if q.startswith("UPDATE USERS SET TRIAL_START = %S WHERE USER_ID ="):
+            trial_start, uid = float(params[0]), int(params[1])
+            if uid in self.users:
                 self.users[uid]["trial_start"] = trial_start
+            return FakeCursor([])
+        if q.startswith("UPDATE USERS SET MEMO = %S WHERE USER_ID ="):
+            memo, uid = params[0], int(params[1])
+            if uid in self.users:
+                self.users[uid]["memo"] = memo
             return FakeCursor([])
         if q.startswith("UPDATE USERS SET USERNAME ="):
             uname, uid = params[0], int(params[1])
@@ -223,6 +277,102 @@ class UserAccessTests(unittest.IsolatedAsyncioTestCase):
         }
         self.um.approve_user(555111, role="tester")
         self.assertEqual(self.um.get_role(555111), "pro")
+
+    def test_promo_code_single_use_rejects_second_redemption(self):
+        """promo 2× -> 2e refusée."""
+        self.db.users[600001] = {
+            "user_id": 600001,
+            "role": "tester",
+            "lang": "fr",
+            "timeframe": "1h",
+            "risk": "medium",
+            "terms_accepted": 1,
+            "trial_start": 1700000000.0,
+            "created_at": 1700000000.0,
+            "approved": 1,
+            "memo": None,
+            "username": "@promouser",
+        }
+        ok1, _ = self.um.redeem_promo(600001, "TRADERBURUNDI")
+        self.assertTrue(ok1)
+        ok2, msg2 = self.um.redeem_promo(600001, "TRADERBURUNDI")
+        self.assertFalse(ok2)
+        self.assertIn("déjà", msg2.lower())
+
+    def test_expired_plan_is_not_premium_and_expiry_job_downgrades_to_free(self):
+        """plan expiré -> is_premium False ; job quotidien -> role 'free'."""
+        import time as _time
+        now = _time.time()
+        self.db.users[600002] = {
+            "user_id": 600002,
+            "role": "pro",
+            "lang": "fr",
+            "timeframe": "1h",
+            "risk": "medium",
+            "terms_accepted": 1,
+            "trial_start": now - 40 * 86400,
+            "created_at": now - 40 * 86400,
+            "approved": 1,
+            "memo": None,
+            "username": "@expireduser",
+            "plan_expires_at": now - 3600,
+        }
+        self.assertFalse(self.um.is_premium(600002))
+        self.assertNotIn(600002, self.um.get_premium_users())
+        expired = self.um.expire_subscriptions(now=now)
+        self.assertIn(600002, expired)
+        self.assertEqual(self.db.users[600002]["role"], "free")
+
+    def test_confirmed_payment_extends_expiry_by_30_days_and_logs_payment(self):
+        """paiement confirmé -> échéance +30 j + écriture dans payment_log."""
+        import time as _time
+        from config import PLAN_DURATION_DAYS
+        now = _time.time()
+        self.db.users[600003] = {
+            "user_id": 600003,
+            "role": "tester",
+            "lang": "fr",
+            "timeframe": "1h",
+            "risk": "medium",
+            "terms_accepted": 1,
+            "trial_start": now,
+            "created_at": now,
+            "approved": 1,
+            "memo": "TEDDY-PRO-600003-1234",
+            "username": "@payer",
+            "plan_expires_at": 0.0,
+        }
+        ok = self.um.confirm_binance_payment(600003, confirmed_by=1)
+        self.assertTrue(ok)
+        self.assertEqual(self.um.get_role(600003), "pro")
+        exp = self.db.users[600003]["plan_expires_at"]
+        self.assertGreaterEqual(exp, now + (PLAN_DURATION_DAYS * 86400) - 5)
+        self.assertTrue(self.um.is_premium(600003))
+        self.assertEqual(len(self.db.payment_log), 1)
+        self.assertEqual(self.db.payment_log[0]["user_id"], 600003)
+        self.assertEqual(self.db.payment_log[0]["plan"], "pro")
+
+    def test_vip_recognized_as_premium(self):
+        """vip reconnu premium (is_premium et get_premium_users)."""
+        import time as _time
+        now = _time.time()
+        self.db.users[600004] = {
+            "user_id": 600004,
+            "role": "vip",
+            "lang": "fr",
+            "timeframe": "1h",
+            "risk": "medium",
+            "terms_accepted": 1,
+            "trial_start": now,
+            "created_at": now,
+            "approved": 1,
+            "memo": None,
+            "username": "@viptrader",
+            "plan_expires_at": now + 30 * 86400,
+        }
+        self.assertEqual(self.um.get_role(600004), "vip")
+        self.assertTrue(self.um.is_premium(600004))
+        self.assertIn(600004, self.um.get_premium_users())
 
     async def test_start_command_succeeds_for_paid_user_and_callback(self):
         import sys

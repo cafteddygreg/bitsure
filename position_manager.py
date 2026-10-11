@@ -17,7 +17,7 @@ except ImportError:
 
 from config import ATR_MULTIPLIER_SL
 from database import get_connection
-from trading_config import get_config, TradingConfig, update_config
+from trading_config import get_config, TradingConfig, update_config, record_daily_pnl
 from risk_manager import record_trade_loss, EPSILON
 try:
     from indicators import atr as calc_atr
@@ -115,12 +115,88 @@ def _compute_pnl(
     return pnl_usdt, pnl_pct
 
 
+def _resolve_real_exit_price(trade: Dict[str, Any], fallback_price: float) -> float:
+    """Récupère le prix d'exécution réel (ordre de clôture SL/TP ou userTrades Binance) quand disponible."""
+    explicit_exec = trade.get("executed_exit_price") or trade.get("executed_price")
+    if explicit_exec is not None:
+        try:
+            p = float(explicit_exec)
+            if p > 0:
+                return p
+        except (TypeError, ValueError):
+            pass
+
+    user_id = trade.get("user_id")
+    raw_sym = trade.get("symbol")
+    if not user_id or not raw_sym:
+        return float(fallback_price or 0.0)
+
+    norm_sym = normalize_symbol(str(raw_sym))
+    market_type = str(trade.get("market_type") or "futures").lower()
+    direction = str(trade.get("direction") or "BUY").upper()
+    opposite_side = "SELL" if direction == "BUY" else "BUY"
+
+    try:
+        from binance_manager import _client_for_user, _extract_order_fill_price
+
+        client = _client_for_user(int(user_id), market_type=market_type)  # type: ignore[arg-type]
+        for oid_field in ("sl_order_id", "tp_order_id", "close_order_id"):
+            oid = trade.get(oid_field)
+            if not oid:
+                continue
+            try:
+                if market_type == "futures" and hasattr(client, "futures_get_order"):
+                    ord_info = client.futures_get_order(symbol=norm_sym, orderId=oid)
+                elif market_type != "futures" and hasattr(client, "get_order"):
+                    ord_info = client.get_order(symbol=norm_sym, orderId=oid)
+                else:
+                    ord_info = None
+                if isinstance(ord_info, dict):
+                    st = str(ord_info.get("status") or "").upper()
+                    if st in ("FILLED", "PARTIALLY_FILLED") or ("status" not in ord_info and (ord_info.get("avgPrice") or ord_info.get("price"))):
+                        fill_p = _extract_order_fill_price(ord_info)
+                        if fill_p and fill_p > 0:
+                            return float(fill_p)
+            except Exception:
+                continue
+
+        trades_list = None
+        if market_type == "futures" and hasattr(client, "futures_account_trades"):
+            trades_list = client.futures_account_trades(symbol=norm_sym, limit=10)
+        elif market_type != "futures" and hasattr(client, "get_my_trades"):
+            trades_list = client.get_my_trades(symbol=norm_sym, limit=10)
+
+        if isinstance(trades_list, list) and trades_list:
+            for tr in reversed(trades_list):
+                if not isinstance(tr, dict):
+                    continue
+                side = str(tr.get("side") or "").upper()
+                if not side and "buyer" in tr:
+                    side = "BUY" if tr.get("buyer") else "SELL"
+                if side and side != opposite_side:
+                    continue
+                try:
+                    p = float(tr.get("price") or tr.get("avgPrice") or 0.0)
+                    if p > 0:
+                        return p
+                except (TypeError, ValueError):
+                    continue
+    except Exception:
+        pass
+
+    return float(fallback_price or 0.0)
+
+
 def close_trade(trade: Dict[str, Any], exit_reason: str, current_price: float) -> Tuple[float, float]:
-    """Clôture un trade localement en base de données et enregistre la perte éventuelle."""
+    """Clôture un trade localement en base de données et enregistre le PnL net journalier."""
+    effective_exit_price = float(current_price or 0.0)
+    if trade.get("executed_exit_price") or trade.get("executed_price") or trade.get("close_order_id"):
+        effective_exit_price = _resolve_real_exit_price(trade, effective_exit_price)
+
     pnl_usdt, pnl_pct = _compute_pnl(
         trade["direction"],
         float(trade["entry_price"] or 0.0),
-        float(current_price or 0.0),
+        effective_exit_price,
         float(trade["quantity"] or 0.0),
         int(trade.get("leverage") or 1),
     )
@@ -143,6 +219,11 @@ def close_trade(trade: Dict[str, Any], exit_reason: str, current_price: float) -
 
     if pnl_usdt < 0:
         record_trade_loss(trade["user_id"], abs(pnl_usdt))
+    elif pnl_usdt > 0:
+        try:
+            record_daily_pnl(trade["user_id"], pnl_usdt)
+        except Exception:
+            pass
 
     log_trade_closed(logger, trade["user_id"], trade["symbol"], exit_reason, pnl_usdt)
     return pnl_usdt, pnl_pct
@@ -358,7 +439,12 @@ def reconcile_user_positions(user_id: int, startup_mode: bool = False, context=N
             continue
         missing_remote.append(key)
         try:
-            current_price = get_price(user_id, trade["symbol"], trade["market_type"])
+            fallback_price = float(trade.get("entry_price") or 0.0)
+            try:
+                fallback_price = get_price(user_id, trade["symbol"], trade["market_type"])
+            except Exception:
+                pass
+            fill_price = _resolve_real_exit_price(trade, fallback_price)
             # Annulation préventive des ordres SL/TP restants pour ce trade orphelin
             for oid in (trade.get("sl_order_id"), trade.get("tp_order_id")):
                 if oid:
@@ -369,7 +455,7 @@ def reconcile_user_positions(user_id: int, startup_mode: bool = False, context=N
                         trade["market_type"],
                         execution_context=ORDER_CONTEXT_AUTOTRADE,
                     )
-            close_trade(trade, "reconciled_missing_remote", current_price)
+            close_trade(trade, "reconciled_missing_remote", fill_price)
             repaired += 1
         except Exception as e:
             log_error(logger, user_id, "reconcile.close_local", str(e))

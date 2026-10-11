@@ -112,6 +112,8 @@ class TradingConfig:
     testnet: bool = DEFAULTS["testnet"]
     cooldown_seconds: int = 0
     daily_loss_accum: float = 0.0
+    daily_pnl: float = 0.0
+    daily_pnl_day: str = ""
     safety_lock: bool = False
     safety_lock_reason: Optional[str] = None
     safety_lock_at: Optional[float] = None
@@ -166,7 +168,7 @@ def get_config(user_id: int) -> TradingConfig:
                        cooldown_seconds, daily_loss_accum, periodic_analysis_enabled,
                        safety_lock, safety_lock_reason, safety_lock_at,
                        safety_warn, safety_warn_reason, safety_warn_at, safety_lock_ttl_seconds,
-                       safety_lock_reminded
+                       safety_lock_reminded, daily_pnl, daily_pnl_day
                 FROM trading_config WHERE user_id = %s
                 """,
                 (user_id,),
@@ -176,6 +178,19 @@ def get_config(user_id: int) -> TradingConfig:
         conn.close()
     if not row:
         return TradingConfig(user_id=user_id)
+    today_utc = time.strftime("%Y-%m-%d", time.gmtime(time.time()))
+    stored_day = str(row[31] or "") if len(row) > 31 else ""
+    raw_daily_pnl = float(row[30] or 0.0) if len(row) > 30 and row[30] is not None else 0.0
+    raw_loss_accum = float(row[20] or 0.0)
+    if stored_day and stored_day != today_utc:
+        eff_daily_pnl = 0.0
+        eff_loss_accum = 0.0
+    elif not stored_day and raw_daily_pnl == 0.0 and raw_loss_accum > 0:
+        eff_daily_pnl = -abs(raw_loss_accum)
+        eff_loss_accum = raw_loss_accum
+    else:
+        eff_daily_pnl = raw_daily_pnl
+        eff_loss_accum = max(0.0, -eff_daily_pnl) if stored_day else raw_loss_accum
     return TradingConfig(
         user_id=row[0], auto_trade=row[1], leverage=row[2], risk_per_trade=row[3],
         max_positions=row[4], min_score=row[5], max_daily_loss=row[6],
@@ -188,7 +203,9 @@ def get_config(user_id: int) -> TradingConfig:
         analysis_timeframe=row[16] or DEFAULTS["analysis_timeframe"],
         analysis_interval_minutes=row[17] or DEFAULTS["analysis_interval_minutes"],
         testnet=row[18], cooldown_seconds=row[19] or 0,
-        daily_loss_accum=row[20] or 0.0,
+        daily_loss_accum=eff_loss_accum,
+        daily_pnl=eff_daily_pnl,
+        daily_pnl_day=stored_day or today_utc,
         periodic_analysis_enabled=bool(row[21]) if len(row) > 21 and row[21] is not None else False,
         safety_lock=bool(row[22]) if len(row) > 22 and row[22] is not None else False,
         safety_lock_reason=row[23] if len(row) > 23 else None,
@@ -361,30 +378,47 @@ def mark_credentials_invalid(user_id: int, reason: str = "") -> None:
         conn.close()
 
 
-def record_daily_loss(user_id: int, loss_usdt: float) -> float:
-    """Ajoute une perte au cumul journalier, en le réinitialisant si un nouveau jour a commencé."""
+def record_daily_pnl(user_id: int, pnl_usdt: float) -> float:
+    """Cumule le PnL réalisé net (gains et pertes) sur le jour calendaire UTC courant (reset à minuit UTC)."""
+    ensure_config_row(user_id)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT daily_loss_accum, daily_loss_reset_at FROM trading_config WHERE user_id = %s",
+                "SELECT daily_pnl, daily_pnl_day FROM trading_config WHERE user_id = %s",
                 (user_id,),
             )
             row = cur.fetchone()
             now = time.time()
-            accum, reset_at = (row[0] or 0.0, row[1]) if row else (0.0, None)
+            today_utc = time.strftime("%Y-%m-%d", time.gmtime(now))
+            current_pnl, stored_day = (float(row[0] or 0.0), str(row[1] or "")) if row else (0.0, "")
 
-            if reset_at is None or (now - reset_at) > 86400:
-                accum = 0.0
-                reset_at = now
+            if stored_day != today_utc:
+                current_pnl = 0.0
+                stored_day = today_utc
 
-            accum += max(loss_usdt, 0)
+            current_pnl += float(pnl_usdt or 0.0)
+            loss_accum = max(0.0, -current_pnl)
 
             cur.execute(
-                "UPDATE trading_config SET daily_loss_accum = %s, daily_loss_reset_at = %s WHERE user_id = %s",
-                (accum, reset_at, user_id),
+                """
+                UPDATE trading_config
+                SET daily_pnl = %s,
+                    daily_pnl_day = %s,
+                    daily_loss_accum = %s,
+                    daily_loss_reset_at = %s
+                WHERE user_id = %s
+                """,
+                (current_pnl, stored_day, loss_accum, now, user_id),
             )
         conn.commit()
-        return accum
+        return current_pnl
     finally:
         conn.close()
+
+
+def record_daily_loss(user_id: int, loss_usdt: float) -> float:
+    """Alias de compatibilité : enregistre une perte ou un PnL dans le cumul journalier UTC."""
+    pnl_delta = -abs(float(loss_usdt or 0.0)) if float(loss_usdt or 0.0) > 0 else float(loss_usdt or 0.0)
+    net_pnl = record_daily_pnl(user_id, pnl_delta)
+    return max(0.0, -net_pnl)

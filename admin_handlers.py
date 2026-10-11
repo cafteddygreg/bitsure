@@ -252,7 +252,8 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid is None:
         await update.message.reply_text("❌ Utilisateur ou mémo introuvable. Passe son `user_id` numérique ou son `@username`.", parse_mode="Markdown")
         return
-    if user_mgr.confirm_binance_payment(uid, force=True):
+    admin_uid = getattr(update.effective_user, "id", None)
+    if user_mgr.confirm_binance_payment(uid, force=True, confirmed_by=admin_uid):
         await update.message.reply_text(get_text(lang, "confirm_payment_ok", user_id=uid))
         if uid > 0:
             try:

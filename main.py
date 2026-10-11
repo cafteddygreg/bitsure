@@ -153,6 +153,27 @@ from position_manager import monitor_open_positions, reconcile_all_accounts
 
 autotrade_scheduler = None
 
+async def scheduled_subscription_expiry_job(context=None):
+    """Job quotidien : rétrograde en 'free' les abonnements expirés et notifie l'utilisateur."""
+    try:
+        from user_manager import UserManager
+
+        um = UserManager.get_instance()
+        expired_uids = um.expire_subscriptions()
+        bot = getattr(context, "bot", None) if context else None
+        for uid in expired_uids:
+            if uid > 0 and bot is not None:
+                try:
+                    await bot.send_message(
+                        chat_id=uid,
+                        text="⚠️ Votre abonnement PRO/VIP Bitsure Teddy est arrivé à échéance. Votre compte est repassé en offre Free. Utilisez /upgrade pour renouveler votre accès.",
+                    )
+                except Exception as notify_err:
+                    logger.warning(f"Failed to notify expired user {uid}: {notify_err}")
+    except Exception as e:
+        logger.warning(f"Subscription expiry job failed: {e}")
+
+
 def start_autotrade_scheduler(app):
     global autotrade_scheduler
     if autotrade_scheduler is not None and getattr(autotrade_scheduler, "running", False):
@@ -194,6 +215,11 @@ def start_autotrade_scheduler(app):
         scheduled_health_check_job, "interval", minutes=1,
         kwargs={"context": app},
         id="scheduled_health_check", replace_existing=True
+    )
+    autotrade_scheduler.add_job(
+        scheduled_subscription_expiry_job, "interval", hours=24,
+        kwargs={"context": app},
+        id="scheduled_subscription_expiry", replace_existing=True
     )
     try:
         reconcile_all_accounts(context=app, startup_mode=True)

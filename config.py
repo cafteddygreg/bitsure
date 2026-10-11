@@ -125,9 +125,25 @@ DB_POOL_MAXCONN = 10
 ACCESS_MODE = "approved_only"
 ALLOW_AUTO_REGISTER = True
 TRIAL_DAYS = 30
+PLAN_DURATION_DAYS = int(os.environ.get("PLAN_DURATION_DAYS", "30"))
 
-USER_ROLES = ["tester", "pro", "admin"]
-PREMIUM_ROLES = ["pro", "admin"]
+PLAN_PRICES_USDT = {
+    "pro": float(os.environ.get("PLAN_PRICE_PRO_USDT", "19")),
+    "vip": float(os.environ.get("PLAN_PRICE_VIP_USDT", "49")),
+}
+PLAN_PRICES_STARS = {
+    "pro": int(os.environ.get("PLAN_PRICE_PRO_STARS", "1000")),
+    "vip": int(os.environ.get("PLAN_PRICE_VIP_STARS", "2500")),
+}
+PROMO_CODES = {
+    "TRADERBURUNDI": {"days": 5},
+    "TEDDYPRO": {"days": 7, "role": "pro"},
+    "TEDDYVIP": {"days": 7, "role": "vip"},
+    "WELCOME": {"days": 5, "role": "tester"},
+}
+
+USER_ROLES = ["free", "tester", "pro", "vip", "admin"]
+PREMIUM_ROLES = ["pro", "vip", "admin"]
 
 # =========================================================
 # 4. LIMITES UTILISATEURS
