@@ -103,37 +103,49 @@ class InMemoryUsersDB:
                     "username": None,
                 }
             return FakeCursor([])
-        if q.startswith("UPDATE USERS SET APPROVED = 1, TERMS_ACCEPTED = 1, ROLE ="):
-            role, uid = params[0], int(params[1])
+        if q.startswith("UPDATE USERS SET APPROVED = 1, TERMS_ACCEPTED = 1"):
+            if len(params) == 3:
+                acc_status, role, uid = params[0], params[1], int(params[2])
+            else:
+                acc_status, role, uid = "APPROVED", params[0], int(params[1])
             if uid in self.users:
                 self.users[uid]["approved"] = 1
                 self.users[uid]["terms_accepted"] = 1
+                self.users[uid]["account_status"] = acc_status
                 self.users[uid]["role"] = role
             return FakeCursor([])
         if q.startswith("UPDATE USERS SET USER_ID ="):
-            new_uid, uname, old_uid = int(params[0]), params[1], int(params[2])
+            if len(params) == 4:
+                new_uid, uname, acc_status, old_uid = int(params[0]), params[1], params[2], int(params[3])
+            else:
+                new_uid, uname, acc_status, old_uid = int(params[0]), params[1], "APPROVED", int(params[2])
             old_row = self.users.pop(old_uid, {})
             old_row.update({
                 "user_id": new_uid,
                 "username": uname,
                 "approved": 1,
                 "terms_accepted": 1,
+                "account_status": acc_status,
             })
             self.users[new_uid] = old_row
             return FakeCursor([])
-        if q.startswith("UPDATE USERS SET ROLE = 'PRO', APPROVED = 1, TERMS_ACCEPTED = 1, MEMO = NULL"):
-            uid = int(params[0])
+        if q.startswith("UPDATE USERS SET ROLE = 'PRO', APPROVED = 1"):
+            uid = int(params[-1])
             if uid in self.users:
                 self.users[uid]["role"] = "pro"
                 self.users[uid]["approved"] = 1
+                self.users[uid]["account_status"] = "APPROVED"
                 self.users[uid]["terms_accepted"] = 1
                 self.users[uid]["memo"] = None
             return FakeCursor([])
-        if q.startswith("UPDATE USERS SET ROLE = %S, APPROVED = 1, TERMS_ACCEPTED = 1, TRIAL_START = %S"):
-            role, trial_start, uid = params[0], params[1], int(params[2])
+        if q.startswith("UPDATE USERS SET ROLE = %S, APPROVED = 1"):
+            role = params[0]
+            trial_start = params[-2]
+            uid = int(params[-1])
             if uid in self.users:
                 self.users[uid]["role"] = role
                 self.users[uid]["approved"] = 1
+                self.users[uid]["account_status"] = "APPROVED"
                 self.users[uid]["terms_accepted"] = 1
                 self.users[uid]["trial_start"] = trial_start
             return FakeCursor([])

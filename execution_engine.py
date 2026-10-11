@@ -11,6 +11,7 @@ les callbacks des boutons "✅ Ouvrir" / "❌ Refuser".
 """
 
 import time
+import uuid
 from typing import Any
 
 try:
@@ -207,6 +208,8 @@ def execute_signal(signal: dict, config: TradingConfig, execution_context: str |
     symbol = signal["symbol"]
     direction = signal["direction"]
     fields = _default_trade_fields(signal, config)
+    client_order_id = make_client_order_id("sig", uuid.uuid4().hex)
+    fields["binance_client_order_id"] = client_order_id
 
     try:
         entry_price = signal["entry_price"] or get_price(user_id, symbol, config.market_type)
@@ -223,7 +226,7 @@ def execute_signal(signal: dict, config: TradingConfig, execution_context: str |
             tp_price=signal["tp"],
             market_type=config.market_type,
             leverage=config.leverage,
-            client_order_id=make_client_order_id("sig", signal["id"]),
+            client_order_id=client_order_id,
             execution_context=execution_context,
         )
 
@@ -233,7 +236,7 @@ def execute_signal(signal: dict, config: TradingConfig, execution_context: str |
             "entry_price": actual_entry_price,
             "quantity": result["quantity"],
             "binance_order_id": str(result.get("order_id")),
-            "binance_client_order_id": result.get("client_order_id"),
+            "binance_client_order_id": result.get("client_order_id") or client_order_id,
             "sl_order_id": str(result.get("sl_order_id")) if result.get("sl_order_id") else None,
             "tp_order_id": str(result.get("tp_order_id")) if result.get("tp_order_id") else None,
         })

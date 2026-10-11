@@ -7,9 +7,11 @@ Les ordres réels ne sont envoyés qu'après validation et confirmation explicit
 
 from __future__ import annotations
 
+import json
 import math
 import time
 import hashlib
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 
@@ -19,22 +21,30 @@ from binance_manager import (
     BinanceClientError,
     _client_for_user,
     _extract_order_fill_price,
+    _lookup_order_by_client_id,
+    _place_spot_oco_order,
     get_account_balance,
     get_full_account_info,
+    get_open_binance_positions,
     get_price,
     get_symbol_filters,
+    make_client_order_id,
     round_step_size,
     set_leverage,
     _assert_order_context_allowed,
 )
+from config import DOCUMENTED_SYMBOLS
 from database import get_connection
+import security_manager
 from trading_config import get_config
-from risk_manager import check_can_open_position
+from risk_manager import check_can_open_position, check_symbol_allowed
 from trading_logger import get_trading_logger
-from trading_safety import SafetyError, assert_trading_allowed, engage_safe_mode
+from trading_safety import SafetyError, assert_trading_allowed, engage_safe_mode, user_trading_lock
 from utils import normalize_symbol
 
 logger = get_trading_logger("live_trader")
+
+_IDEMPOTENCY_MEMORY_STORE: dict[tuple[int, str], dict] = {}
 
 
 @dataclass
@@ -61,22 +71,99 @@ def _filter_float(filters: dict, filter_type: str, key: str, default: float = 0.
         return default
 
 
-
-
 def _get_max_leverage(client, symbol: str) -> Optional[int]:
     try:
         brackets = client.futures_leverage_bracket(symbol=symbol)
-        if brackets and brackets[0].get("brackets"):
+        if brackets and isinstance(brackets, list) and brackets[0].get("brackets"):
             return int(brackets[0]["brackets"][0].get("initialLeverage", 125))
     except Exception as e:
         logger.debug("Leverage bracket unavailable for %s: %s", symbol, e)
     return None
+
 
 def _round_tick(value: Optional[float], tick_size: float) -> Optional[float]:
     if value is None or tick_size <= 0:
         return value
     precision = max(0, int(round(-math.log10(tick_size))))
     return round(math.floor(float(value) / tick_size) * tick_size, precision)
+
+
+def _get_idempotent_result(user_id: int, key: str) -> Optional[dict]:
+    if not key:
+        return None
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_idempotency (
+                    user_id BIGINT NOT NULL,
+                    key TEXT NOT NULL,
+                    result_json TEXT,
+                    created_at DOUBLE PRECISION NOT NULL,
+                    UNIQUE(user_id, key)
+                )
+                """
+            )
+            cur.execute(
+                "SELECT result_json FROM order_idempotency WHERE user_id = %s AND key = %s",
+                (user_id, key),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                raw_json = row[0] if not isinstance(row, dict) else row.get("result_json")
+                if isinstance(raw_json, str) and raw_json:
+                    return json.loads(raw_json)
+    except Exception as e:
+        logger.debug("Idempotency DB lookup fallback for user=%s key=%s: %s", user_id, key, e)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return _IDEMPOTENCY_MEMORY_STORE.get((int(user_id), str(key)))
+
+
+def _save_idempotent_result(user_id: int, key: str, result: dict) -> None:
+    if not key:
+        return
+    serialized = json.dumps(result, default=str)
+    _IDEMPOTENCY_MEMORY_STORE[(int(user_id), str(key))] = json.loads(serialized)
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_idempotency (
+                    user_id BIGINT NOT NULL,
+                    key TEXT NOT NULL,
+                    result_json TEXT,
+                    created_at DOUBLE PRECISION NOT NULL,
+                    UNIQUE(user_id, key)
+                )
+                """
+            )
+            cur.execute(
+                """
+                INSERT INTO order_idempotency (user_id, key, result_json, created_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id, key) DO UPDATE
+                SET result_json = EXCLUDED.result_json
+                """,
+                (user_id, key, serialized, time.time()),
+            )
+        conn.commit()
+    except Exception as e:
+        logger.debug("Idempotency DB save fallback for user=%s key=%s: %s", user_id, key, e)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def build_draft(
@@ -134,12 +221,31 @@ def validate_draft(user_id: int, draft: LiveOrderDraft) -> dict:
         raise BinanceClientError(f"Type de marché non supporté : {draft.market_type}")
     if draft.market_type != "futures" and draft.side == "SELL" and not draft.reduce_only:
         raise BinanceClientError("SHORT non supporté en Spot standard. Utilise Futures.")
-    if draft.leverage < 1 or draft.leverage > 125:
-        raise BinanceClientError("Le levier doit être entre 1 et 125.")
     if draft.amount <= 0:
         raise BinanceClientError("Le montant doit être supérieur à 0.")
 
+    # 1. Ouverture (non reduce_only) sans sl_price -> refus
+    if not draft.reduce_only and (draft.sl_price is None or float(draft.sl_price) <= 0):
+        raise BinanceClientError("Un Stop-Loss (sl_price) est obligatoire pour ouvrir une position.")
+
     config = get_config(user_id)
+
+    # 2. Symbole in DOCUMENTED_SYMBOLS et autorisé par check_symbol_allowed
+    norm_symbol = normalize_symbol(draft.symbol.upper())
+    draft.symbol = norm_symbol
+    if norm_symbol not in DOCUMENTED_SYMBOLS:
+        raise BinanceClientError(f"Symbole {norm_symbol} non supporté (hors DOCUMENTED_SYMBOLS).")
+    sym_check = check_symbol_allowed(config, norm_symbol)
+    if not sym_check.allowed:
+        raise BinanceClientError(sym_check.reason or f"Symbole {norm_symbol} non autorisé.")
+
+    # 3. Levier <= config.leverage de l'utilisateur
+    max_cfg_leverage = 1 if draft.market_type == "spot" else max(1, int(getattr(config, "leverage", 1) or 1))
+    if draft.leverage < 1 or draft.leverage > max_cfg_leverage:
+        raise BinanceClientError(
+            f"Le levier demandé (x{draft.leverage}) dépasse le levier configuré (x{max_cfg_leverage})."
+        )
+
     try:
         assert_trading_allowed(config, require_auto_trade=False)
     except SafetyError as e:
@@ -183,11 +289,29 @@ def validate_draft(user_id: int, draft: LiveOrderDraft) -> dict:
     sl_price = _round_tick(draft.sl_price, tick_size)
     tp_price = _round_tick(draft.tp_price, tick_size)
 
-    if not draft.reduce_only and sl_price is not None and tp_price is not None:
-        if draft.side == "BUY" and not (sl_price < price < tp_price):
-            raise BinanceClientError("SL/TP incohérents avec un ordre BUY (attendu: SL < Prix < TP).")
-        if draft.side == "SELL" and not (tp_price < price < sl_price):
-            raise BinanceClientError("SL/TP incohérents avec un ordre SELL (attendu: TP < Prix < SL).")
+    if not draft.reduce_only:
+        if sl_price is None or sl_price <= 0:
+            raise BinanceClientError("Un Stop-Loss (sl_price) valide est obligatoire pour ouvrir une position.")
+        if draft.side == "BUY":
+            if sl_price >= price:
+                raise BinanceClientError("SL incohérent avec un ordre BUY (attendu: SL < Prix).")
+            if tp_price is not None and tp_price <= price:
+                raise BinanceClientError("SL/TP incohérents avec un ordre BUY (attendu: SL < Prix < TP).")
+        elif draft.side == "SELL":
+            if sl_price <= price:
+                raise BinanceClientError("SL incohérent avec un ordre SELL (attendu: Prix < SL).")
+            if tp_price is not None and tp_price >= price:
+                raise BinanceClientError("SL/TP incohérents avec un ordre SELL (attendu: TP < Prix < SL).")
+
+        # 4. Perte au SL = |prix - SL| * quantité <= solde * risk_per_trade / 100
+        sl_loss = abs(price - float(sl_price)) * quantity
+        risk_pct = float(getattr(config, "risk_per_trade", 1.0) or 1.0)
+        max_risk_usdt = balance * (risk_pct / 100.0)
+        if sl_loss > max_risk_usdt + 1e-9:
+            raise BinanceClientError(
+                f"Perte potentielle au SL ({sl_loss:.2f} USDT) supérieure au risque maximum autorisé "
+                f"({max_risk_usdt:.2f} USDT, soit {risk_pct}% du solde)."
+            )
 
     return {
         "balance": balance,
@@ -201,102 +325,341 @@ def validate_draft(user_id: int, draft: LiveOrderDraft) -> dict:
     }
 
 
-def execute_draft(user_id: int, draft: LiveOrderDraft, execution_context: Optional[str] = None) -> dict:
+def _record_pending_client_order_id(user_id: int, key: Optional[str], client_order_id: str) -> str:
+    """Enregistre ou relit le client_order_id avant l'envoi de l'ordre pour éviter tout doublon après timeout."""
+    if key:
+        existing = _get_idempotent_result(user_id, key)
+        if isinstance(existing, dict) and existing.get("_pending_client_order_id"):
+            return str(existing["_pending_client_order_id"])
+        _save_idempotent_result(user_id, key, {"_pending_client_order_id": client_order_id})
+    return client_order_id
+
+
+def _is_order_filled(order: Optional[dict], default_if_missing_status: bool = True) -> bool:
+    if not isinstance(order, dict):
+        return False
+    status = order.get("status")
+    if status is None:
+        return default_if_missing_status
+    return str(status).upper() in ("FILLED", "PARTIALLY_FILLED")
+
+
+def _place_live_futures_protection(
+    client,
+    symbol: str,
+    opposite: str,
+    checks: dict,
+    result: dict,
+) -> None:
+    if (checks.get("sl_price") or checks.get("tp_price")):
+        from binance_manager import _cancel_conflicting_futures_protective_orders
+        target_types = set()
+        if checks.get("sl_price") and not result.get("sl_order"):
+            target_types.add("STOP_MARKET")
+        if checks.get("tp_price") and not result.get("tp_order"):
+            target_types.add("TAKE_PROFIT_MARKET")
+        if target_types:
+            _cancel_conflicting_futures_protective_orders(
+                client,
+                symbol,
+                side=opposite,
+                order_types=target_types,
+            )
+    if checks.get("sl_price") and not result.get("sl_order"):
+        result["sl_order"] = client.futures_create_order(
+            symbol=symbol,
+            side=opposite,
+            type="STOP_MARKET",
+            stopPrice=checks["sl_price"],
+            closePosition=True,
+        )
+    if checks.get("tp_price") and not result.get("tp_order"):
+        result["tp_order"] = client.futures_create_order(
+            symbol=symbol,
+            side=opposite,
+            type="TAKE_PROFIT_MARKET",
+            stopPrice=checks["tp_price"],
+            closePosition=True,
+        )
+
+
+def execute_draft(
+    user_id: int,
+    draft: LiveOrderDraft,
+    execution_context: Optional[str] = None,
+    *,
+    pin: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+    _pin_verified: bool = False,
+) -> dict:
+    if not _pin_verified and pin is not None:
+        if not str(pin).strip():
+            raise BinanceClientError("Code PIN de sécurité obligatoire pour exécuter un ordre réel.")
+        ok_pin, pin_msg = security_manager.verify_code(user_id, str(pin).strip())
+        if not ok_pin:
+            raise BinanceClientError(pin_msg)
+
     _assert_order_context_allowed(user_id, execution_context, require_auto_trade=False)
-    checks = validate_draft(user_id, draft)
-    client = _client_for_user(user_id, market_type=draft.market_type)
-    result = {"checks": checks}
-    opposite = "SELL" if draft.side == "BUY" else "BUY"
-    client_order_id = "live_" + hashlib.sha256(
-        f"{user_id}:{draft.symbol}:{draft.side}:{draft.amount}:{draft.sl_price}:{draft.tp_price}:{int(time.time() // 60)}".encode()
-    ).hexdigest()[:24]
 
-    opened_order = None
-    try:
-        if draft.market_type == "futures":
-            try:
-                client.futures_change_margin_type(symbol=draft.symbol, marginType=draft.margin_type)
-            except BinanceAPIException as e:
-                if getattr(e, "code", None) != -4046:  # No need to change margin type.
-                    raise
-            set_leverage(user_id, draft.symbol, draft.leverage)
-            params = {
-                "symbol": draft.symbol,
-                "side": draft.side,
-                "type": draft.order_type,
-                "quantity": checks["quantity"],
-                "newClientOrderId": client_order_id,
-            }
-            if draft.order_type == "LIMIT":
-                params.update({"price": checks["entry_price"], "timeInForce": "GTC"})
-            if draft.reduce_only:
-                params["reduceOnly"] = True
-            order = client.futures_create_order(**params)
-            opened_order = order
-            result["order"] = order
-            if (checks["sl_price"] or checks["tp_price"]) and not draft.reduce_only:
-                from binance_manager import _cancel_conflicting_futures_protective_orders
-                target_types = set()
-                if checks["sl_price"]:
-                    target_types.add("STOP_MARKET")
-                if checks["tp_price"]:
-                    target_types.add("TAKE_PROFIT_MARKET")
-                _cancel_conflicting_futures_protective_orders(
-                    client,
-                    draft.symbol,
-                    side=opposite,
-                    order_types=target_types,
-                )
-            if checks["sl_price"] and not draft.reduce_only:
-                result["sl_order"] = client.futures_create_order(
-                    symbol=draft.symbol, side=opposite, type="STOP_MARKET",
-                    stopPrice=checks["sl_price"], closePosition=True,
-                )
-            if checks["tp_price"] and not draft.reduce_only:
-                result["tp_order"] = client.futures_create_order(
-                    symbol=draft.symbol, side=opposite, type="TAKE_PROFIT_MARKET",
-                    stopPrice=checks["tp_price"], closePosition=True,
-                )
-        else:
-            if draft.order_type == "LIMIT":
-                order = client.create_order(
-                    symbol=draft.symbol, side=draft.side, type="LIMIT",
-                    quantity=checks["quantity"], price=checks["entry_price"], timeInForce="GTC",
-                    newClientOrderId=client_order_id,
-                )
-            else:
-                order = client.create_order(
-                    symbol=draft.symbol, side=draft.side, type="MARKET", quantity=checks["quantity"],
-                    newClientOrderId=client_order_id,
-                )
-            result["order"] = order
-    except (BinanceAPIException, BinanceOrderException) as e:
-        if draft.market_type == "futures" and opened_order and draft.order_type == "MARKET" and not draft.reduce_only:
-            try:
-                client.futures_create_order(
-                    symbol=draft.symbol, side=opposite, type="MARKET",
-                    quantity=checks["quantity"], reduceOnly=True,
-                )
-            except Exception as close_err:
-                logger.critical(
-                    "Live position %s potentiellement ouverte sans protection pour user=%s: %s",
-                    draft.symbol, user_id, close_err,
-                )
+    # 6. Exécution sous user_trading_lock(user_id) + 7. Idempotence
+    with user_trading_lock(user_id):
+        pending_coid: Optional[str] = None
+        if idempotency_key:
+            cached = _get_idempotent_result(user_id, idempotency_key)
+            if isinstance(cached, dict):
+                if cached.get("order") is not None:
+                    return cached
+                if cached.get("_pending_client_order_id"):
+                    pending_coid = str(cached["_pending_client_order_id"])
+
+        checks = validate_draft(user_id, draft)
+        client = _client_for_user(user_id, market_type=draft.market_type)
+
+        # Si un essai précédent a généré un client_order_id (ex: timeout), relire sur Binance avant tout nouvel essai
+        if pending_coid:
+            prior_order = _lookup_order_by_client_id(client, draft.symbol, pending_coid, draft.market_type)
+            if prior_order and prior_order.get("orderId") is not None:
+                recovered_res = {"checks": checks, "order": prior_order, "client_order_id": pending_coid}
+                if idempotency_key:
+                    _save_idempotent_result(user_id, idempotency_key, recovered_res)
+                return recovered_res
+
+        if not draft.reduce_only:
+            remote_positions = get_open_binance_positions(user_id, market_type=draft.market_type)
+            existing = [
+                p for p in (remote_positions or [])
+                if normalize_symbol(str(p.get("symbol", ""))) == draft.symbol
+            ]
+            if existing:
                 raise BinanceClientError(
-                    "Ordre principal ouvert mais protection SL/TP échouée; fermeture automatique impossible."
+                    f"Ouverture refusée: position Binance existante sur {draft.symbol} ({existing})."
                 )
-            raise BinanceClientError("Ordre principal ouvert puis refermé car la protection SL/TP a échoué.")
-        logger.warning("Live order failed user=%s symbol=%s: %s", user_id, draft.symbol, getattr(e, "message", str(e)))
-        raise BinanceClientError(f"Erreur Binance Live Trading : {getattr(e, 'message', str(e))}")
 
-    _save_live_trade(user_id, draft, result)
-    return result
+        client_order_id = pending_coid or make_client_order_id("live", uuid.uuid4().hex)
+        client_order_id = _record_pending_client_order_id(user_id, idempotency_key, client_order_id)
+
+        result: dict = {"checks": checks, "client_order_id": client_order_id}
+        opposite = "SELL" if draft.side == "BUY" else "BUY"
+        opened_order: Optional[dict] = None
+        main_order_sent = False
+
+        try:
+            if draft.market_type == "futures":
+                try:
+                    client.futures_change_margin_type(symbol=draft.symbol, marginType=draft.margin_type)
+                except BinanceAPIException as e:
+                    if getattr(e, "code", None) != -4046:  # No need to change margin type.
+                        raise
+                set_leverage(user_id, draft.symbol, draft.leverage)
+                params = {
+                    "symbol": draft.symbol,
+                    "side": draft.side,
+                    "type": draft.order_type,
+                    "quantity": checks["quantity"],
+                    "newClientOrderId": client_order_id,
+                }
+                if draft.order_type == "LIMIT":
+                    params.update({"price": checks["entry_price"], "timeInForce": "GTC"})
+                if draft.reduce_only:
+                    params["reduceOnly"] = True
+
+                main_order_sent = True
+                order = client.futures_create_order(**params)
+                opened_order = order
+                result["order"] = order
+
+                if not draft.reduce_only:
+                    # Pour LIMIT Futures : ne poser STOP_MARKET / TAKE_PROFIT_MARKET que si l'ordre est déjà FILLED
+                    should_place_protection = (
+                        draft.order_type != "LIMIT"
+                        or _is_order_filled(order, default_if_missing_status=False)
+                    )
+                    if should_place_protection:
+                        _place_live_futures_protection(client, draft.symbol, opposite, checks, result)
+            else:
+                main_order_sent = True
+                if draft.order_type == "LIMIT":
+                    order = client.create_order(
+                        symbol=draft.symbol,
+                        side=draft.side,
+                        type="LIMIT",
+                        quantity=checks["quantity"],
+                        price=checks["entry_price"],
+                        timeInForce="GTC",
+                        newClientOrderId=client_order_id,
+                    )
+                else:
+                    order = client.create_order(
+                        symbol=draft.symbol,
+                        side=draft.side,
+                        type="MARKET",
+                        quantity=checks["quantity"],
+                        newClientOrderId=client_order_id,
+                    )
+                opened_order = order
+                result["order"] = order
+
+                if not draft.reduce_only and draft.side == "BUY":
+                    should_place_oco = (
+                        draft.order_type != "LIMIT"
+                        or _is_order_filled(order, default_if_missing_status=False)
+                    )
+                    if should_place_oco and checks.get("sl_price") and checks.get("tp_price"):
+                        filters = get_symbol_filters(client, draft.symbol, "spot")
+                        sl_oid, tp_oid, oco_order = _place_spot_oco_order(
+                            client,
+                            draft.symbol,
+                            opposite,
+                            float(checks["quantity"]),
+                            float(checks["sl_price"]),
+                            float(checks["tp_price"]),
+                            filters,
+                        )
+                        result["oco_order"] = oco_order
+                        if sl_oid:
+                            result["sl_order"] = {"orderId": sl_oid}
+                        if tp_oid:
+                            result["tp_order"] = {"orderId": tp_oid}
+                    elif should_place_oco and (checks.get("sl_price") or checks.get("tp_price")):
+                        raise BinanceOrderException("Spot requiert sl_price et tp_price pour poser un ordre OCO.")
+        except Exception as e:
+            if not main_order_sent:
+                logger.warning("Live order failed before send user=%s symbol=%s: %s", user_id, draft.symbol, getattr(e, "message", str(e)))
+                raise BinanceClientError(f"Erreur Binance Live Trading : {getattr(e, 'message', str(e))}")
+
+            if opened_order is None:
+                opened_order = _lookup_order_by_client_id(client, draft.symbol, client_order_id, draft.market_type)
+                if opened_order is not None:
+                    result["order"] = opened_order
+
+            if draft.market_type == "futures" and not draft.reduce_only:
+                remote_pos = None
+                remote_check_ok = False
+                try:
+                    positions = get_open_binance_positions(user_id, market_type="futures")
+                    remote_check_ok = True
+                    remote_pos = next(
+                        (
+                            p for p in (positions or [])
+                            if normalize_symbol(str(p.get("symbol", ""))) == draft.symbol
+                            and str(p.get("direction", "")).upper() == draft.side
+                        ),
+                        None,
+                    )
+                except Exception as pos_err:
+                    logger.warning("Vérification position live après erreur sur %s (user=%s) impossible: %s", draft.symbol, user_id, pos_err)
+
+                default_filled = (draft.order_type != "LIMIT")
+                order_filled = _is_order_filled(opened_order, default_if_missing_status=default_filled)
+
+                if remote_pos is not None or order_filled:
+                    has_sl = bool(result.get("sl_order")) or not checks.get("sl_price")
+                    has_tp = bool(result.get("tp_order")) or not checks.get("tp_price")
+                    if not (has_sl and has_tp):
+                        try:
+                            _place_live_futures_protection(client, draft.symbol, opposite, checks, result)
+                            has_sl = bool(result.get("sl_order")) or not checks.get("sl_price")
+                            has_tp = bool(result.get("tp_order")) or not checks.get("tp_price")
+                            if has_sl and has_tp and result.get("order") is not None:
+                                _save_live_trade(user_id, draft, result)
+                                if idempotency_key:
+                                    _save_idempotent_result(user_id, idempotency_key, result)
+                                return result
+                        except Exception as prot_err:
+                            logger.warning("Échec pose protection live de secours sur %s (user=%s): %s", draft.symbol, user_id, prot_err)
+
+                    close_qty = float(remote_pos["quantity"]) if remote_pos and remote_pos.get("quantity") else checks["quantity"]
+                    try:
+                        client.futures_create_order(
+                            symbol=draft.symbol,
+                            side=opposite,
+                            type="MARKET",
+                            quantity=close_qty,
+                            reduceOnly=True,
+                        )
+                    except Exception as close_err:
+                        reason = (
+                            f"Live position {draft.symbol} potentiellement sans protection après erreur ({getattr(e, 'message', str(e))}) "
+                            f"et échec fermeture reduceOnly ({close_err})"
+                        )
+                        logger.critical("Live position %s sans protection pour user=%s: %s", draft.symbol, user_id, reason)
+                        engage_safe_mode(user_id, reason)
+                        raise BinanceClientError(
+                            "Ordre principal ouvert mais protection SL/TP échouée; fermeture automatique impossible."
+                        )
+                    raise BinanceClientError("Ordre principal ouvert puis refermé car la protection SL/TP a échoué.")
+
+                if not remote_check_ok and opened_order is None:
+                    reason = f"État d'ordre live incertain après erreur réseau sur {draft.symbol} (clientOrderId={client_order_id}): {e}"
+                    engage_safe_mode(user_id, reason)
+                    raise BinanceClientError(f"Erreur réseau Live Trading sur {draft.symbol}; Safe Mode activé.")
+
+            elif draft.market_type == "spot" and not draft.reduce_only and draft.side == "BUY":
+                default_filled = (draft.order_type != "LIMIT")
+                order_filled = _is_order_filled(opened_order, default_if_missing_status=default_filled)
+                if order_filled:
+                    if checks.get("sl_price") and checks.get("tp_price") and not (result.get("sl_order") and result.get("tp_order")):
+                        try:
+                            filters = get_symbol_filters(client, draft.symbol, "spot")
+                            sl_oid, tp_oid, oco_order = _place_spot_oco_order(
+                                client,
+                                draft.symbol,
+                                opposite,
+                                float(checks["quantity"]),
+                                float(checks["sl_price"]),
+                                float(checks["tp_price"]),
+                                filters,
+                            )
+                            result["oco_order"] = oco_order
+                            if sl_oid:
+                                result["sl_order"] = {"orderId": sl_oid}
+                            if tp_oid:
+                                result["tp_order"] = {"orderId": tp_oid}
+                            if result.get("order") is not None and sl_oid and tp_oid:
+                                _save_live_trade(user_id, draft, result)
+                                if idempotency_key:
+                                    _save_idempotent_result(user_id, idempotency_key, result)
+                                return result
+                        except Exception as oco_err:
+                            logger.warning("Échec pose OCO live de secours sur %s (user=%s): %s", draft.symbol, user_id, oco_err)
+
+                    try:
+                        client.create_order(
+                            symbol=draft.symbol,
+                            side="SELL",
+                            type="MARKET",
+                            quantity=checks["quantity"],
+                        )
+                    except Exception as close_err:
+                        reason = (
+                            f"Position Spot live {draft.symbol} sans protection OCO après erreur ({getattr(e, 'message', str(e))}) "
+                            f"et échec revente marché ({close_err})"
+                        )
+                        engage_safe_mode(user_id, reason)
+                        raise BinanceClientError(
+                            "Achat Spot exécuté mais protection OCO échouée; fermeture automatique impossible."
+                        )
+                    raise BinanceClientError("Achat Spot exécuté puis revendu car la protection OCO a échoué.")
+
+                if opened_order is None:
+                    reason = f"État d'ordre Spot live incertain après erreur réseau sur {draft.symbol} (clientOrderId={client_order_id}): {e}"
+                    engage_safe_mode(user_id, reason)
+                    raise BinanceClientError(f"Erreur réseau Spot Live Trading sur {draft.symbol}; Safe Mode activé.")
+
+            logger.warning("Live order failed user=%s symbol=%s: %s", user_id, draft.symbol, getattr(e, "message", str(e)))
+            raise BinanceClientError(f"Erreur Binance Live Trading : {getattr(e, 'message', str(e))}")
+
+        _save_live_trade(user_id, draft, result)
+        if idempotency_key:
+            _save_idempotent_result(user_id, idempotency_key, result)
+        return result
 
 
 def _save_live_trade(user_id: int, draft: LiveOrderDraft, result: dict) -> None:
     order = result.get("order", {})
     checks = result["checks"]
     actual_price = _extract_order_fill_price(order) or checks["price"]
+    client_oid = order.get("clientOrderId") or result.get("client_order_id")
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -311,7 +674,7 @@ def _save_live_trade(user_id: int, draft: LiveOrderDraft, result: dict) -> None:
                     "live_manual", user_id, draft.symbol, draft.side, actual_price, checks["sl_price"],
                     checks["tp_price"], checks["quantity"], draft.leverage, draft.market_type, time.time(),
                     str(order.get("orderId")) if order.get("orderId") else None,
-                    order.get("clientOrderId"),
+                    client_oid,
                     str(result.get("sl_order", {}).get("orderId")) if result.get("sl_order") else None,
                     str(result.get("tp_order", {}).get("orderId")) if result.get("tp_order") else None,
                 ),

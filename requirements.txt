@@ -10,4 +10,4 @@ psycopg2-binary
 python-binance
 apscheduler
 tenacity
-
+cryptography==42.0.5

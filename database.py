@@ -571,6 +571,7 @@ def _ensure_schema(conn):
             safety_lock BOOLEAN DEFAULT FALSE,
             safety_lock_reason TEXT,
             safety_lock_at DOUBLE PRECISION,
+            safety_lock_reminded BOOLEAN DEFAULT FALSE,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """,
@@ -585,6 +586,7 @@ def _ensure_schema(conn):
         "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_warn_reason TEXT",
         "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_warn_at DOUBLE PRECISION",
         "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_lock_ttl_seconds INT DEFAULT 3600",
+        "ALTER TABLE trading_config ADD COLUMN IF NOT EXISTS safety_lock_reminded BOOLEAN DEFAULT FALSE",
         """
         CREATE TABLE IF NOT EXISTS binance_credentials (
             user_id BIGINT PRIMARY KEY,
@@ -603,6 +605,15 @@ def _ensure_schema(conn):
             failed_attempts INT DEFAULT 0,
             locked_until DOUBLE PRECISION,
             updated_at DOUBLE PRECISION
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS order_idempotency (
+            user_id BIGINT NOT NULL,
+            key TEXT NOT NULL,
+            result_json TEXT,
+            created_at DOUBLE PRECISION NOT NULL,
+            UNIQUE(user_id, key)
         )
         """,
         """

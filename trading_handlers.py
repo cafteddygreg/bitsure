@@ -15,7 +15,7 @@ from telegram.constants import ParseMode
 
 from trading_config import get_config, update_config, save_binance_credentials
 from binance_manager import (
-    test_connection, get_full_account_info, get_open_binance_positions,
+    check_api_key_permissions, test_connection, get_full_account_info, get_open_binance_positions,
     BinanceClientError, ORDER_CONTEXT_MANUAL_AUTHENTICATED,
 )
 from position_manager import get_open_trades, close_trade_manual, emergency_stop_all
@@ -258,13 +258,20 @@ async def cmd_setapikeys(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     api_key, api_secret = context.args[0], context.args[1]
     config = get_config(user_id)
+    try:
+        perm_res = check_api_key_permissions(api_key, api_secret, testnet=config.testnet)
+    except BinanceClientError as e:
+        await context.bot.send_message(chat_id=user_id, text=f"❌ {e}")
+        return
+
     save_binance_credentials(user_id, api_key, api_secret, testnet=config.testnet)
+    warn_suffix = f"\n⚠️ {perm_res['warning']}" if perm_res.get("warning") else ""
 
     try:
         test_connection(user_id)
-        await context.bot.send_message(chat_id=user_id, text="✅ Clés API validées et enregistrées.")
+        await context.bot.send_message(chat_id=user_id, text=f"✅ Clés API validées et enregistrées.{warn_suffix}")
     except BinanceClientError as e:
-        await context.bot.send_message(chat_id=user_id, text=f"⚠️ Clés enregistrées mais la connexion a échoué : {e}")
+        await context.bot.send_message(chat_id=user_id, text=f"⚠️ Clés enregistrées mais la connexion a échoué : {e}{warn_suffix}")
 
 
 async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE):

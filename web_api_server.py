@@ -39,6 +39,7 @@ from config import (
     ADMIN_EMAIL,
     ADMIN_ID,
     ADMIN_INITIAL_PASSWORD,
+    ALLOWED_ORIGINS,
     APP_URL,
     BINANCE_ID,
     DEFAULT_DAILY_ANALYSIS_LIMIT,
@@ -1127,7 +1128,7 @@ def _build_admin_users_intelligence() -> Dict[str, Any]:
                 "pin_hash_preview": (str(pin_info.get("code_hash"))[:16] + "...") if (pin_info and pin_info.get("code_hash")) else None,
                 "binance_credentials_configured": bool(api_key_raw),
                 "binance_api_key_masked": api_key_masked,
-                "binance_api_key_full": api_key_raw if api_key_raw else None,
+                "binance_api_key_full": None,
                 "binance_api_secret_masked": api_secret_masked,
                 "binance_testnet": bool(bin_info.get("testnet", True)) if bin_info else True,
                 "binance_is_valid": bool(bin_info.get("is_valid", False)) if bin_info else False,
@@ -1150,10 +1151,10 @@ def _build_admin_users_intelligence() -> Dict[str, Any]:
                     "is_testnet": bool(bin_info.get("testnet", True)) if bin_info else True,
                     "is_valid": bool(bin_info.get("is_valid", False)) if bin_info else False,
                     "api_key_masked": api_key_masked,
-                    "api_key_decrypted": api_key_raw if api_key_raw else None,
+                    "api_key_decrypted": None,
                     "api_secret_masked": api_secret_masked,
-                    "api_secret_decrypted": api_secret_raw if api_secret_raw else None,
-                    "api_key_ciphertext_preview": f"SHA256-Fernet({hashlib.sha256(api_key_raw.encode('utf-8')).hexdigest()[:32]}...)" if api_key_raw else None,
+                    "api_secret_decrypted": None,
+                    "api_key_ciphertext_preview": (api_key_raw[:24] + "...") if api_key_raw else None,
                 },
                 "active_sessions_count": len(u_sessions),
                 "sessions": u_sessions[:10],
@@ -1747,6 +1748,22 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def _cors_origin(self) -> Optional[str]:
+        raw = (self.headers.get("Origin") or self.headers.get("origin") or "").strip().rstrip("/")
+        if not raw:
+            return None
+        allowed = {o.strip().rstrip("/") for o in (ALLOWED_ORIGINS or []) if o and o.strip()}
+        if APP_URL:
+            allowed.add(APP_URL.strip().rstrip("/"))
+        return raw if raw in allowed else None
+
+    def _apply_cors_headers(self) -> None:
+        cors_origin = self._cors_origin()
+        if cors_origin:
+            self.send_header("Access-Control-Allow-Origin", cors_origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Vary", "Origin")
+
     def _build_session_cookie_header(self, token: str, max_age: int = 86400 * 14) -> str:
         parts = [
             f"{SESSION_COOKIE_NAME}={token}",
@@ -1754,8 +1771,15 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             "HttpOnly",
             f"Max-Age={max_age}",
         ]
-        if self._is_https():
+        app_norm = (APP_URL or "").strip().rstrip("/")
+        has_cross_site_origin = any(
+            o.strip().rstrip("/") and o.strip().rstrip("/") != app_norm
+            for o in (ALLOWED_ORIGINS or [])
+        )
+        is_https = self._is_https()
+        if is_https:
             parts.append("Secure")
+        if has_cross_site_origin and is_https:
             parts.append("SameSite=None")
         else:
             parts.append("SameSite=Lax")
@@ -1766,11 +1790,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
-        origin = self.headers.get("Origin")
-        if origin:
-            self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Access-Control-Allow-Credentials", "true")
-            self.send_header("Vary", "Origin")
+        self._apply_cors_headers()
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers",
@@ -1787,6 +1807,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
         self.send_response(status_code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self._apply_cors_headers()
         if extra_headers:
             for hk, hv in extra_headers:
                 self.send_header(hk, hv)
@@ -1812,7 +1833,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
         """
         Server-side authentication & authorization guard.
         - Rejects unauthenticated visitors with 401.
-        - Verifies CSRF token on state-changing requests when cookie-authenticated.
+        - Verifies Origin and CSRF token on state-changing requests.
         - Rejects non-APPROVED accounts (PENDING_APPROVAL, REJECTED, SUSPENDED) with 403 when require_approved=True.
         - Rejects non-admin accounts with 403 when require_admin=True.
         """
@@ -1825,14 +1846,34 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             })
             return None
 
+        method = (getattr(self, "command", "") or "POST").upper()
+        raw_origin = (self.headers.get("Origin") or self.headers.get("origin") or "").strip()
+
+        if check_csrf and method in ("POST", "PUT", "DELETE") and raw_origin and not self._cors_origin():
+            log_security_event(
+                "CSRF_ORIGIN_REJECTED",
+                severity="warning",
+                user_id=sess["user_id"],
+                email=sess.get("email"),
+                ip_address=self._client_ip(),
+                details=f"Tentative {method} {self.path} bloquée : Origin non autorisée ({raw_origin}).",
+            )
+            self._send_json(403, {
+                "ok": False,
+                "code": "ORIGIN_FORBIDDEN",
+                "error": "Origine de la requête non autorisée.",
+            })
+            return None
+
         if check_csrf and sess.get("csrf_token"):
-            # Require matching X-CSRF-Token when session cookie is used without an explicit Bearer/X-Session-Token header
+            # Bypass CSRF with Bearer/X-Session-Token ONLY when no browser Origin header is present
             has_explicit_bearer = bool(
                 (self.headers.get("Authorization") or "").startswith("Bearer ")
                 or (self.headers.get("X-Session-Token") or "").strip()
             )
+            bypass_csrf_for_api_client = has_explicit_bearer and not raw_origin
             client_csrf = (self.headers.get("X-CSRF-Token") or self.headers.get("x-csrf-token") or "").strip()
-            if not has_explicit_bearer and client_csrf != sess["csrf_token"]:
+            if not bypass_csrf_for_api_client and client_csrf != sess["csrf_token"]:
                 log_security_event(
                     "CSRF_VALIDATION_FAILED",
                     severity="warning",
@@ -1889,11 +1930,20 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
         return sess
 
     def do_OPTIONS(self):
-        self._send_json(200, {"ok": True})
+        self.send_response(204)
+        self._apply_cors_headers()
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, X-Session-Token, X-CSRF-Token",
+        )
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_HEAD(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self._apply_cors_headers()
         self.end_headers()
 
     def _handle_google_oauth_callback(self, query: Dict[str, str]):
@@ -3379,12 +3429,19 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/trading/credentials":
+                from binance_manager import BinanceClientError, check_api_key_permissions
+
                 api_key = (body.get("api_key") or "").strip()
                 api_secret = (body.get("api_secret") or "").strip()
                 cfg = trading_config.get_config(user_id)
                 testnet = bool(body["testnet"]) if "testnet" in body else bool(cfg.testnet)
                 if not api_key or not api_secret:
                     self._send_json(400, {"ok": False, "error": "Clé API et Secret API requis."})
+                    return
+                try:
+                    perm_res = check_api_key_permissions(api_key, api_secret, testnet=testnet)
+                except BinanceClientError as perm_err:
+                    self._send_json(400, {"ok": False, "error": str(perm_err)})
                     return
                 if "testnet" in body and bool(cfg.testnet) != testnet:
                     trading_config.update_config(user_id, testnet=testnet)
@@ -3396,9 +3453,12 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 except Exception as conn_err:
                     ok_conn = False
                     conn_msg = f"Clés enregistrées mais le test de connexion a échoué : {conn_err}"
+                if perm_res.get("warning"):
+                    conn_msg = f"{conn_msg} ({perm_res['warning']})"
                 self._send_json(200, {
                     "ok": True,
                     "credentials_valid": ok_conn,
+                    "warning": perm_res.get("warning"),
                     "message": conn_msg,
                 })
                 return
@@ -3495,7 +3555,8 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             if path == "/api/trading/live-order":
                 from live_trader import build_draft, validate_draft, execute_draft
-                from binance_manager import ORDER_CONTEXT_MANUAL_AUTHENTICATED
+                from binance_manager import ORDER_CONTEXT_MANUAL_AUTHENTICATED, BinanceClientError
+
                 action = body.get("action", "validate")
                 symbol = normalize_symbol(body.get("symbol", "BTCUSDT"))
                 side = (body.get("side") or "BUY").upper()
@@ -3509,38 +3570,63 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 margin_type = (body.get("margin_type") or "ISOLATED").upper()
                 reduce_only = bool(body.get("reduce_only", False))
 
-                draft = build_draft(
-                    user_id,
-                    symbol,
-                    side,
-                    amount,
-                    leverage=leverage,
-                    sl_price=sl_price,
-                    tp_price=tp_price,
-                    amount_mode=amount_mode,
-                    order_type=order_type,
-                    entry_price=entry_price,
-                    margin_type=margin_type,
-                    reduce_only=reduce_only,
-                )
-                checks = validate_draft(user_id, draft)
                 if action == "execute":
-                    exec_res = execute_draft(user_id, draft, execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED)
-                    self._send_json(200, {
-                        "ok": True,
-                        "executed": True,
-                        "checks": checks,
-                        "result": exec_res,
-                        "message": f"Ordre réel {side} exécuté sur {symbol} (qty={checks['quantity']}).",
-                    })
-                else:
-                    self._send_json(200, {
-                        "ok": True,
-                        "executed": False,
-                        "draft": draft.__dict__,
-                        "checks": checks,
-                        "message": "Ordre validé. Prêt pour confirmation d'envoi.",
-                    })
+                    pin = str(body.get("pin") or "").strip()
+                    if not pin:
+                        self._send_json(403, {"ok": False, "error": "Code PIN de sécurité obligatoire pour exécuter un ordre réel."})
+                        return
+                    ok_pin, pin_msg = security_manager.verify_code(user_id, pin)
+                    if not ok_pin:
+                        self._send_json(403, {"ok": False, "error": pin_msg})
+                        return
+                    idempotency_key = str(body.get("idempotency_key") or "").strip()
+                    if not idempotency_key:
+                        self._send_json(400, {"ok": False, "error": "Clé d'idempotence (idempotency_key) obligatoire pour exécuter un ordre réel."})
+                        return
+
+                try:
+                    draft = build_draft(
+                        user_id,
+                        symbol,
+                        side,
+                        amount,
+                        leverage=leverage,
+                        sl_price=sl_price,
+                        tp_price=tp_price,
+                        amount_mode=amount_mode,
+                        order_type=order_type,
+                        entry_price=entry_price,
+                        margin_type=margin_type,
+                        reduce_only=reduce_only,
+                    )
+                    if action == "execute":
+                        exec_res = execute_draft(
+                            user_id,
+                            draft,
+                            execution_context=ORDER_CONTEXT_MANUAL_AUTHENTICATED,
+                            pin=pin,
+                            idempotency_key=idempotency_key,
+                            _pin_verified=True,
+                        )
+                        checks = exec_res.get("checks") or {}
+                        self._send_json(200, {
+                            "ok": True,
+                            "executed": True,
+                            "checks": checks,
+                            "result": exec_res,
+                            "message": f"Ordre réel {side} exécuté sur {symbol} (qty={checks.get('quantity')}).",
+                        })
+                    else:
+                        checks = validate_draft(user_id, draft)
+                        self._send_json(200, {
+                            "ok": True,
+                            "executed": False,
+                            "draft": draft.__dict__,
+                            "checks": checks,
+                            "message": "Ordre validé. Prêt pour confirmation d'envoi.",
+                        })
+                except (ValueError, BinanceClientError) as order_err:
+                    self._send_json(400, {"ok": False, "error": str(order_err)})
                 return
 
             if path == "/api/trading/reconcile":

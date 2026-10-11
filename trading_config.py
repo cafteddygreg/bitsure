@@ -119,6 +119,7 @@ class TradingConfig:
     safety_warn_reason: Optional[str] = None
     safety_warn_at: Optional[float] = None
     safety_lock_ttl_seconds: int = DEFAULT_SAFETY_LOCK_TTL_SECONDS
+    safety_lock_reminded: bool = False
 
 
 def ensure_config_row(user_id: int) -> None:
@@ -164,7 +165,8 @@ def get_config(user_id: int) -> TradingConfig:
                        analysis_timeframe, analysis_interval_minutes, testnet,
                        cooldown_seconds, daily_loss_accum, periodic_analysis_enabled,
                        safety_lock, safety_lock_reason, safety_lock_at,
-                       safety_warn, safety_warn_reason, safety_warn_at, safety_lock_ttl_seconds
+                       safety_warn, safety_warn_reason, safety_warn_at, safety_lock_ttl_seconds,
+                       safety_lock_reminded
                 FROM trading_config WHERE user_id = %s
                 """,
                 (user_id,),
@@ -172,10 +174,8 @@ def get_config(user_id: int) -> TradingConfig:
             row = cur.fetchone()
     finally:
         conn.close()
-
     if not row:
         return TradingConfig(user_id=user_id)
-
     return TradingConfig(
         user_id=row[0], auto_trade=row[1], leverage=row[2], risk_per_trade=row[3],
         max_positions=row[4], min_score=row[5], max_daily_loss=row[6],
@@ -197,6 +197,7 @@ def get_config(user_id: int) -> TradingConfig:
         safety_warn_reason=row[26] if len(row) > 26 else None,
         safety_warn_at=row[27] if len(row) > 27 else None,
         safety_lock_ttl_seconds=int(row[28]) if len(row) > 28 and row[28] is not None else 3600,
+        safety_lock_reminded=bool(row[29]) if len(row) > 29 and row[29] is not None else False,
     )
 
 
@@ -211,7 +212,8 @@ def update_config(user_id: int, **fields) -> TradingConfig:
     ensure_config_row(user_id)
     if not fields:
         return get_config(user_id)
-
+    if fields.get("safety_lock") is False and "safety_lock_reminded" not in fields:
+        fields["safety_lock_reminded"] = False
     allowed = set(asdict(TradingConfig(user_id=0)).keys()) - {"user_id"}
     set_clauses = []
     values = []
@@ -246,7 +248,11 @@ def update_config(user_id: int, **fields) -> TradingConfig:
 
 
 def save_binance_credentials(user_id: int, api_key: str, api_secret: str, testnet: bool = True) -> None:
-    """Stocke les clés API. Ne jamais logguer api_key / api_secret en clair."""
+    """Stocke les clés API chiffrées au repos. Ne jamais logguer api_key / api_secret en clair."""
+    import crypto_utils
+
+    enc_key = crypto_utils.encrypt(api_key)
+    enc_secret = crypto_utils.encrypt(api_secret)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -261,7 +267,7 @@ def save_binance_credentials(user_id: int, api_key: str, api_secret: str, testne
                     is_valid = TRUE,
                     updated_at = NOW()
                 """,
-                (user_id, api_key, api_secret, testnet),
+                (user_id, enc_key, enc_secret, testnet),
             )
         conn.commit()
     finally:
@@ -269,6 +275,8 @@ def save_binance_credentials(user_id: int, api_key: str, api_secret: str, testne
 
 
 def get_binance_credentials(user_id: int, market_type: Optional[str] = None) -> Optional[dict]:
+    import crypto_utils
+
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -332,7 +340,12 @@ def get_binance_credentials(user_id: int, market_type: Optional[str] = None) -> 
                 }
         return None
 
-    return {"api_key": row[0], "api_secret": row[1], "testnet": stored_testnet, "is_valid": bool(row[3])}
+    return {
+        "api_key": crypto_utils.decrypt(row[0]),
+        "api_secret": crypto_utils.decrypt(row[1]),
+        "testnet": stored_testnet,
+        "is_valid": bool(row[3]),
+    }
 
 
 def mark_credentials_invalid(user_id: int, reason: str = "") -> None:

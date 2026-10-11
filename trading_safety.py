@@ -2,8 +2,8 @@
 
 This module centralizes checks that must run before sending orders to Binance.
 It separates critical lock (`safety_lock`) from temporary warnings (`safety_warn`),
-supports TTL auto-downgrade from critical lock to warning, and queues or sends
-user Telegram notifications.
+sends a one-time reminder when a critical lock persists beyond the TTL, and queues
+or sends user Telegram notifications.
 """
 
 import asyncio
@@ -82,6 +82,7 @@ def engage_safe_mode(
         "safety_lock": True,
         "safety_lock_reason": reason,
         "safety_lock_at": now,
+        "safety_lock_reminded": False,
     }
     if disable_autotrade:
         updates["auto_trade"] = False
@@ -150,38 +151,28 @@ def clear_safety_warn(user_id: int) -> Optional[TradingConfig]:
 
 
 def assert_trading_allowed(config: TradingConfig, *, require_auto_trade: bool = False) -> None:
-    """Vérifie si le trading est autorisé, avec gestion du TTL sur safety_lock."""
+    """Vérifie si le trading est autorisé. Tant que safety_lock=True, lève SafetyError."""
     now = time.time()
     if config.safety_lock:
         ttl = int(getattr(config, "safety_lock_ttl_seconds", DEFAULT_SAFETY_LOCK_TTL_SECONDS) or 0)
         lock_at = float(config.safety_lock_at or 0.0)
-        if ttl > 0 and lock_at > 0.0 and now > (lock_at + ttl):
-            downgrade_reason = f"Downgrade auto après expiration TTL ({ttl}s): {config.safety_lock_reason or 'safe_mode'}"
-            logger.warning(
-                "SAFE_MODE_TTL_EXPIRED user=%s lock_at=%s ttl=%s -> downgrading to safety_warn",
-                config.user_id,
-                lock_at,
-                ttl,
-            )
-            config.safety_lock = False
-            config.safety_warn = True
-            config.safety_warn_reason = downgrade_reason
-            config.safety_warn_at = now
+        reminded = bool(getattr(config, "safety_lock_reminded", False))
+        if ttl > 0 and lock_at > 0.0 and now > (lock_at + ttl) and not reminded:
+            config.safety_lock_reminded = True
             try:
-                update_config(
-                    config.user_id,
-                    safety_lock=False,
-                    safety_lock_reason=None,
-                    safety_lock_at=None,
-                    safety_warn=True,
-                    safety_warn_reason=downgrade_reason,
-                    safety_warn_at=now,
-                )
+                update_config(config.user_id, safety_lock_reminded=True)
             except Exception as exc:
-                logger.warning("Failed to persist TTL downgrade for user=%s: %s", config.user_id, exc)
-        else:
+                logger.warning("Failed to persist safety_lock_reminded for user=%s: %s", config.user_id, exc)
             reason_str = config.safety_lock_reason or "anomalie critique détectée"
-            raise SafetyError(f"Safe mode actif ({reason_str}). Utilise /safestatus ou /clearsafe <code>.")
+            reminder_msg = (
+                "🔔 RAPPEL SÉCURITÉ — SAFE MODE TOUJOURS ACTIF\n\n"
+                f"• Raison : {reason_str}\n"
+                f"• Durée écoulée : > {ttl}s\n"
+                "• Action requise : Le verrouillage critique reste actif jusqu'à intervention manuelle via /clearsafe <code_securite>."
+            )
+            _dispatch_or_queue_notification(config.user_id, reminder_msg)
+        reason_str = config.safety_lock_reason or "anomalie critique détectée"
+        raise SafetyError(f"Safe mode actif ({reason_str}). Utilise /safestatus ou /clearsafe <code>.")
 
     if require_auto_trade and not config.auto_trade:
         raise SafetyError("AutoTrade est désactivé.")

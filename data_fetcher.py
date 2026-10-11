@@ -4,7 +4,10 @@ import logging
 from typing import Optional, Dict
 from datetime import datetime, timedelta
 import requests
-import websocket
+try:
+    import websocket
+except ImportError:
+    websocket = None
 import threading
 import pandas as pd
 

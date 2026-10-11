@@ -41,9 +41,9 @@ Le dépôt est structuré autour d'un cœur analytique et transactionnel en **Py
 ├── binance_manager.py       # Client Binance Spot & Futures USDT-M (Mainnet & Testnet), levier, marge, SL/TP natifs
 ├── position_manager.py      # Surveillance temps réel (15s), Trailing Stop dynamique, Break-Even et réconciliation (1m)
 ├── risk_manager.py          # Calcul de taille de position par % de risque, contrôle de perte max journalière et exposition
-├── trading_safety.py        # Machine d'état de sécurité (NORMAL, CAUTION, SAFE_MODE, EMERGENCY_STOP) + Auto-downgrade TTL
-├── trading_config.py        # Gestion persistante des paramètres AutoTrade par utilisateur (levier, style, whitelist, etc.)
-├── security_manager.py      # Protection par code PIN à 6 chiffres (PBKDF2-HMAC-SHA256 + anti-bruteforce) et chiffrement clés API
+├── trading_safety.py        # Machine d'état de sécurité (NORMAL, CAUTION, SAFE_MODE, EMERGENCY_STOP) + rappel TTL sans auto-downgrade
+├── trading_config.py        # Gestion persistante des paramètres AutoTrade et chiffrement/déchiffrement des clés Binance (crypto_utils.py)
+├── security_manager.py      # Protection par code PIN à 6 chiffres (PBKDF2-HMAC-SHA256 + anti-bruteforce)
 ├── decision_journal.py      # Journalisation d'audit complète de chaque décision d'exécution ou de rejet AutoTrade
 │
 ├── paper_trader.py          # Moteur de Paper Trading ($10,000 initiaux, frais 0.10%, slippage 0.05%, levier x1-x10, SL/TP auto)
@@ -125,7 +125,7 @@ Chaque appel à `/analyse <symbole>` ou scan périodique exécute un pipeline d�
 ### Modes d'Exécution
 - **Binance Futures USDT-M (`futures`)** & **Binance Spot (`spot`)**.
 - **Mode Testnet activé par défaut (`BINANCE_TESTNET = True`)** avec clés de démonstration pré-configurées pour permettre de tester immédiatement sans risque financier, ou d'enregistrer ses propres clés via `/setapikeys <api_key> <api_secret>`.
-- **Chiffrement des clés API** : Les clés enregistrées par l'utilisateur sont chiffrées en base de données (`encrypted_api_keys`). En prime, le bot supprime automatiquement le message contenant la clé dans la conversation privée Telegram.
+- **Chiffrement des clés API au repos (`crypto_utils.py`)** : Les clés `api_key` et `api_secret` enregistrées dans `binance_credentials` via `save_binance_credentials` sont chiffrées au repos avec Fernet (`AES-128-CBC` + `HMAC-SHA256`, préfixe `enc:v1:`) via la clé `ENCRYPTION_KEY`, déchiffrées uniquement dans `get_binance_credentials`, et vérifiées contre la permission de retrait (`enableWithdrawals=False`). Le bot supprime automatiquement le message `/setapikeys` dans la conversation privée Telegram.
 
 ### Boucles Automatiques (`APScheduler` dans `main.py`)
 - **`scheduled_signal_scan` (toutes les 20s)** : Évalue les signaux générés et déclenche l'exécution AutoTrade pour les comptes actifs.
@@ -138,7 +138,7 @@ Chaque appel à `/analyse <symbole>` ou scan périodique exécute un pipeline d�
 Pour protéger le capital contre les anomalies de marché ou d'API, chaque compte dispose d'un état de sécurité indépendant :
 - 🟢 **`NORMAL`** : Exécution automatique nominale.
 - 🟡 **`CAUTION`** : Avertissement enregistré (ex: latence API passagère), surveillance accrue.
-- 🔴 **`SAFE_MODE`** : Verrouillage préventif des nouvelles ouvertures (ex: perte max journalière atteinte, échecs d'ordres consécutifs). Déverrouillable via `/clearsafe <PIN>` ou auto-downgrade après expiration du TTL (`DEFAULT_SAFETY_LOCK_TTL_SECONDS = 3600s`).
+- 🔴 **`SAFE_MODE`** : Verrouillage préventif des nouvelles ouvertures (ex: perte max journalière atteinte, échecs d'ordres consécutifs). Reste actif tant qu'il n'est pas levé manuellement via `/clearsafe <PIN>` ou action admin (envoi d'un rappel unique après `DEFAULT_SAFETY_LOCK_TTL_SECONDS = 3600s`).
 - 🚨 **`EMERGENCY_STOP`** : Arrêt d'urgence déclenché par `/emergency_stop` — désactive l'AutoTrade et ferme immédiatement toutes les positions ouvertes au marché.
 
 ---

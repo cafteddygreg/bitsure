@@ -39,11 +39,19 @@ GEMINI_LOG_MODEL = os.environ.get("GEMINI_LOG_MODEL", "gemini-3.1-flash-lite")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
 ADMIN_INITIAL_PASSWORD = os.environ.get("ADMIN_INITIAL_PASSWORD", "").strip()
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "").strip()
+ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", "").strip()
 
 # Google OAuth 2.0 (Optionnel)
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
 APP_URL = os.environ.get("APP_URL", "").strip().rstrip("/")
+ALLOWED_ORIGINS = [
+    o.strip().rstrip("/")
+    for o in os.environ.get("ALLOWED_ORIGINS", "").split(",")
+    if o.strip()
+]
+if APP_URL and APP_URL not in ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS.append(APP_URL)
 
 # Quotas journaliers par défaut pour les nouveaux comptes Web approuvés
 DEFAULT_DAILY_ANALYSIS_LIMIT = int(os.environ.get("DEFAULT_DAILY_ANALYSIS_LIMIT", "15"))
@@ -104,7 +112,7 @@ DEFAULT_DCA_ENABLED = False
 # Plafonds de risque et délais de sécurité
 MAX_POSITION_EXPOSURE_PCT = 50.0         # Exposition max par position (50% du capital)
 SIGNAL_VALIDITY_SECONDS = 900            # Validité d'un signal (15 minutes)
-DEFAULT_SAFETY_LOCK_TTL_SECONDS = 3600   # Auto-downgrade du safe_mode critique après 1h (3600s)
+DEFAULT_SAFETY_LOCK_TTL_SECONDS = 3600   # Délai avant envoi d'un rappel unique si safety_lock reste actif (1h / 3600s)
 
 # Pool PostgreSQL
 DB_POOL_MINCONN = 1

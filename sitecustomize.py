@@ -1498,67 +1498,6 @@ except ImportError:
     sys.modules["apscheduler.triggers.interval"] = aps_int
     sys.modules["apscheduler.triggers.cron"] = aps_cron
 
-try:
-    import cryptography.fernet  # noqa: F401
-except ImportError:
-    import base64
-    import hashlib
-    import hmac
-    import os
-
-    crypto_mod = types.ModuleType("cryptography")
-    fernet_mod = types.ModuleType("cryptography.fernet")
-
-    class InvalidToken(Exception):
-        pass
-
-    class Fernet:
-        def __init__(self, key: bytes | str):
-            if isinstance(key, str):
-                key = key.encode("utf-8")
-            self._key = hashlib.sha256(key).digest()
-
-        @staticmethod
-        def generate_key() -> bytes:
-            return base64.urlsafe_b64encode(os.urandom(32))
-
-        def encrypt(self, data: bytes | str) -> bytes:
-            if isinstance(data, str):
-                data = data.encode("utf-8")
-            nonce = os.urandom(16)
-            stream = b""
-            counter = 0
-            while len(stream) < len(data):
-                stream += hashlib.sha256(self._key + nonce + counter.to_bytes(4, "big")).digest()
-                counter += 1
-            xored = bytes(a ^ b for a, b in zip(data, stream[:len(data)]))
-            sig = hmac.new(self._key, nonce + xored, hashlib.sha256).digest()[:16]
-            return base64.urlsafe_b64encode(nonce + sig + xored)
-
-        def decrypt(self, token: bytes | str) -> bytes:
-            if isinstance(token, str):
-                token = token.encode("utf-8")
-            try:
-                raw = base64.urlsafe_b64decode(token)
-                nonce, sig, xored = raw[:16], raw[16:32], raw[32:]
-                expected = hmac.new(self._key, nonce + xored, hashlib.sha256).digest()[:16]
-                if not hmac.compare_digest(sig, expected):
-                    raise InvalidToken("HMAC mismatch")
-                stream = b""
-                counter = 0
-                while len(stream) < len(xored):
-                    stream += hashlib.sha256(self._key + nonce + counter.to_bytes(4, "big")).digest()
-                    counter += 1
-                return bytes(a ^ b for a, b in zip(xored, stream[:len(xored)]))
-            except Exception as e:
-                raise InvalidToken(str(e))
-
-    fernet_mod.Fernet = Fernet
-    fernet_mod.InvalidToken = InvalidToken
-    crypto_mod.fernet = fernet_mod
-    sys.modules["cryptography"] = crypto_mod
-    sys.modules["cryptography.fernet"] = fernet_mod
-
 
 # =====================================================================
 # 7. PSYCOPG2 -> SQLITE3 SEAMLESS ADAPTER (when psycopg2 not installed)

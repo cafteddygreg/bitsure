@@ -13,6 +13,7 @@ import hmac
 import math
 import time
 import urllib.parse
+import uuid
 from decimal import Decimal, ROUND_DOWN
 from typing import Optional, Literal
 
@@ -22,7 +23,7 @@ from binance.client import Client
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 
 from trading_config import get_binance_credentials, mark_credentials_invalid, get_config
-from trading_safety import SafetyError, assert_trading_allowed
+from trading_safety import SafetyError, assert_trading_allowed, engage_safe_mode
 from utils import normalize_symbol
 
 logger = logging.getLogger("binance_manager")
@@ -390,11 +391,18 @@ def get_klines_dataframe(
 
 
 
-def make_client_order_id(prefix: str, unique_key: str, max_len: int = 36) -> str:
-    """Build a deterministic Binance-compatible client order id."""
+def make_client_order_id(prefix: str, unique_key: Optional[str] = None, max_len: int = 36) -> str:
+    """Build a Binance-compatible client order id (UUID-based when unique_key is omitted)."""
     safe_prefix = "".join(ch for ch in prefix if ch.isalnum() or ch in "_-")[:8] or "ord"
-    digest = hashlib.sha256(str(unique_key).encode("utf-8")).hexdigest()[:24]
-    return f"{safe_prefix}_{digest}"[:max_len]
+    if not unique_key:
+        token = uuid.uuid4().hex[:24]
+    else:
+        raw = str(unique_key).strip()
+        if len(raw) == 32 and all(c in "0123456789abcdefABCDEF" for c in raw):
+            token = raw.lower()[:24]
+        else:
+            token = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+    return f"{safe_prefix}_{token}"[:max_len]
 
 
 def get_price(user_id: int, symbol: str, market_type: MarketType = "futures") -> float:
@@ -538,6 +546,124 @@ def set_leverage(user_id: int, symbol: str, leverage: int) -> None:
         raise BinanceClientError(f"Impossible de définir le levier x{leverage} : {e.message}")
 
 
+def _place_futures_protective_orders(
+    client: Client,
+    symbol: str,
+    opposite_side: str,
+    sl_price: Optional[float],
+    tp_price: Optional[float],
+    filters: dict,
+) -> tuple[Optional[str], Optional[str]]:
+    """Cancel conflicting futures protective orders and place STOP_MARKET / TAKE_PROFIT_MARKET."""
+    if sl_price or tp_price:
+        target_types = set()
+        if sl_price:
+            target_types.add("STOP_MARKET")
+        if tp_price:
+            target_types.add("TAKE_PROFIT_MARKET")
+        _cancel_conflicting_futures_protective_orders(
+            client,
+            symbol,
+            side=opposite_side,
+            order_types=target_types,
+        )
+    sl_oid: Optional[str] = None
+    tp_oid: Optional[str] = None
+    if sl_price:
+        sl_order = client.futures_create_order(
+            symbol=symbol,
+            side=opposite_side,
+            type="STOP_MARKET",
+            stopPrice=format_price_for_symbol(sl_price, filters),
+            closePosition=True,
+        )
+        sl_oid = sl_order.get("orderId") if isinstance(sl_order, dict) else None
+    if tp_price:
+        tp_order = client.futures_create_order(
+            symbol=symbol,
+            side=opposite_side,
+            type="TAKE_PROFIT_MARKET",
+            stopPrice=format_price_for_symbol(tp_price, filters),
+            closePosition=True,
+        )
+        tp_oid = tp_order.get("orderId") if isinstance(tp_order, dict) else None
+    return (sl_oid, tp_oid)
+
+
+def _place_spot_oco_order(
+    client: Client,
+    symbol: str,
+    opposite_side: str,
+    quantity: float,
+    sl_price: float,
+    tp_price: float,
+    filters: dict,
+) -> tuple[Optional[str], Optional[str], dict]:
+    """Place a Spot OCO order (take-profit limit + stop-loss) and extract (sl_order_id, tp_order_id, raw_oco)."""
+    tp_str = format_price_for_symbol(tp_price, filters)
+    sl_stop_str = format_price_for_symbol(sl_price, filters)
+    tick_size = float(filters.get("PRICE_FILTER", {}).get("tickSize", "0.01") or 0.01)
+    if opposite_side == "SELL":
+        stop_limit_val = max(float(sl_price) * 0.998, float(sl_price) - max(tick_size * 2, 1e-8), tick_size)
+    else:
+        stop_limit_val = float(sl_price) * 1.002 + max(tick_size * 2, 1e-8)
+    sl_limit_str = format_price_for_symbol(stop_limit_val, filters)
+    oco = client.create_oco_order(
+        symbol=symbol,
+        side=opposite_side,
+        quantity=quantity,
+        price=tp_str,
+        stopPrice=sl_stop_str,
+        stopLimitPrice=sl_limit_str,
+        stopLimitTimeInForce="GTC",
+    )
+    sl_oid: Optional[str] = None
+    tp_oid: Optional[str] = None
+    if isinstance(oco, dict):
+        reports = oco.get("orderReports") or []
+        for rep in reports:
+            if not isinstance(rep, dict):
+                continue
+            rtype = str(rep.get("type", "")).upper()
+            oid = rep.get("orderId")
+            if oid is None:
+                continue
+            if "STOP" in rtype:
+                sl_oid = str(oid)
+            elif "LIMIT" in rtype or "MAKER" in rtype:
+                tp_oid = str(oid)
+        if (not sl_oid or not tp_oid) and isinstance(oco.get("orders"), list):
+            orders_list = oco["orders"]
+            if len(orders_list) >= 1 and not sl_oid and orders_list[0].get("orderId") is not None:
+                sl_oid = str(orders_list[0]["orderId"])
+            if len(orders_list) >= 2 and not tp_oid and orders_list[1].get("orderId") is not None:
+                tp_oid = str(orders_list[1]["orderId"])
+        if not sl_oid and oco.get("orderListId") is not None:
+            sl_oid = str(oco["orderListId"])
+        if not tp_oid and oco.get("orderListId") is not None:
+            tp_oid = str(oco["orderListId"])
+    return sl_oid, tp_oid, oco if isinstance(oco, dict) else {}
+
+
+def _lookup_order_by_client_id(
+    client: Client,
+    symbol: str,
+    client_order_id: str,
+    market_type: MarketType,
+) -> Optional[dict]:
+    """Query an order on Binance by origClientOrderId after a network/timeout error."""
+    if not client_order_id:
+        return None
+    try:
+        if market_type == "futures" and hasattr(client, "futures_get_order"):
+            return client.futures_get_order(symbol=symbol, origClientOrderId=client_order_id)
+        if market_type == "spot" and hasattr(client, "get_order"):
+            return client.get_order(symbol=symbol, origClientOrderId=client_order_id)
+    except Exception as exc:
+        logger.debug("Order lookup by clientOrderId=%s (%s) failed: %s", client_order_id, symbol, exc)
+    return None
+
+
 def open_position(
     user_id: int,
     symbol: str,
@@ -571,7 +697,14 @@ def open_position(
         if direction == "SELL":
             raise BinanceClientError("Vente à découvert (SHORT) non supportée en mode Spot standard.")
 
-    opened_order = None
+    if not client_order_id:
+        client_order_id = make_client_order_id("ord", uuid.uuid4().hex)
+
+    opened_order: Optional[dict] = None
+    main_order_sent = False
+    opposite = "SELL" if direction == "BUY" else "BUY"
+    filters: dict = {}
+    result: dict = {"quantity": quantity, "executed_price": None, "client_order_id": client_order_id}
 
     try:
         if market_type == "futures":
@@ -600,87 +733,199 @@ def open_position(
         if min_notional > 0 and notional < min_notional:
             raise BinanceClientError(f"Valeur notionnelle ({notional:.2f} USDT) inférieure au minimum requis par Binance ({min_notional:.2f} USDT).")
 
-        result: dict = {"quantity": quantity, "executed_price": None}
+        result = {"quantity": quantity, "executed_price": None, "client_order_id": client_order_id}
 
         if market_type == "futures":
             if leverage:
                 set_leverage(user_id, symbol, int(leverage))
 
             order_params = {
-                "symbol": symbol, "side": direction, "type": "MARKET", "quantity": quantity,
+                "symbol": symbol,
+                "side": direction,
+                "type": "MARKET",
+                "quantity": quantity,
+                "newClientOrderId": client_order_id,
             }
-            if client_order_id:
-                order_params["newClientOrderId"] = client_order_id
+            main_order_sent = True
             order = client.futures_create_order(**order_params)
             opened_order = order
             result["order_id"] = order["orderId"]
-            result["client_order_id"] = order.get("clientOrderId")
+            result["client_order_id"] = order.get("clientOrderId") or client_order_id
             result["executed_price"] = _extract_order_fill_price(order)
 
-            opposite = "SELL" if direction == "BUY" else "BUY"
-
-            if sl_price or tp_price:
-                target_types = set()
-                if sl_price:
-                    target_types.add("STOP_MARKET")
-                if tp_price:
-                    target_types.add("TAKE_PROFIT_MARKET")
-                _cancel_conflicting_futures_protective_orders(
-                    client,
-                    symbol,
-                    side=opposite,
-                    order_types=target_types,
-                )
-
-            if sl_price:
-                sl_order = client.futures_create_order(
-                    symbol=symbol, side=opposite, type="STOP_MARKET",
-                    stopPrice=format_price_for_symbol(sl_price, filters), closePosition=True,
-                )
-                result["sl_order_id"] = sl_order["orderId"]
-
-            if tp_price:
-                tp_order = client.futures_create_order(
-                    symbol=symbol, side=opposite, type="TAKE_PROFIT_MARKET",
-                    stopPrice=format_price_for_symbol(tp_price, filters), closePosition=True,
-                )
-                result["tp_order_id"] = tp_order["orderId"]
+            sl_oid, tp_oid = _place_futures_protective_orders(
+                client, symbol, opposite, sl_price, tp_price, filters
+            )
+            if sl_oid:
+                result["sl_order_id"] = sl_oid
+            if tp_oid:
+                result["tp_order_id"] = tp_oid
 
         else:  # spot
-            order_params = {"symbol": symbol, "side": direction, "type": "MARKET", "quantity": quantity}
-            if client_order_id:
-                order_params["newClientOrderId"] = client_order_id
+            order_params = {
+                "symbol": symbol,
+                "side": direction,
+                "type": "MARKET",
+                "quantity": quantity,
+                "newClientOrderId": client_order_id,
+            }
+            main_order_sent = True
             order = client.create_order(**order_params)
+            opened_order = order
             result["order_id"] = order["orderId"]
-            result["client_order_id"] = order.get("clientOrderId")
+            result["client_order_id"] = order.get("clientOrderId") or client_order_id
             result["executed_price"] = _extract_order_fill_price(order)
             result["sl_order_id"] = None
             result["tp_order_id"] = None
+            if sl_price and tp_price:
+                sl_oid, tp_oid, _ = _place_spot_oco_order(
+                    client, symbol, opposite, quantity, float(sl_price), float(tp_price), filters
+                )
+                result["sl_order_id"] = sl_oid
+                result["tp_order_id"] = tp_oid
+            elif sl_price or tp_price:
+                raise BinanceClientError("Spot requiert sl_price et tp_price pour poser un ordre OCO de protection.")
 
         return result
 
-    except (BinanceAPIException, BinanceOrderException) as e:
+    except BinanceClientError:
+        if not main_order_sent:
+            raise
+        err_after_send: Exception = BinanceOrderException("Protection Spot OCO manquante ou refusée")
+    except Exception as e:
+        err_after_send = e
         if getattr(e, "code", None) in (-2015, -2014):
             mark_credentials_invalid(user_id, str(e))
-        if market_type == "futures" and opened_order:
-            opposite = "SELL" if direction == "BUY" else "BUY"
+        if not main_order_sent:
+            raise BinanceClientError(f"Erreur Binance à l'ouverture : {getattr(e, 'message', str(e))}")
+
+    # Récupération sécurisée après erreur réseau / timeout / exception après envoi de l'ordre principal
+    e = err_after_send
+    if opened_order is None:
+        opened_order = _lookup_order_by_client_id(client, symbol, client_order_id, market_type)
+        if opened_order and opened_order.get("orderId") is not None:
+            result["order_id"] = opened_order.get("orderId")
+            result["client_order_id"] = opened_order.get("clientOrderId") or client_order_id
+            result["executed_price"] = _extract_order_fill_price(opened_order)
+
+    if market_type == "futures":
+        remote_pos = None
+        remote_check_ok = False
+        try:
+            positions = get_open_binance_positions(user_id, market_type="futures")
+            remote_check_ok = True
+            remote_pos = next(
+                (p for p in (positions or []) if normalize_symbol(p.get("symbol", "")) == symbol and p.get("direction") == direction),
+                None,
+            )
+        except Exception as pos_err:
+            logger.warning("Vérification position après erreur sur %s (user=%s) impossible: %s", symbol, user_id, pos_err)
+
+        order_filled = bool(
+            opened_order
+            and str(opened_order.get("status", "FILLED")).upper() in ("FILLED", "PARTIALLY_FILLED")
+        ) or (opened_order is not None and "status" not in opened_order)
+
+        if remote_pos is not None or order_filled:
+            has_sl = bool(result.get("sl_order_id")) or not sl_price
+            has_tp = bool(result.get("tp_order_id")) or not tp_price
+            if not (has_sl and has_tp):
+                try:
+                    sl_oid, tp_oid = _place_futures_protective_orders(
+                        client,
+                        symbol,
+                        opposite,
+                        sl_price if not result.get("sl_order_id") else None,
+                        tp_price if not result.get("tp_order_id") else None,
+                        filters,
+                    )
+                    if sl_oid:
+                        result["sl_order_id"] = sl_oid
+                    if tp_oid:
+                        result["tp_order_id"] = tp_oid
+                    has_sl = bool(result.get("sl_order_id")) or not sl_price
+                    has_tp = bool(result.get("tp_order_id")) or not tp_price
+                    if has_sl and has_tp and result.get("order_id") is not None:
+                        return result
+                except Exception as prot_err:
+                    logger.warning("Échec pose protection de secours sur %s (user=%s): %s", symbol, user_id, prot_err)
+
+            # Protection non confirmée -> fermeture d'urgence reduceOnly
+            close_qty = float(remote_pos["quantity"]) if remote_pos and remote_pos.get("quantity") else quantity
             try:
                 client.futures_create_order(
-                    symbol=symbol, side=opposite, type="MARKET",
-                    quantity=quantity, reduceOnly=True,
+                    symbol=symbol,
+                    side=opposite,
+                    type="MARKET",
+                    quantity=close_qty,
+                    reduceOnly=True,
                 )
             except Exception as close_error:
-                logger.critical(
-                    "Position %s potentiellement ouverte sans protection pour user=%s après échec SL/TP: %s",
-                    symbol, user_id, close_error,
+                reason = (
+                    f"Position {symbol} potentiellement sans protection après erreur ({getattr(e, 'message', str(e))}) "
+                    f"et échec fermeture reduceOnly ({close_error})"
                 )
+                logger.critical("SAFE_MODE triggered for user=%s: %s", user_id, reason)
+                engage_safe_mode(user_id, reason)
                 raise BinanceClientError(
                     "Ordre principal ouvert mais protection SL/TP échouée; "
-                    "fermeture automatique impossible. Vérifie Binance immédiatement."
+                    "fermeture automatique impossible. Safe Mode activé."
                 )
             raise BinanceClientError(
                 "Ordre principal ouvert puis refermé car la protection SL/TP a échoué."
             )
+
+        if not remote_check_ok and opened_order is None:
+            reason = f"État d'ordre incertain après erreur réseau sur {symbol} (clientOrderId={client_order_id}): {e}"
+            engage_safe_mode(user_id, reason)
+            raise BinanceClientError(f"Erreur réseau sur {symbol}; état incertain, Safe Mode activé.")
+        raise BinanceClientError(f"Erreur Binance à l'ouverture : {getattr(e, 'message', str(e))}")
+
+    else:  # spot
+        order_filled = bool(
+            opened_order
+            and str(opened_order.get("status", "FILLED")).upper() in ("FILLED", "PARTIALLY_FILLED")
+        ) or (opened_order is not None and "status" not in opened_order)
+
+        if order_filled:
+            if sl_price and tp_price and not (result.get("sl_order_id") and result.get("tp_order_id")):
+                try:
+                    sl_oid, tp_oid, _ = _place_spot_oco_order(
+                        client, symbol, opposite, quantity, float(sl_price), float(tp_price), filters
+                    )
+                    result["sl_order_id"] = sl_oid
+                    result["tp_order_id"] = tp_oid
+                    if result.get("order_id") is not None and sl_oid and tp_oid:
+                        return result
+                except Exception as oco_err:
+                    logger.warning("Échec pose OCO Spot sur %s (user=%s): %s", symbol, user_id, oco_err)
+
+            # Impossible de poser l'OCO -> fermer la position Spot au marché et lever une erreur
+            try:
+                client.create_order(
+                    symbol=symbol,
+                    side="SELL",
+                    type="MARKET",
+                    quantity=quantity,
+                )
+            except Exception as close_error:
+                reason = (
+                    f"Position Spot {symbol} sans protection OCO après erreur ({getattr(e, 'message', str(e))}) "
+                    f"et échec revente marché ({close_error})"
+                )
+                logger.critical("SAFE_MODE triggered for user=%s: %s", user_id, reason)
+                engage_safe_mode(user_id, reason)
+                raise BinanceClientError(
+                    "Achat Spot exécuté mais protection OCO échouée; revente automatique impossible. Safe Mode activé."
+                )
+            raise BinanceClientError(
+                "Achat Spot exécuté puis revendu au marché car la pose de la protection OCO a échoué."
+            )
+
+        if opened_order is None:
+            reason = f"État d'ordre Spot incertain après erreur réseau sur {symbol} (clientOrderId={client_order_id}): {e}"
+            engage_safe_mode(user_id, reason)
+            raise BinanceClientError(f"Erreur réseau Spot sur {symbol}; état incertain, Safe Mode activé.")
         raise BinanceClientError(f"Erreur Binance à l'ouverture : {getattr(e, 'message', str(e))}")
 
 
@@ -1327,6 +1572,57 @@ def replace_futures_stop_loss_order(
         expected_side=opposite,
         expected_type="STOP_MARKET",
     )
+
+
+def check_api_key_permissions(api_key: str, api_secret: str, testnet: bool = True) -> dict:
+    """
+    Vérifie les permissions de la clé API Binance via get_api_key_permission / GET /sapi/v1/account/apiRestrictions.
+    - Si enableWithdrawals=True -> lève BinanceClientError (refus strict avant stockage).
+    - Si l'appel échoue (ex: endpoint non supporté sur Testnet) -> accepte avec avertissement.
+    """
+    perms = None
+    last_err = None
+    try:
+        client = _build_resilient_client(api_key, api_secret, testnet=testnet)
+        if hasattr(client, "get_api_key_permission"):
+            res = client.get_api_key_permission()
+            if isinstance(res, dict):
+                perms = res
+    except Exception as exc:
+        last_err = exc
+
+    if perms is None:
+        try:
+            res = _signed_rest_get(
+                api_key,
+                api_secret,
+                "/sapi/v1/account/apiRestrictions",
+                market_type="spot",
+                testnet=testnet,
+            )
+            if isinstance(res, dict):
+                perms = res
+        except Exception as exc:
+            last_err = exc
+
+    if isinstance(perms, dict):
+        if bool(perms.get("enableWithdrawals")):
+            raise BinanceClientError(
+                "Clé API refusée : la permission de retrait (enableWithdrawals=True) est activée. "
+                "Veuillez désactiver les retraits sur cette clé Binance."
+            )
+        return {"checked": True, "warning": None, "permissions": perms}
+
+    logger.warning(
+        "Vérification des permissions API (/sapi/v1/account/apiRestrictions) indisponible (testnet=%s): %s",
+        testnet,
+        last_err,
+    )
+    return {
+        "checked": False,
+        "warning": "Vérification des restrictions de retrait indisponible (Testnet) ; clé acceptée avec avertissement.",
+        "permissions": None,
+    }
 
 
 def test_connection(user_id: int) -> bool:

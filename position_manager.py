@@ -272,16 +272,25 @@ def _remote_position_exists(user_id: int, symbol: str, direction: str) -> bool:
 
 
 def _cancel_remaining_protection(trade: Dict[str, Any], executed_reason: str) -> None:
-    """Si le TP est exécuté, annule le SL restant ; si le SL est exécuté, annule le TP restant."""
-    oid = trade.get("sl_order_id") if executed_reason == "TP" else trade.get("tp_order_id")
-    if oid:
-        cancel_order(
-            trade["user_id"],
-            normalize_symbol(trade["symbol"]),
-            oid,
-            trade["market_type"],
-            execution_context=ORDER_CONTEXT_AUTOTRADE,
-        )
+    """Annule les ordres protecteurs SL/TP restants à la clôture (Futures et Spot OCO)."""
+    reason_up = str(executed_reason or "").upper()
+    if reason_up == "TP":
+        oids = [trade.get("sl_order_id")]
+    elif reason_up == "SL":
+        oids = [trade.get("tp_order_id")]
+    else:
+        oids = [trade.get("sl_order_id"), trade.get("tp_order_id")]
+    seen: set[str] = set()
+    for oid in oids:
+        if oid and str(oid) not in seen:
+            seen.add(str(oid))
+            cancel_order(
+                trade["user_id"],
+                normalize_symbol(trade["symbol"]),
+                str(oid),
+                trade["market_type"],
+                execution_context=ORDER_CONTEXT_AUTOTRADE,
+            )
 
 
 def _trade_key(trade: Dict[str, Any]) -> Tuple[str, str]:
@@ -398,6 +407,43 @@ def reconcile_user_positions(user_id: int, startup_mode: bool = False, context=N
         for trade in local_trades:
             if _trade_key(trade) not in remote_by_key:
                 continue
+            # Si un ordre LIMIT Futures vient d'être rempli (position présente dans remote_by_key) sans SL/TP posés, les poser maintenant
+            need_sl = bool(trade.get("sl_price") and not trade.get("sl_order_id"))
+            need_tp = bool(trade.get("tp_price") and not trade.get("tp_order_id"))
+            if need_sl or need_tp:
+                try:
+                    from binance_manager import _client_for_user, get_symbol_filters, _place_futures_protective_orders
+                    client = _client_for_user(user_id, market_type="futures")
+                    norm_s = normalize_symbol(trade["symbol"])
+                    opposite = "SELL" if str(trade["direction"]).upper() == "BUY" else "BUY"
+                    filters = get_symbol_filters(client, norm_s, "futures")
+                    sl_oid, tp_oid = _place_futures_protective_orders(
+                        client,
+                        norm_s,
+                        opposite,
+                        float(trade["sl_price"]) if need_sl else None,
+                        float(trade["tp_price"]) if need_tp else None,
+                        filters,
+                    )
+                    if sl_oid or tp_oid:
+                        conn = get_connection()
+                        try:
+                            with conn.cursor() as cur:
+                                cur.execute(
+                                    "UPDATE trades SET sl_order_id = COALESCE(%s, sl_order_id), tp_order_id = COALESCE(%s, tp_order_id) WHERE id = %s",
+                                    (sl_oid, tp_oid, trade["id"]),
+                                )
+                            conn.commit()
+                        finally:
+                            conn.close()
+                        if sl_oid:
+                            trade["sl_order_id"] = sl_oid
+                            open_order_ids.add(str(sl_oid))
+                        if tp_oid:
+                            trade["tp_order_id"] = tp_oid
+                            open_order_ids.add(str(tp_oid))
+                except Exception as place_err:
+                    log_error(logger, user_id, "reconcile.place_protection", str(place_err))
             for field in ("sl_order_id", "tp_order_id"):
                 oid = trade.get(field)
                 if oid and str(oid) not in open_order_ids:
@@ -493,7 +539,36 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
                 reason = "TP" if hit_tp else "SL"
                 protective_order_id = trade.get("tp_order_id") if hit_tp else trade.get("sl_order_id")
                 exit_price = current_price
-                if trade["market_type"] == "spot" or not protective_order_id:
+                if trade["market_type"] == "spot":
+                    # En Spot, si un ordre OCO (sl_order_id / tp_order_id) existe, on l'annule d'abord pour libérer le solde si non encore exécuté
+                    _cancel_remaining_protection(trade, "MANUAL")
+                    if not protective_order_id:
+                        close_res = close_position(
+                            trade["user_id"],
+                            trade["symbol"],
+                            trade["direction"],
+                            trade["quantity"],
+                            trade["market_type"],
+                            execution_context=ORDER_CONTEXT_AUTOTRADE,
+                        )
+                        if isinstance(close_res, dict) and close_res.get("executed_price"):
+                            exit_price = float(close_res["executed_price"])
+                    else:
+                        try:
+                            close_res = close_position(
+                                trade["user_id"],
+                                trade["symbol"],
+                                trade["direction"],
+                                trade["quantity"],
+                                trade["market_type"],
+                                execution_context=ORDER_CONTEXT_AUTOTRADE,
+                            )
+                            if isinstance(close_res, dict) and close_res.get("executed_price"):
+                                exit_price = float(close_res["executed_price"])
+                        except Exception:
+                            # L'ordre OCO côté exchange a déjà vendu la position Spot
+                            pass
+                elif not protective_order_id:
                     close_res = close_position(
                         trade["user_id"],
                         trade["symbol"],
@@ -507,7 +582,8 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
                 elif _remote_position_exists(trade["user_id"], trade["symbol"], trade["direction"]):
                     # La position existe encore côté Binance : ne jamais clôturer localement par supposition
                     continue
-                _cancel_remaining_protection(trade, reason)
+                if trade["market_type"] != "spot":
+                    _cancel_remaining_protection(trade, reason)
                 pnl_usdt, pnl_pct = close_trade(trade, reason, exit_price)
                 if context and hasattr(context, "bot"):
                     await context.bot.send_message(

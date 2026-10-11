@@ -305,8 +305,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               <p className="text-sm text-[#94A3B8] leading-relaxed">
                 {tr(
                   lang,
-                  "Verrouillage automatique Safety Lock avec TTL d'une heure et rétrogradation en Safety Warn, protection par code PIN à 4 chiffres et réconciliation des ordres Spot/Futures.",
-                  'Automatic Safety Lock with 1-hour TTL and downgrade to Safety Warn, 4-digit PIN protection, and Spot/Futures order reconciliation.'
+                  "Verrouillage critique Safety Lock persistant jusqu'au déverrouillage manuel par code PIN (avec rappel après 1 heure), et réconciliation des ordres Spot/Futures.",
+                  'Persistent Safety Lock requiring manual PIN unlock (with 1-hour reminder), and Spot/Futures order reconciliation.'
                 )}
               </p>
             </div>

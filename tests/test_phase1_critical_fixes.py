@@ -115,11 +115,20 @@ def _install_minimal_scientific_shims_if_needed():
                 self._dt = datetime.datetime.utcfromtimestamp(sec)
             elif isinstance(ts, str):
                 s = ts.strip().replace("T", " ").replace("Z", "")
-                self._dt = datetime.datetime.fromisoformat(s)
+                self._dt = datetime.datetime.fromisoformat(s).replace(tzinfo=None)
             else:
                 self._dt = datetime.datetime.utcnow()
             self.tz = None
             self.tzinfo = None
+
+        def isoformat(self):
+            return self._dt.isoformat() + "+00:00"
+
+        def strftime(self, fmt):
+            return self._dt.strftime(fmt)
+
+        def timestamp(self):
+            return (self._dt - datetime.datetime(1970, 1, 1)).total_seconds()
 
         @classmethod
         def utcnow(cls):
@@ -552,6 +561,10 @@ def _install_minimal_scientific_shims_if_needed():
         def __init__(self, data=None, index=None, columns=None):
             self._cols = {}
             self.attrs = {}
+            self._index = _Index([])
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                keys = list(data[0].keys())
+                data = {k: [row.get(k) for row in data] for k in keys}
             if isinstance(data, dict):
                 first_val = next(iter(data.values()), [])
                 n = len(first_val) if isinstance(first_val, (list, tuple, _Series)) else 1
@@ -563,6 +576,18 @@ def _install_minimal_scientific_shims_if_needed():
                         self._cols[k] = list(v)
                     else:
                         self._cols[k] = [v] * len(self._index)
+
+        def set_index(self, col, inplace=False):
+            vals = self._cols.get(col, [])
+            new_idx = _Index([_Timestamp(x) if isinstance(x, (_Timestamp, datetime.datetime, str)) else x for x in vals])
+            new_cols = {k: list(v) for k, v in self._cols.items() if k != col}
+            if inplace:
+                self._index = new_idx
+                self._cols = new_cols
+                return None
+            res = _DataFrame(new_cols, index=new_idx)
+            res.attrs = dict(self.attrs)
+            return res
 
         @property
         def index(self):
@@ -678,7 +703,7 @@ def _install_minimal_scientific_shims_if_needed():
     pd_mod.date_range = _date_range
     pd_mod.isna = _isna
     pd_mod.notna = lambda x: not _isna(x)
-    pd_mod.to_datetime = lambda x, unit=None: [_Timestamp(v, unit=unit) for v in x] if isinstance(x, (list, tuple, _Series)) else _Timestamp(x, unit=unit)
+    pd_mod.to_datetime = lambda x, unit=None, utc=None, errors=None, **kw: _Series([_Timestamp(v, unit=unit) for v in x], index=getattr(x, "_index", None)) if isinstance(x, (list, tuple, _Series)) else _Timestamp(x, unit=unit)
     sys.modules["pandas"] = pd_mod
     installed.append("pandas")
 
