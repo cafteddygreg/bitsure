@@ -1043,7 +1043,7 @@ export function App() {
     try {
       await apiFetch('/api/trading/config', {
         method: 'POST',
-        body: JSON.stringify(patch),
+        body: JSON.stringify(wantsEnableAutoTrade ? { ...patch, pin: candidatePin } : patch),
       });
       const cfgRes = await apiFetch('/api/trading/config');
       setTradingCfg(cfgRes.config);
@@ -2218,20 +2218,27 @@ export function App() {
       warn: tradingCfg?.safety_lock || tradingCfg?.safety_warn,
       apiConnected: Boolean(tradingCfg?.credentials_valid),
     },
+    { id: 'strategy_lab', label: tr(lang, 'Strategy Lab (Backtest)'), icon: FlaskConical },
     { id: 'history', label: tr(lang, 'Historique & Journal'), icon: BookOpen },
     { id: 'account', label: tr(lang, 'Compte, Plans & PIN'), icon: CreditCard },
     { id: 'terms', label: tr(lang, 'Termes & Conditions (CGU)'), icon: Shield },
     ...(isAdminUser
       ? [
           { id: 'users_intelligence', label: tr(lang, 'Utilisateurs 360° (Admin)'), icon: Users },
-          { id: 'strategy_lab', label: tr(lang, 'Strategy Lab (Backtest)'), icon: FlaskConical },
           { id: 'admin', label: tr(lang, 'Admin & Log Doctor'), icon: Terminal },
         ]
       : []),
   ];
 
   // Grouped Mobile Hub structure (4 primary tabs on mobile + sub-switcher strip)
-  const mobileHubGroups = [
+  const mobileHubGroups: Array<{
+    hubId: string;
+    label: string;
+    icon: any;
+    tabs: Array<{ id: ActiveTab; label: string; icon: any; count?: number }>;
+    hasSafetyDot?: boolean;
+    apiConnected?: boolean;
+  }> = [
     {
       hubId: 'markets',
       label: tr(lang, 'Marchés'),
@@ -2245,9 +2252,13 @@ export function App() {
       hubId: 'trading',
       label: tr(lang, 'Trading'),
       icon: Layers,
+      // Pastille d'état Auto-Trade : verte si les clés API Binance sont valides, rouge sinon.
+      hasSafetyDot: true,
+      apiConnected: Boolean(tradingCfg?.credentials_valid),
       tabs: [
         { id: 'paper' as ActiveTab, label: tr(lang, 'Paper Trading'), icon: Layers, count: openPaper.length },
         { id: 'safety' as ActiveTab, label: tr(lang, 'Auto-Trade & Safety'), icon: ShieldCheck },
+        { id: 'strategy_lab' as ActiveTab, label: tr(lang, 'Strategy Lab (Backtest)'), icon: FlaskConical },
       ],
     },
     {
@@ -2264,11 +2275,10 @@ export function App() {
       ? [
           {
             hubId: 'admin_hub',
-            label: 'Admin & Lab',
+            label: 'Admin',
             icon: FlaskConical,
             tabs: [
               { id: 'users_intelligence' as ActiveTab, label: tr(lang, 'Utilisateurs 360° (Admin)'), icon: Users },
-              { id: 'strategy_lab' as ActiveTab, label: tr(lang, 'Strategy Lab (Backtest)'), icon: FlaskConical },
               { id: 'admin' as ActiveTab, label: tr(lang, 'Admin & Log Doctor'), icon: Terminal },
             ],
           },
@@ -2702,11 +2712,7 @@ export function App() {
                 {currentMobileHub.tabs.findIndex((t) => t.id === activeTab) + 1}/{currentMobileHub.tabs.length}
               </span>
             </div>
-            <div
-              className={`grid gap-1.5 p-1 bg-[#111827] border border-white/[0.08] rounded-xl ${
-                currentMobileHub.tabs.length >= 3 ? 'grid-cols-3' : 'grid-cols-2'
-              }`}
-            >
+            <div className="bl-subtabs">
               {currentMobileHub.tabs.map((subTab) => {
                 const SubIcon = subTab.icon;
                 const isSubActive = activeTab === subTab.id;
@@ -2715,14 +2721,14 @@ export function App() {
                     key={subTab.id}
                     type="button"
                     onClick={() => setActiveTab(subTab.id)}
-                    className={`py-2 px-2.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                    className={`py-2 px-3 min-h-9 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
                       isSubActive
                         ? 'bg-[#10B981] text-[#090D16] shadow-sm'
                         : 'text-[#94A3B8] hover:text-[#F1F5F9]'
                     }`}
                   >
                     <SubIcon className="w-3.5 h-3.5 shrink-0" />
-                    <span className="truncate">{subTab.label}</span>
+                    <span>{subTab.label}</span>
                   </button>
                 );
               })}
@@ -2947,6 +2953,9 @@ export function App() {
                           ? tr(lang, 'Zone de survente (<30)')
                           : tr(lang, 'Zone neutre équilibrée')}
                       </div>
+                      <div className="text-[11px] text-[#94A3B8] mt-0.5 font-mono-tabular">
+                        Stoch %K: {ind.stoch_k != null ? Number(ind.stoch_k).toFixed(1) : '—'} / %D: {ind.stoch_d != null ? Number(ind.stoch_d).toFixed(1) : '—'}
+                      </div>
                     </div>
 
                     <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
@@ -2955,7 +2964,7 @@ export function App() {
                         {ind.macd ? ind.macd.toFixed(2) : '—'}
                       </div>
                       <div className="text-[11px] text-[#94A3B8] mt-0.5 font-mono-tabular">
-                        Hist: {ind.macd_hist ? ind.macd_hist.toFixed(2) : '—'}
+                        {tr(lang, 'Signal')}: {ind.macd_signal != null ? Number(ind.macd_signal).toFixed(2) : '—'} • Hist: {ind.macd_hist ? ind.macd_hist.toFixed(2) : '—'}
                       </div>
                     </div>
 
@@ -2979,6 +2988,72 @@ export function App() {
                       </div>
                       <div className="font-mono-tabular text-sm font-semibold text-[#F59E0B]">
                         R: {ind.resistance ? ind.resistance.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Autres indicateurs du bot : SMA 20/50, Bollinger, Volume, Fibonacci, Divergence RSI */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#64748B]">{tr(lang, 'Moyennes mobiles SMA 20 / 50')}</div>
+                      <div className="font-mono-tabular text-sm font-semibold text-[#F1F5F9] mt-1">
+                        {ind.sma20 != null ? Number(ind.sma20).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'} /{' '}
+                        {ind.sma50 != null ? Number(ind.sma50).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}
+                      </div>
+                      <div className="text-[11px] text-[#94A3B8] mt-0.5">
+                        {ind.price > ind.sma20 && ind.sma20 > ind.sma50
+                          ? tr(lang, 'Tendance haussière (prix > SMA20 > SMA50)')
+                          : ind.price < ind.sma20 && ind.sma20 < ind.sma50
+                          ? tr(lang, 'Tendance baissière (prix < SMA20 < SMA50)')
+                          : tr(lang, 'Tendance neutre')}
+                      </div>
+                    </div>
+
+                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#64748B]">{tr(lang, 'Bandes de Bollinger (20, 2σ)')}</div>
+                      <div className="font-mono-tabular text-sm font-semibold text-[#F59E0B] mt-1">
+                        {tr(lang, 'Haute')}: {ind.bb_upper != null ? Number(ind.bb_upper).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}
+                      </div>
+                      <div className="font-mono-tabular text-sm font-semibold text-[#10B981]">
+                        {tr(lang, 'Basse')}: {ind.bb_lower != null ? Number(ind.bb_lower).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}
+                      </div>
+                    </div>
+
+                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#64748B]">{tr(lang, 'Volume vs moyenne 20')}</div>
+                      <div className="font-mono-tabular text-base font-semibold text-[#F1F5F9] mt-1">
+                        {ind.volume && ind.volume_ma20 ? `${(ind.volume / ind.volume_ma20).toFixed(2)}x` : '—'}
+                      </div>
+                      <div className="text-[11px] text-[#94A3B8] mt-0.5 font-mono-tabular">
+                        {tr(lang, 'Moyenne 20')}: {ind.volume_ma20 != null ? Number(ind.volume_ma20).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—'}
+                      </div>
+                    </div>
+
+                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#64748B]">{tr(lang, 'Fibonacci (50 bougies)')}</div>
+                      <div className="font-mono-tabular text-[11px] text-[#F1F5F9] mt-1 space-y-0.5">
+                        <div>38.2% : {ind.fib?.['0.382'] != null ? Number(ind.fib['0.382']).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}</div>
+                        <div>50.0% : {ind.fib?.['0.500'] != null ? Number(ind.fib['0.500']).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}</div>
+                        <div>61.8% : {ind.fib?.['0.618'] != null ? Number(ind.fib['0.618']).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}</div>
+                      </div>
+                    </div>
+
+                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#64748B]">{tr(lang, 'Divergence RSI / Prix')}</div>
+                      <div
+                        className={`font-mono-tabular text-sm font-semibold mt-1 ${
+                          ind.rsi_divergence === 'bullish'
+                            ? 'text-[#10B981]'
+                            : ind.rsi_divergence === 'bearish'
+                            ? 'text-[#F43F5E]'
+                            : 'text-[#94A3B8]'
+                        }`}
+                      >
+                        {ind.rsi_divergence === 'bullish'
+                          ? tr(lang, 'Haussière')
+                          : ind.rsi_divergence === 'bearish'
+                          ? tr(lang, 'Baissière')
+                          : tr(lang, 'Aucune')}
                       </div>
                     </div>
                   </div>
@@ -3809,8 +3884,8 @@ export function App() {
                       {tradingCfg.enabled && tradingCfg.engine_online === false && (
                         <p className="mt-1.5 text-xs text-[#FBBF24] bg-[#F59E0B]/10 border border-[#F59E0B]/30 rounded-lg px-2.5 py-1.5">
                           {lang === 'en'
-                            ? '⚠️ Auto-Trade is ON but the trading engine is offline: no order will be placed. Start the bot service (main.py), or set START_TELEGRAM_BOT=1 with TELEGRAM_TOKEN on the web service.'
-                            : '⚠️ Auto-Trade est activé mais le moteur de trading est hors ligne : aucun ordre ne sera passé. Démarrez le service bot (main.py), ou définissez START_TELEGRAM_BOT=1 avec TELEGRAM_TOKEN sur le service web.'}
+                            ? '⚠️ Auto-Trade is ON but the trading engine is offline: no order will be placed. Start the bot service (main.py), or set AUTOTRADE_EMBEDDED=1 on the web service and redeploy.'
+                            : '⚠️ Auto-Trade est activé mais le moteur de trading est hors ligne : aucun ordre ne sera passé. Démarrez le service bot (main.py), ou définissez AUTOTRADE_EMBEDDED=1 sur le service web puis redéployez.'}
                         </p>
                       )}
                       {tradingCfg.enabled && tradingCfg.engine_online === true && (
@@ -6354,11 +6429,12 @@ export function App() {
           )}
 
           {/* =========================================================
-              TAB 8: STRATEGY LAB & BACKTESTING ENGINE (ADMIN ONLY)
+              TAB 8: STRATEGY LAB & BACKTESTING ENGINE (tous les utilisateurs approuvés)
              ========================================================= */}
-          {activeTab === 'strategy_lab' && Boolean(user?.is_admin || user?.role === 'admin') && (
+          {activeTab === 'strategy_lab' && Boolean(user) && (
             <StrategyLabView
               lang={lang}
+              isAdmin={isAdminUser}
               onShowToast={(type, text) => showToast(text, type)}
             />
           )}

@@ -374,3 +374,22 @@ PYTHONPATH=. python3 -m unittest discover -s tests -v
 # Vérifier la compilation TypeScript / Vite de la plateforme Web
 npm run build
 ```
+
+## Auto-Trade depuis le site web
+
+Activer Auto-Trade sur le site enregistre seulement l'option en base. Les ordres sont passés par le
+**moteur** (tâches planifiées de `main.py`). Le site affiche « Moteur de trading en ligne / hors ligne ».
+
+- Service bot (`python main.py`) actif : rien à faire.
+- Pas de service bot : définir `AUTOTRADE_EMBEDDED=1` sur le service web (optionnel : `TELEGRAM_TOKEN` pour les
+  notifications), puis redéployer. Le moteur embarqué ne démarre que si aucun autre moteur n'est détecté.
+
+Le site sert le frontend embarqué `web_frontend_bundle_data.py` (via `web_frontend_bundle.py`). Après toute
+modification de `src/`, régénérer ce bundle (`npm run build`, puis ré-encoder `dist/`).
+
+## Strategy Lab (ouvert à tous les utilisateurs approuvés)
+- Presets : les presets « par défaut » (publiés par l'administrateur) sont visibles de tous en lecture seule ; tout le reste est privé à son créateur. Modifier un preset par défaut crée une copie personnelle.
+- Expériences (runs) : privées par utilisateur (l'administrateur voit tout). Limite : 8 simulations par minute et par utilisateur.
+- Indicateurs : uniquement ceux du bot (SMA 20/50, RSI, MACD, ADX, ATR, Bollinger, Volume MA20, Support/Résistance, Stochastique, Fibonacci, divergence RSI).
+- Période de backtest : Auto (profondeur), 7 j, 30 j, 3 mois, 6 mois, 1 an ou dates personnalisées (max 12 000 bougies).
+- Le frontend embarqué (`web_frontend_bundle_data.py`) a été régénéré à partir de `src/`.

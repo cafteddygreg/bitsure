@@ -266,9 +266,9 @@ export interface StrategyLabParams {
   cooldown_candles: number;
   max_trades_per_day: number;
   max_consecutive_losses: number;
-  ema_fast: number;
-  ema_slow: number;
-  ema_trend: number;
+  sma_fast: number;
+  sma_slow: number;
+  sr_lookback: number;
   rsi_period: number;
   rsi_oversold: number;
   rsi_overbought: number;
@@ -279,9 +279,8 @@ export interface StrategyLabParams {
   volume_ma_period: number;
   min_volume_ratio: number;
   min_teddy_score: number;
-  require_ema_alignment: boolean;
+  require_sma_alignment: boolean;
   require_macd_confirmation: boolean;
-  require_trend_filter_ema200: boolean;
   block_against_strong_trend: boolean;
   sl_mode: 'atr' | 'fixed_pct';
   sl_atr_mult: number;
@@ -315,6 +314,10 @@ export interface StrategyLabPreset {
   notes: string;
   created_at: number;
   updated_at: number;
+  /** Preset par défaut défini par l'administrateur (lecture seule pour les utilisateurs). */
+  is_default?: boolean;
+  /** Modifiable / supprimable par l'utilisateur courant. */
+  editable?: boolean;
 }
 
 export interface StrategyLabTrade {
@@ -428,9 +431,10 @@ export interface StrategyLabRun {
     low: number;
     close: number;
     volume: number;
-    ema_fast: number;
-    ema_slow: number;
-    ema_trend: number;
+    sma_fast: number;
+    sma_slow: number;
+    support?: number | null;
+    resistance?: number | null;
     bb_upper: number | null;
     bb_lower: number | null;
     rsi: number;

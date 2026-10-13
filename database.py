@@ -771,6 +771,26 @@ def _ensure_schema(conn):
         except Exception:
             conn.rollback()
     try:
+        # Presets partagés : `is_default = 1` => preset par défaut défini par l'administrateur (visible de tous,
+        # en lecture seule). Tout le reste est privé à son créateur (`created_by`).
+        conn.execute("ALTER TABLE strategy_lab_presets ADD COLUMN is_default INTEGER")
+        conn.commit()
+        # Migration unique (la colonne n'existait pas encore) : le Lab était réservé à l'administrateur,
+        # donc tous les presets déjà présents sont des presets par défaut.
+        conn.execute("UPDATE strategy_lab_presets SET is_default = 1 WHERE is_default IS NULL")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    for idx_sql in (
+        "CREATE INDEX IF NOT EXISTS idx_strategy_lab_runs_owner ON strategy_lab_runs(created_by)",
+        "CREATE INDEX IF NOT EXISTS idx_strategy_lab_presets_owner ON strategy_lab_presets(created_by)",
+    ):
+        try:
+            conn.execute(idx_sql)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+    try:
         # Synchronisation automatique : tout utilisateur PRO / payant ou déjà approuvé
         # (sauf s'il est explicitement REJECTED ou SUSPENDED) a approved = 1, terms_accepted = 1 et account_status = 'APPROVED'.
         conn.execute(

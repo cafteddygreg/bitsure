@@ -21,6 +21,7 @@ import secrets
 import threading
 import time
 import traceback
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
@@ -1746,6 +1747,25 @@ def _analyze_symbol_complete(user_id: int, symbol: str, timeframe: str = "1h", s
         else:
             clean_indicators[k] = v
 
+    # Indicateurs de la bibliothèque du bot (indicators.py) non calculés par le moteur de signal :
+    # Stochastique, divergence RSI/prix et niveaux de Fibonacci (mêmes fonctions et mêmes paramètres que le bot).
+    try:
+        from indicators import stochastic as _stochastic, detect_divergence as _detect_divergence, fibonacci_levels as _fib_levels
+
+        df_ex = SignalEngine._normalize_df(df)
+        k_ser, d_ser = _stochastic(df_ex["High"], df_ex["Low"], df_ex["Close"])
+        k_val, d_val = float(k_ser.iloc[-1]), float(d_ser.iloc[-1])
+        clean_indicators["stoch_k"] = None if k_val != k_val else round(k_val, 2)
+        clean_indicators["stoch_d"] = None if d_val != d_val else round(d_val, 2)
+        clean_indicators["rsi_divergence"] = _detect_divergence(df_ex["Close"], rsi(df_ex["Close"], 14))
+        if len(df_ex) >= 50:
+            hi50 = float(df_ex["High"].iloc[-50:].max())
+            lo50 = float(df_ex["Low"].iloc[-50:].min())
+            if hi50 > lo50:
+                clean_indicators["fib"] = _fib_levels(hi50, lo50)
+    except Exception as ex_err:  # noqa: BLE001
+        logger.warning("Indicateurs complémentaires indisponibles: %s", ex_err)
+
     return {
         "symbol": norm_sym,
         "display_symbol": symbol,
@@ -2346,7 +2366,10 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             # ALL OTHER GET ROUTES REQUIRE AN AUTHENTICATED AND APPROVED SESSION
-            sess = self._require_auth(require_approved=True, require_admin=path.startswith("/api/admin/"))
+            sess = self._require_auth(
+                require_approved=True,
+                require_admin=path.startswith("/api/admin/") and not path.startswith("/api/admin/strategy-lab/"),
+            )
             if not sess:
                 return
             user_id = int(sess["user_id"])
@@ -2754,7 +2777,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 }
                 global_open_trades = []
                 try:
-                    auto_row = db.execute("SELECT COUNT(*) AS c FROM trading_config WHERE auto_trade = 1").fetchone()
+                    auto_row = db.execute("SELECT COUNT(*) AS c FROM trading_config WHERE auto_trade = TRUE").fetchone()
                     open_rows = db.execute(
                         "SELECT id, user_id, symbol, direction, quantity, entry_price, sl_price, tp_price, market_type, opened_at FROM trades WHERE status = 'open' ORDER BY opened_at DESC LIMIT 30"
                     ).fetchall()
@@ -2808,12 +2831,12 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/strategy-lab/overview":
                 import strategy_lab
                 try:
-                    presets = strategy_lab.list_lab_presets(user_id)
+                    presets = strategy_lab.list_lab_presets(user_id, is_admin)
                 except Exception as p_err:
                     logger.warning("list_lab_presets fallback: %s", p_err)
                     presets = []
                 try:
-                    runs = strategy_lab.list_lab_runs(limit=35)
+                    runs = strategy_lab.list_lab_runs(limit=35, user_id=None if is_admin else user_id)
                 except Exception as r_err:
                     logger.warning("list_lab_runs fallback: %s", r_err)
                     runs = []
@@ -2833,7 +2856,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 if not run_id:
                     self._send_json(400, {"ok": False, "error": "ID d'expérience manquant."})
                     return
-                detail = strategy_lab.get_lab_run_detail(run_id)
+                detail = strategy_lab.get_lab_run_detail(run_id, user_id=None if is_admin else user_id)
                 if not detail:
                     self._send_json(404, {"ok": False, "error": "Expérience Strategy Lab introuvable."})
                     return
@@ -3193,7 +3216,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             # ALL OTHER POST ROUTES REQUIRE AN AUTHENTICATED SESSION + CSRF VALIDATION
-            is_admin_route = path.startswith("/api/admin/")
+            is_admin_route = path.startswith("/api/admin/") and not path.startswith("/api/admin/strategy-lab/")
             sess = self._require_auth(
                 require_approved=True,
                 require_admin=is_admin_route,
@@ -4157,7 +4180,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 run_id = body.get("run_id")
                 active_run = body.get("active_run") if isinstance(body.get("active_run"), dict) else None
                 if not active_run and run_id:
-                    active_run = strategy_lab.get_lab_run_detail(int(run_id))
+                    active_run = strategy_lab.get_lab_run_detail(int(run_id), user_id=None if is_admin else user_id)
                 res = strategy_lab.generate_external_ai_prompt(
                     params=params,
                     selected_models=selected_models,
@@ -4175,6 +4198,10 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             if path == "/api/admin/strategy-lab/backtest":
                 import strategy_lab
+                _wait = strategy_lab.check_lab_rate_limit(user_id, is_admin)
+                if _wait:
+                    self._send_json(429, {"ok": False, "error": f"Trop de simulations d'affilée : réessayez dans {_wait} s."})
+                    return
                 symbol = strategy_lab._normalize_lab_symbol(body.get("symbol") or "BTCUSDT")
                 market_type = str(body.get("market_type") or "futures").lower()
                 timeframe = body.get("timeframe") or "15m"
@@ -4284,12 +4311,16 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {
                     "ok": True,
                     "run": result,
-                    "runs": strategy_lab.list_lab_runs(limit=35),
+                    "runs": strategy_lab.list_lab_runs(limit=35, user_id=None if is_admin else user_id),
                 })
                 return
 
             if path == "/api/admin/strategy-lab/sweep":
                 import strategy_lab
+                _wait = strategy_lab.check_lab_rate_limit(user_id, is_admin)
+                if _wait:
+                    self._send_json(429, {"ok": False, "error": f"Trop de simulations d'affilée : réessayez dans {_wait} s."})
+                    return
                 symbol = strategy_lab._normalize_lab_symbol(body.get("symbol") or "BTCUSDT")
                 timeframe = body.get("timeframe") or "15m"
                 trading_style = body.get("trading_style") or "day"
@@ -4319,11 +4350,20 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 action = body.get("action", "save")
                 if action == "delete":
                     preset_id = int(body.get("preset_id") or body.get("id") or 0)
-                    presets = strategy_lab.delete_lab_preset(user_id, preset_id)
+                    presets = strategy_lab.delete_lab_preset(user_id, preset_id, is_admin)
                     self._send_json(200, {"ok": True, "presets": presets, "message": "Preset supprimé."})
                     return
-                res = strategy_lab.save_lab_preset(user_id, body)
-                self._send_json(200, {"ok": True, "presets": res["presets"], "message": "Preset de stratégie enregistré."})
+                try:
+                    res = strategy_lab.save_lab_preset(user_id, body, is_admin)
+                except ValueError as limit_err:
+                    self._send_json(400, {"ok": False, "error": str(limit_err)})
+                    return
+                self._send_json(200, {
+                    "ok": True,
+                    "presets": res["presets"],
+                    "copied": bool(res.get("copied")),
+                    "message": "Copie personnelle créée (le preset par défaut reste inchangé)." if res.get("copied") else "Preset de stratégie enregistré.",
+                })
                 return
 
             if path == "/api/admin/strategy-lab/run-meta":
@@ -4334,17 +4374,18 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {"ok": False, "error": "ID d'expérience manquant."})
                     return
                 if action == "delete":
-                    strategy_lab.delete_lab_run(run_id)
-                    self._send_json(200, {"ok": True, "runs": strategy_lab.list_lab_runs(limit=35), "message": "Expérience supprimée."})
+                    strategy_lab.delete_lab_run(run_id, user_id=None if is_admin else user_id)
+                    self._send_json(200, {"ok": True, "runs": strategy_lab.list_lab_runs(limit=35, user_id=None if is_admin else user_id), "message": "Expérience supprimée."})
                     return
                 strategy_lab.update_lab_run_meta(
                     run_id=run_id,
+                    user_id=None if is_admin else user_id,
                     name=body.get("name"),
                     notes=body.get("notes"),
                     tags=body.get("tags"),
                     is_favorite=body.get("is_favorite"),
                 )
-                self._send_json(200, {"ok": True, "runs": strategy_lab.list_lab_runs(limit=35), "message": "Métadonnées mises à jour."})
+                self._send_json(200, {"ok": True, "runs": strategy_lab.list_lab_runs(limit=35, user_id=None if is_admin else user_id), "message": "Métadonnées mises à jour."})
                 return
 
             self._send_json(404, {"ok": False, "error": f"Point d'accès POST inconnu : {path}"})
@@ -4355,6 +4396,20 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
 _bg_web_server: Optional[ThreadingHTTPServer] = None
 _bg_extra_servers: List[ThreadingHTTPServer] = []
+
+
+def _maybe_start_embedded_engine() -> None:
+    """Démarre le moteur Auto-Trade dans ce processus si AUTOTRADE_EMBEDDED=1 (voir headless_engine.py)."""
+    try:
+        import sys as _sys
+
+        if hasattr(_sys.modules.get("__main__"), "start_autotrade_scheduler"):
+            return  # processus du bot (main.py) : il gère déjà son propre moteur
+        from headless_engine import maybe_start_embedded_engine
+
+        maybe_start_embedded_engine()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Moteur Auto-Trade embarqué non démarré: %s", exc)
 
 
 def start_background_web_server(host: str = "0.0.0.0", port: Optional[int] = None) -> Optional[ThreadingHTTPServer]:
@@ -4397,6 +4452,7 @@ def start_background_web_server(host: str = "0.0.0.0", port: Optional[int] = Non
             except Exception:
                 pass
 
+    _maybe_start_embedded_engine()
     return _bg_web_server
 
 
@@ -4405,6 +4461,7 @@ def main():
     host = os.environ.get("WEB_HOST", "0.0.0.0")
     server = ThreadingHTTPServer((host, port), BitsureAPIHandler)
     logger.info("Bitsure Teddy Python API Server listening on http://%s:%d", host, port)
+    _maybe_start_embedded_engine()
     server.serve_forever()
 
 

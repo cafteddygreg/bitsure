@@ -1618,7 +1618,7 @@ async def admin_cmd_trading_stats(update: Update, context: ContextTypes.DEFAULT_
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM trading_config WHERE auto_trade = 1")
+            cur.execute("SELECT COUNT(*) FROM trading_config WHERE auto_trade = TRUE")
             active_auto_row = cur.fetchone()
             active_auto = active_auto_row[0] if active_auto_row else 0
 

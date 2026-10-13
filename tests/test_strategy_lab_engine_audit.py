@@ -49,25 +49,25 @@ def build_synthetic_ohlcv(
 
 
 class TestD1IndicatorWarmup(unittest.TestCase):
-    def test_d1_ema_trend_warmup_convergence_and_split_continuity(self):
+    def test_d1_sma_warmup_convergence_and_split_continuity(self):
         """
-        D1: The EMA(ema_trend=200) at the first simulated candle must differ by < 0.1%
-        from a reference EMA computed on a long history, both on 'full' and 'test' splits.
-        Also verifies explicit warning when history is shorter than 3 * ema_trend.
+        D1: La SMA lente (sma_slow=50, comme le bot) au premier chandelier simulé doit différer de < 0.1%
+        d'une SMA de référence calculée sur un long historique, both on 'full' and 'test' splits.
+        Vérifie aussi l'avertissement explicite quand l'historique est plus court que le warm-up requis.
         """
         df_long = build_synthetic_ohlcv(n_candles=1200, seed=101, drift=0.0005, volatility=0.004)
-        params = strategy_lab.normalize_lab_params({"ema_trend": 200}, style="day")
+        params = strategy_lab.normalize_lab_params({"sma_slow": 50}, style="day")
 
-        # Reference EMA200 computed over the full 1200-candle history
+        # Reference SMA50 computed over the full 1200-candle history
         ref_ind = strategy_lab._compute_lab_indicators(df_long, params)
-        ref_ts_to_ema = {
+        ref_ts_to_sma = {
             (ts.isoformat() if hasattr(ts, "isoformat") else str(ts)): float(val)
-            for ts, val in zip(ref_ind.index, ref_ind["LAB_EMA_TREND"])
+            for ts, val in zip(ref_ind.index, ref_ind["LAB_SMA_SLOW"])
         }
 
         # 1. Sub-history starting at bar 200 (1000 bars total):
-        # At the first simulated candle of res_sub, the EMA200 must have warmed up over >= 600 bars
-        # so its value differs by < 0.1% from the reference EMA200 that started 200 bars earlier.
+        # Au premier chandelier simulé de res_sub, la SMA50 doit être formée
+        # et différer de < 0.1% de la SMA de référence calculée sur l'historique complet.
         df_sub = df_long.iloc[200:].copy()
         res_sub = strategy_lab.run_backtest_experiment(
             symbol="BTCUSDT",
@@ -79,13 +79,13 @@ class TestD1IndicatorWarmup(unittest.TestCase):
         )
         first_c_sub = res_sub["candles"][0]
         ts_sub = first_c_sub["timestamp"]
-        ref_ema_true = ref_ts_to_ema[ts_sub]
-        sim_ema_sub = float(first_c_sub["ema_trend"])
-        rel_diff_pct = abs(sim_ema_sub - ref_ema_true) / ref_ema_true * 100.0
+        ref_sma_true = ref_ts_to_sma[ts_sub]
+        sim_sma_sub = float(first_c_sub["sma_slow"])
+        rel_diff_pct = abs(sim_sma_sub - ref_sma_true) / ref_sma_true * 100.0
         self.assertLess(
             rel_diff_pct,
             0.1,
-            f"EMA200 at first simulated candle differs by {rel_diff_pct:.4f}% (>= 0.1%) from long-history reference",
+            f"SMA50 at first simulated candle differs by {rel_diff_pct:.4f}% (>= 0.1%) from long-history reference",
         )
 
         # 2. On 'test' split (last 20%), indicators must be computed on the full history BEFORE slicing
@@ -99,23 +99,23 @@ class TestD1IndicatorWarmup(unittest.TestCase):
         )
         first_c_test = res_test_split["candles"][0]
         ts_test = first_c_test["timestamp"]
-        ref_ema_test = ref_ts_to_ema[ts_test]
-        sim_ema_test = float(first_c_test["ema_trend"])
-        rel_diff_test_pct = abs(sim_ema_test - ref_ema_test) / ref_ema_test * 100.0
+        ref_sma_test = ref_ts_to_sma[ts_test]
+        sim_sma_test = float(first_c_test["sma_slow"])
+        rel_diff_test_pct = abs(sim_sma_test - ref_sma_test) / ref_sma_test * 100.0
         self.assertLess(
             rel_diff_test_pct,
             0.01,
-            f"Test split EMA200 was recomputed on isolated slice! Diff={rel_diff_test_pct:.4f}%",
+            f"Test split SMA50 was recomputed on isolated slice! Diff={rel_diff_test_pct:.4f}%",
         )
 
     def test_d1_insufficient_warmup_warning_reported(self):
         """
-        D1: If the loaded history is shorter than the required warm-up (3 * ema_trend),
+        D1: If the loaded history is shorter than the required warm-up (3 * sma_slow),
         an explicit warning must be added to data_quality['warnings'] and result['warnings']
         without fabricating data.
         """
         df_short = build_synthetic_ohlcv(n_candles=250, seed=102)
-        params = strategy_lab.normalize_lab_params({"ema_trend": 200}, style="day")
+        params = strategy_lab.normalize_lab_params({"sma_slow": 250}, style="day")
         res = strategy_lab.run_backtest_experiment(
             symbol="BTCUSDT",
             timeframe="15m",
@@ -127,11 +127,11 @@ class TestD1IndicatorWarmup(unittest.TestCase):
         dq_warnings = res.get("data_quality", {}).get("warnings", [])
         res_warnings = res.get("warnings", [])
         self.assertTrue(
-            any("warm-up" in w.lower() or "warmup" in w.lower() or "ema" in w.lower() for w in dq_warnings),
+            any("warm-up" in w.lower() or "warmup" in w.lower() or "macd" in w.lower() for w in dq_warnings),
             f"Expected warm-up warning in data_quality['warnings'], got: {dq_warnings}",
         )
         self.assertTrue(
-            any("warm-up" in w.lower() or "warmup" in w.lower() or "ema" in w.lower() for w in res_warnings),
+            any("warm-up" in w.lower() or "warmup" in w.lower() or "macd" in w.lower() for w in res_warnings),
             f"Expected warm-up warning in result['warnings'], got: {res_warnings}",
         )
 
@@ -173,12 +173,12 @@ class TestD2CircuitBreakerMaxConsecutiveLosses(unittest.TestCase):
 
         params = strategy_lab.normalize_lab_params(
             {
-                "ema_trend": 200,
                 "min_teddy_score": 25,
+                "sr_lookback": 200,  # warm-up = 3 x 200 = 600 bougies (les données de test attendent ce warm-up)
                 "adx_min": 5.0,
                 "min_atr_pct": 0.0,
                 "min_volume_ratio": 0.0,
-                "require_ema_alignment": False,
+                "require_sma_alignment": False,
                 "require_macd_confirmation": False,
                 "allow_long": True,
                 "allow_short": False,
@@ -240,7 +240,7 @@ class TestD3RiskTargetActualAndLeverageCap(unittest.TestCase):
                 "adx_min": 5.0,
                 "min_atr_pct": 0.0,
                 "min_volume_ratio": 0.0,
-                "require_ema_alignment": False,
+                "require_sma_alignment": False,
                 "require_macd_confirmation": False,
             },
             style="day",
@@ -345,7 +345,7 @@ class TestD5OpenPositionAtEndOfBacktest(unittest.TestCase):
                 "adx_min": 5.0,
                 "min_atr_pct": 0.0,
                 "min_volume_ratio": 0.0,
-                "require_ema_alignment": False,
+                "require_sma_alignment": False,
                 "require_macd_confirmation": False,
                 "sl_mode": "fixed_pct",
                 "sl_fixed_pct": 15.0,        # Wide SL so position stays open until end
@@ -432,10 +432,11 @@ class TestD6PartialTpConservativeOrderingAndSlippage(unittest.TestCase):
 
         base_cfg = {
             "min_teddy_score": 25,
+            "sr_lookback": 200,  # warm-up = 3 x 200 = 600 bougies (les données de test attendent ce warm-up)
             "adx_min": 5.0,
             "min_atr_pct": 0.0,
             "min_volume_ratio": 0.0,
-            "require_ema_alignment": False,
+            "require_sma_alignment": False,
             "require_macd_confirmation": False,
             "allow_long": True,
             "allow_short": False,
@@ -494,7 +495,7 @@ class TestD7SameBarReEntryBlocked(unittest.TestCase):
                 "adx_min": 5.0,
                 "min_atr_pct": 0.0,
                 "min_volume_ratio": 0.0,
-                "require_ema_alignment": False,
+                "require_sma_alignment": False,
                 "require_macd_confirmation": False,
                 "sl_mode": "fixed_pct",
                 "sl_fixed_pct": 0.3,

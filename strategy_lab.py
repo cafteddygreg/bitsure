@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 import database as _db_mod
-from indicators import macd, adx, bollinger_bands, rsi as calc_rsi, atr as calc_atr
+from indicators import macd, adx, bollinger_bands, sma, rsi as calc_rsi, atr as calc_atr
 from data_fetcher import normalize_symbol
 
 
@@ -103,9 +103,9 @@ DEFAULT_STRATEGY_PRESETS: List[Dict[str, Any]] = [
             "max_trades_per_day": 8,
             "max_consecutive_losses": 4,
             # Indicators
-            "ema_fast": 20,
-            "ema_slow": 50,
-            "ema_trend": 200,
+            "sma_fast": 20,
+            "sma_slow": 50,
+            "sr_lookback": 50,
             "rsi_period": 14,
             "rsi_oversold": 32.0,
             "rsi_overbought": 68.0,
@@ -117,9 +117,8 @@ DEFAULT_STRATEGY_PRESETS: List[Dict[str, Any]] = [
             "min_volume_ratio": 0.65,
             # Scoring & Confluence
             "min_teddy_score": 58,
-            "require_ema_alignment": True,
+            "require_sma_alignment": True,
             "require_macd_confirmation": True,
-            "require_trend_filter_ema200": False,
             "block_against_strong_trend": True,
             # Risk, SL, TP, Trailing, Break-even
             "sl_mode": "atr",        # 'atr' | 'fixed_pct'
@@ -163,9 +162,9 @@ DEFAULT_STRATEGY_PRESETS: List[Dict[str, Any]] = [
             "cooldown_candles": 1,
             "max_trades_per_day": 14,
             "max_consecutive_losses": 4,
-            "ema_fast": 12,
-            "ema_slow": 26,
-            "ema_trend": 100,
+            "sma_fast": 20,
+            "sma_slow": 50,
+            "sr_lookback": 50,
             "rsi_period": 14,
             "rsi_oversold": 35.0,
             "rsi_overbought": 65.0,
@@ -176,9 +175,8 @@ DEFAULT_STRATEGY_PRESETS: List[Dict[str, Any]] = [
             "volume_ma_period": 20,
             "min_volume_ratio": 0.75,
             "min_teddy_score": 54,
-            "require_ema_alignment": True,
+            "require_sma_alignment": True,
             "require_macd_confirmation": False,
-            "require_trend_filter_ema200": False,
             "block_against_strong_trend": True,
             "sl_mode": "atr",
             "sl_atr_mult": 1.2,
@@ -202,7 +200,7 @@ DEFAULT_STRATEGY_PRESETS: List[Dict[str, Any]] = [
     {
         "key": "bitsure_swing_institutional",
         "name": "Bitsure Swing Institutionnel — Haute Sélectivité",
-        "description": "Filtre de tendance strict EMA 200 + ADX >= 24 + Score Teddy >= 65 et R:R minimum de 2.2.",
+        "description": "Tendance SMA 20/50 alignée + ADX >= 24 + Score Teddy >= 65 et R:R minimum de 2.2.",
         "trading_style": "swing",
         "timeframe": "1h",
         "tags": "officiel,swing,conservateur",
@@ -221,9 +219,9 @@ DEFAULT_STRATEGY_PRESETS: List[Dict[str, Any]] = [
             "cooldown_candles": 3,
             "max_trades_per_day": 4,
             "max_consecutive_losses": 3,
-            "ema_fast": 20,
-            "ema_slow": 50,
-            "ema_trend": 200,
+            "sma_fast": 20,
+            "sma_slow": 50,
+            "sr_lookback": 50,
             "rsi_period": 14,
             "rsi_oversold": 30.0,
             "rsi_overbought": 70.0,
@@ -234,9 +232,8 @@ DEFAULT_STRATEGY_PRESETS: List[Dict[str, Any]] = [
             "volume_ma_period": 20,
             "min_volume_ratio": 0.85,
             "min_teddy_score": 65,
-            "require_ema_alignment": True,
+            "require_sma_alignment": True,
             "require_macd_confirmation": True,
-            "require_trend_filter_ema200": True,
             "block_against_strong_trend": True,
             "sl_mode": "atr",
             "sl_atr_mult": 2.0,
@@ -272,6 +269,15 @@ def normalize_lab_params(raw_params: Optional[Dict[str, Any]], style: str = "day
             if v is not None:
                 base[k] = v
 
+    # Compat. anciens presets / expériences : le bot n'utilise que des SMA (20/50), jamais d'EMA.
+    if isinstance(raw_params, dict):
+        for legacy, current in (("ema_fast", "sma_fast"), ("ema_slow", "sma_slow"),
+                                ("require_ema_alignment", "require_sma_alignment")):
+            if raw_params.get(legacy) is not None and raw_params.get(current) is None:
+                base[current] = raw_params[legacy]
+    for legacy_key in ("ema_fast", "ema_slow", "ema_trend", "require_ema_alignment", "require_trend_filter_ema200"):
+        base.pop(legacy_key, None)
+
     # Enforce safe numerical bounds
     base["initial_capital"] = max(100.0, min(10_000_000.0, float(base.get("initial_capital", 10000.0))))
     base["risk_per_trade_pct"] = max(0.1, min(25.0, float(base.get("risk_per_trade_pct", 1.0))))
@@ -283,9 +289,9 @@ def normalize_lab_params(raw_params: Optional[Dict[str, Any]], style: str = "day
     base["cooldown_candles"] = max(0, min(100, int(base.get("cooldown_candles", 2))))
     base["max_trades_per_day"] = max(1, min(100, int(base.get("max_trades_per_day", 8))))
     base["max_consecutive_losses"] = max(1, min(50, int(base.get("max_consecutive_losses", 4))))
-    base["ema_fast"] = max(3, min(100, int(base.get("ema_fast", 20))))
-    base["ema_slow"] = max(5, min(250, int(base.get("ema_slow", 50))))
-    base["ema_trend"] = max(20, min(500, int(base.get("ema_trend", 200))))
+    base["sma_fast"] = max(3, min(100, int(base.get("sma_fast", 20))))
+    base["sma_slow"] = max(5, min(250, int(base.get("sma_slow", 50))))
+    base["sr_lookback"] = max(10, min(200, int(base.get("sr_lookback", 50))))
     base["rsi_period"] = max(4, min(50, int(base.get("rsi_period", 14))))
     base["rsi_oversold"] = max(10.0, min(49.0, float(base.get("rsi_oversold", 32.0))))
     base["rsi_overbought"] = max(51.0, min(90.0, float(base.get("rsi_overbought", 68.0))))
@@ -320,14 +326,14 @@ LAB_MODELS_CATALOG: List[Dict[str, Any]] = [
         "id": "confluence",
         "name": "Signal & Confluence Model",
         "name_fr": "Modèle Signal & Confluence (Teddy Score)",
-        "description": "Gouverne le seuil Teddy Score, les directions autorisées (Long/Short), les filtres d'alignement EMA/MACD/Tendance et les seuils de régime (ADX, ATR%, Volume, Cooldown).",
+        "description": "Gouverne le seuil Teddy Score, les directions autorisées (Long/Short), les filtres d'alignement SMA/MACD/Tendance et les seuils de régime (ADX, ATR%, Volume, Cooldown).",
         "is_strategy_model": True,
     },
     {
         "id": "indicators",
         "name": "Technical Indicators Model",
-        "name_fr": "Modèle Indicateurs Techniques (EMA / RSI / ADX / ATR / Volume)",
-        "description": "Définit les périodes de calcul des moyennes mobiles exponentielles, du RSI (et ses bornes survente/surachat), de l'ADX, de l'ATR et de la moyenne mobile de volume.",
+        "name_fr": "Modèle Indicateurs Techniques (SMA / RSI / ADX / ATR / Volume / Support-Résistance)",
+        "description": "Définit les périodes de calcul des moyennes mobiles simples (SMA), du RSI (et ses bornes survente/surachat), de l'ADX, de l'ATR, de la moyenne mobile de volume et du support/résistance — les mêmes indicateurs que le bot.",
         "is_strategy_model": True,
     },
     {
@@ -371,12 +377,12 @@ LAB_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
         "label_fr": "Autoriser les positions SHORT (SELL)",
         "label_en": "Allow SHORT (SELL) positions",
     },
-    "require_ema_alignment": {
+    "require_sma_alignment": {
         "model": "confluence",
         "type": "bool",
         "unit": "",
-        "label_fr": "Exiger alignement EMA rapide / lente",
-        "label_en": "Require Fast / Slow EMA alignment",
+        "label_fr": "Exiger alignement SMA rapide / lente",
+        "label_en": "Require Fast / Slow SMA alignment",
     },
     "require_macd_confirmation": {
         "model": "confluence",
@@ -384,13 +390,6 @@ LAB_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
         "unit": "",
         "label_fr": "Exiger confirmation impulsion MACD",
         "label_en": "Require MACD momentum confirmation",
-    },
-    "require_trend_filter_ema200": {
-        "model": "confluence",
-        "type": "bool",
-        "unit": "",
-        "label_fr": "Filtre directionnel strict EMA tendance",
-        "label_en": "Strict directional Trend EMA filter",
     },
     "block_against_strong_trend": {
         "model": "confluence",
@@ -436,32 +435,32 @@ LAB_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
         "label_en": "Post-trade Cooldown (candles)",
     },
     # 2. Technical Indicators Model ("indicators")
-    "ema_fast": {
+    "sma_fast": {
         "model": "indicators",
         "type": "int",
         "min": 3,
         "max": 100,
         "unit": "bars",
-        "label_fr": "Période EMA Rapide",
-        "label_en": "Fast EMA Period",
+        "label_fr": "Période SMA Rapide (bot : 20)",
+        "label_en": "Fast SMA Period (bot: 20)",
     },
-    "ema_slow": {
+    "sma_slow": {
         "model": "indicators",
         "type": "int",
         "min": 5,
         "max": 250,
         "unit": "bars",
-        "label_fr": "Période EMA Lente",
-        "label_en": "Slow EMA Period",
+        "label_fr": "Période SMA Lente (bot : 50)",
+        "label_en": "Slow SMA Period (bot: 50)",
     },
-    "ema_trend": {
+    "sr_lookback": {
         "model": "indicators",
         "type": "int",
-        "min": 20,
-        "max": 500,
+        "min": 10,
+        "max": 200,
         "unit": "bars",
-        "label_fr": "Période EMA Tendance",
-        "label_en": "Trend EMA Period",
+        "label_fr": "Fenêtre Support / Résistance (bot : 50)",
+        "label_en": "Support / Resistance Lookback (bot: 50)",
     },
     "rsi_period": {
         "model": "indicators",
@@ -1066,10 +1065,10 @@ def parse_and_validate_raw_config(
     for k, v in parsed_overrides.items():
         merged_params[k] = v
 
-    # Relational consistency check (e.g. ema_fast < ema_slow, rsi_oversold < rsi_overbought)
-    if int(merged_params["ema_fast"]) >= int(merged_params["ema_slow"]):
+    # Relational consistency check (e.g. sma_fast < sma_slow, rsi_oversold < rsi_overbought)
+    if int(merged_params["sma_fast"]) >= int(merged_params["sma_slow"]):
         errors.append(
-            f"Invalid EMA relationship: ema_fast ({merged_params['ema_fast']}) must be strictly less than ema_slow ({merged_params['ema_slow']})."
+            f"Invalid SMA relationship: sma_fast ({merged_params['sma_fast']}) must be strictly less than sma_slow ({merged_params['sma_slow']})."
         )
     if float(merged_params["rsi_oversold"]) >= float(merged_params["rsi_overbought"]):
         errors.append(
@@ -1153,9 +1152,9 @@ def validate_partial_model_update(
         if param_model in allowed_models:
             merged[raw_k] = typed_val
 
-    if int(merged["ema_fast"]) >= int(merged["ema_slow"]):
+    if int(merged["sma_fast"]) >= int(merged["sma_slow"]):
         errors.append(
-            f"Invalid EMA relationship: ema_fast ({merged['ema_fast']}) must be strictly less than ema_slow ({merged['ema_slow']})."
+            f"Invalid SMA relationship: sma_fast ({merged['sma_fast']}) must be strictly less than sma_slow ({merged['sma_slow']})."
         )
     if float(merged["rsi_oversold"]) >= float(merged["rsi_overbought"]):
         errors.append(
@@ -1545,7 +1544,7 @@ def load_historical_candles(
     """
     Loads real historical OHLCV candles for the Strategy Lab with incremental PostgreSQL caching:
     1. Queries `strategy_lab_ohlcv` for already stored candles matching (market_type, symbol, timeframe) in [query_start_ms, end_ms],
-       including `warmup_candles` prior to `start_date` so long-period EMAs (e.g. EMA 200) stabilize before the simulation window.
+       including `warmup_candles` prior to `start_date` so the slow SMA, MACD and support/resistance windows are fully formed before the simulation window.
     2. Identifies missing time ranges and fetches ONLY missing candles from official Binance Spot (`/api/v3/klines`)
        or USD-M Futures (`/fapi/v1/klines`) endpoints with pagination and deduplication.
     3. Persists newly fetched closed candles into `strategy_lab_ohlcv` (`ON CONFLICT DO NOTHING`).
@@ -1797,9 +1796,9 @@ def _compute_lab_indicators(df: pd.DataFrame, params: Dict[str, Any]) -> pd.Data
     """Computes parameterized technical indicators on the OHLCV DataFrame without look-ahead bias."""
     data = df.copy()
 
-    ema_fast_p = int(params.get("ema_fast", 20))
-    ema_slow_p = int(params.get("ema_slow", 50))
-    ema_trend_p = int(params.get("ema_trend", 200))
+    sma_fast_p = int(params.get("sma_fast", 20))
+    sma_slow_p = int(params.get("sma_slow", 50))
+    sr_p = int(params.get("sr_lookback", 50))
     rsi_p = int(params.get("rsi_period", 14))
     atr_p = int(params.get("atr_period", 14))
     adx_p = int(params.get("adx_period", 14))
@@ -1810,9 +1809,13 @@ def _compute_lab_indicators(df: pd.DataFrame, params: Dict[str, Any]) -> pd.Data
     low = data["Low"].astype(float)
     vol = data["Volume"].astype(float)
 
-    data["LAB_EMA_FAST"] = close.ewm(span=ema_fast_p, adjust=False).mean().fillna(close)
-    data["LAB_EMA_SLOW"] = close.ewm(span=ema_slow_p, adjust=False).mean().fillna(close)
-    data["LAB_EMA_TREND"] = close.ewm(span=ema_trend_p, adjust=False).mean().fillna(close)
+    # Moyennes mobiles SIMPLES, identiques à celles du bot (indicators.sma ; tendance = prix > SMA20 > SMA50)
+    data["LAB_SMA_FAST"] = sma(close, sma_fast_p).fillna(close)
+    data["LAB_SMA_SLOW"] = sma(close, sma_slow_p).fillna(close)
+
+    # Support / Résistance du bot : plus bas / plus haut des N dernières bougies (indicators.support_resistance)
+    data["LAB_SUPPORT"] = low.rolling(window=sr_p, min_periods=sr_p).min()
+    data["LAB_RESISTANCE"] = high.rolling(window=sr_p, min_periods=sr_p).max()
 
     # MACD, ADX, Bollinger Bands from indicators.py
     macd_line, sig_line, hist_line = macd(close)
@@ -1845,9 +1848,8 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
     Returns direction ('BUY'|'SELL'|'WAIT'), teddy_score (0..100), components, and rejection_reason if filtered.
     """
     close = float(row["Close"])
-    ema_fast = float(row["LAB_EMA_FAST"])
-    ema_slow = float(row["LAB_EMA_SLOW"])
-    ema_trend = float(row["LAB_EMA_TREND"])
+    sma_fast = float(row["LAB_SMA_FAST"])
+    sma_slow = float(row["LAB_SMA_SLOW"])
     rsi = float(row["LAB_RSI"])
     prev_rsi = float(prev_row["LAB_RSI"])
     adx_val = float(row.get("ADX", 20.0) if not pd.isna(row.get("ADX")) else 20.0)
@@ -1865,18 +1867,18 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
     reasons_bear: List[str] = []
 
     # 1. Trend Alignment (up to 30 pts)
-    if close > ema_fast > ema_slow:
+    if close > sma_fast > sma_slow:
         bull_points += 22.0
-        reasons_bull.append("Alignement haussier EMA rapide > EMA lente")
-    elif close > ema_fast:
+        reasons_bull.append("Alignement haussier prix > SMA rapide > SMA lente")
+    elif close > sma_fast:
         bull_points += 12.0
-    if close < ema_fast < ema_slow:
+    if close < sma_fast < sma_slow:
         bear_points += 22.0
-        reasons_bear.append("Alignement baissier EMA rapide < EMA lente")
-    elif close < ema_fast:
+        reasons_bear.append("Alignement baissier prix < SMA rapide < SMA lente")
+    elif close < sma_fast:
         bear_points += 12.0
 
-    if close > ema_trend:
+    if close > sma_slow:
         bull_points += 8.0
     else:
         bear_points += 8.0
@@ -1923,6 +1925,24 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
     elif close >= bb_upper * 0.996:
         bear_points += 8.0
         reasons_bear.append("Test bande haute Bollinger")
+
+    # 5. Support / Résistance (barème du bot : ≤1% = 15 pts, ≤2% = 10 pts, ≤3% = 5 pts)
+    support_lvl = row.get("LAB_SUPPORT")
+    resistance_lvl = row.get("LAB_RESISTANCE")
+    if close > 0 and support_lvl is not None and not pd.isna(support_lvl) and float(support_lvl) <= close:
+        d_sup = abs(close - float(support_lvl)) / close * 100.0
+        sr_buy = 15.0 if d_sup <= 1.0 else (10.0 if d_sup <= 2.0 else (5.0 if d_sup <= 3.0 else 0.0))
+        if sr_buy:
+            bull_points += sr_buy
+            if sr_buy >= 10.0:
+                reasons_bull.append(f"Proche du support ({d_sup:.2f}%)")
+    if close > 0 and resistance_lvl is not None and not pd.isna(resistance_lvl) and float(resistance_lvl) >= close:
+        d_res = abs(close - float(resistance_lvl)) / close * 100.0
+        sr_sell = 15.0 if d_res <= 1.0 else (10.0 if d_res <= 2.0 else (5.0 if d_res <= 3.0 else 0.0))
+        if sr_sell:
+            bear_points += sr_sell
+            if sr_sell >= 10.0:
+                reasons_bear.append(f"Proche de la résistance ({d_res:.2f}%)")
 
     if vol_ratio >= 1.15:
         if bull_points >= bear_points:
@@ -1997,23 +2017,23 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
             "reasons": primary_reasons,
         }
 
-    if bool(params.get("require_ema_alignment", True)):
-        if raw_direction == "BUY" and not (close >= ema_fast and ema_fast >= ema_slow * 0.998):
+    if bool(params.get("require_sma_alignment", True)):
+        if raw_direction == "BUY" and not (close >= sma_fast and sma_fast >= sma_slow * 0.998):
             return {
                 "signal": "WAIT",
                 "candidate_direction": raw_direction,
                 "teddy_score": raw_score,
-                "rejected_by": "ema_misaligned",
-                "rejection_reason": "EMA rapide et EMA lente non alignées à la hausse",
+                "rejected_by": "sma_misaligned",
+                "rejection_reason": "SMA rapide et SMA lente non alignées à la hausse",
                 "reasons": primary_reasons,
             }
-        if raw_direction == "SELL" and not (close <= ema_fast and ema_fast <= ema_slow * 1.002):
+        if raw_direction == "SELL" and not (close <= sma_fast and sma_fast <= sma_slow * 1.002):
             return {
                 "signal": "WAIT",
                 "candidate_direction": raw_direction,
                 "teddy_score": raw_score,
-                "rejected_by": "ema_misaligned",
-                "rejection_reason": "EMA rapide et EMA lente non alignées à la baisse",
+                "rejected_by": "sma_misaligned",
+                "rejection_reason": "SMA rapide et SMA lente non alignées à la baisse",
                 "reasons": primary_reasons,
             }
 
@@ -2037,28 +2057,8 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
                 "reasons": primary_reasons,
             }
 
-    if bool(params.get("require_trend_filter_ema200", False)):
-        if raw_direction == "BUY" and close < ema_trend:
-            return {
-                "signal": "WAIT",
-                "candidate_direction": raw_direction,
-                "teddy_score": raw_score,
-                "rejected_by": "against_ema200_trend",
-                "rejection_reason": f"Prix sous l'EMA de tendance ({params['ema_trend']})",
-                "reasons": primary_reasons,
-            }
-        if raw_direction == "SELL" and close > ema_trend:
-            return {
-                "signal": "WAIT",
-                "candidate_direction": raw_direction,
-                "teddy_score": raw_score,
-                "rejected_by": "against_ema200_trend",
-                "rejection_reason": f"Prix au-dessus de l'EMA de tendance ({params['ema_trend']})",
-                "reasons": primary_reasons,
-            }
-
     if bool(params.get("block_against_strong_trend", True)) and adx_val >= 30.0:
-        if raw_direction == "BUY" and close < ema_slow and ema_fast < ema_slow:
+        if raw_direction == "BUY" and close < sma_slow and sma_fast < sma_slow:
             return {
                 "signal": "WAIT",
                 "candidate_direction": raw_direction,
@@ -2067,7 +2067,7 @@ def _evaluate_candle_signal(row: pd.Series, prev_row: pd.Series, params: Dict[st
                 "rejection_reason": f"Signal BUY contre une tendance baissière forte (ADX {adx_val:.1f})",
                 "reasons": primary_reasons,
             }
-        if raw_direction == "SELL" and close > ema_slow and ema_fast > ema_slow:
+        if raw_direction == "SELL" and close > sma_slow and sma_fast > sma_slow:
             return {
                 "signal": "WAIT",
                 "candidate_direction": raw_direction,
@@ -2163,8 +2163,8 @@ def run_backtest_experiment(
         f"Actif {symbol} ({market_type.upper()} • {timeframe}) | Style {trading_style.upper()} | Score>={params['min_teddy_score']}",
     )
 
-    # Required warm-up proportional to longest EMA (3 * max(ema_trend, ema_slow))
-    required_warmup = max(60, 3 * max(int(params["ema_trend"]), int(params["ema_slow"])))
+    # Warm-up requis : 3 × la fenêtre la plus longue (SMA lente, support/résistance, MACD lent 26)
+    required_warmup = max(60, 3 * max(int(params["sma_slow"]), int(params.get("sr_lookback", 50)), 26))
 
     # Step 2 & 3: Search local storage & fetch missing candles (including warm-up history before start_date)
     if preloaded_df is not None:
@@ -2225,7 +2225,7 @@ def run_backtest_experiment(
             "Cochez « Forcer malgré les lacunes » si vous souhaitez tout de même exécuter ce test."
         )
 
-    # Step 5: Compute indicators on the FULL loaded history first (avoids resetting EMAs on split boundaries)
+    # Step 5: Compute indicators on the FULL loaded history first (avoids resetting indicators on split boundaries)
     df = _compute_lab_indicators(cleaned_df, params)
     total_n = len(df)
     timestamps = list(df.index)
@@ -2249,7 +2249,7 @@ def run_backtest_experiment(
         if total_n > required_warmup + 10:
             base_sim_start = required_warmup
         else:
-            base_sim_start = max(10, min(total_n - 1, max(25, min(80, int(params["ema_slow"]) + 2))))
+            base_sim_start = max(10, min(total_n - 1, max(25, min(80, int(params["sma_slow"]) + 2))))
             if base_sim_start >= total_n:
                 base_sim_start = max(1, total_n // 5)
     else:
@@ -2287,8 +2287,8 @@ def run_backtest_experiment(
     if actual_warmup_bars < required_warmup:
         warmup_warn = (
             f"Warm-up partiel des indicateurs : {actual_warmup_bars} bougies disponibles avant le début de la simulation "
-            f"contre {required_warmup} recommandées (3 × EMA {max(int(params['ema_trend']), int(params['ema_slow']))}). "
-            "L'EMA de tendance peut présenter un écart résiduel d'initialisation."
+            f"contre {required_warmup} recommandées (3 × {max(int(params['sma_slow']), int(params.get('sr_lookback', 50)), 26)}). "
+            "Le MACD peut présenter un écart résiduel d'initialisation."
         )
         data_quality.setdefault("warnings", []).append(warmup_warn)
         if data_quality.get("status") == "VALID":
@@ -2304,7 +2304,7 @@ def run_backtest_experiment(
     add_step(
         6,
         "Calcul des indicateurs techniques",
-        f"EMA({params['ema_fast']}/{params['ema_slow']}/{params['ema_trend']}), RSI({params['rsi_period']}), ADX({params['adx_period']}), ATR({params['atr_period']}), MACD, Bollinger calculés sur l'historique complet ({total_n} bougies, warm-up {actual_warmup_bars}/{required_warmup}).",
+        f"SMA({params['sma_fast']}/{params['sma_slow']}), Support/Résistance({params.get('sr_lookback', 50)}), RSI({params['rsi_period']}), ADX({params['adx_period']}), ATR({params['atr_period']}), MACD, Bollinger calculés sur l'historique complet ({total_n} bougies, warm-up {actual_warmup_bars}/{required_warmup}).",
         status="warning" if actual_warmup_bars < required_warmup else "done",
     )
 
@@ -2326,9 +2326,8 @@ def run_backtest_experiment(
         "low_volatility_atr": 0,
         "weak_adx_regime": 0,
         "low_volume": 0,
-        "ema_misaligned": 0,
+        "sma_misaligned": 0,
         "macd_divergence": 0,
-        "against_ema200_trend": 0,
         "counter_strong_trend": 0,
         "insufficient_rr": 0,
         "cooldown_or_limits": 0,
@@ -2742,9 +2741,10 @@ def run_backtest_experiment(
                 "low": round(low, 4),
                 "close": round(close, 4),
                 "volume": round(float(row["Volume"]), 2),
-                "ema_fast": round(float(row["LAB_EMA_FAST"]), 4),
-                "ema_slow": round(float(row["LAB_EMA_SLOW"]), 4),
-                "ema_trend": round(float(row["LAB_EMA_TREND"]), 4),
+                "sma_fast": round(float(row["LAB_SMA_FAST"]), 4),
+                "sma_slow": round(float(row["LAB_SMA_SLOW"]), 4),
+                "support": round(float(row["LAB_SUPPORT"]), 4) if not pd.isna(row["LAB_SUPPORT"]) else None,
+                "resistance": round(float(row["LAB_RESISTANCE"]), 4) if not pd.isna(row["LAB_RESISTANCE"]) else None,
                 "bb_upper": round(float(row.get("BB_Upper", close)), 4) if not pd.isna(row.get("BB_Upper")) else None,
                 "bb_lower": round(float(row.get("BB_Lower", close)), 4) if not pd.isna(row.get("BB_Lower")) else None,
                 "rsi": round(float(row["LAB_RSI"]), 1),
@@ -3069,7 +3069,7 @@ def _build_strategy_diagnostics(
             insights.append({
                 "severity": "info",
                 "title": "Fait calculé : Asymétrie Long / Short (Shorts déficitaires)",
-                "detail": f"Les LONG génèrent {metrics['long_pnl_usdt']:+.2f} USDT ({metrics['long_win_rate_pct']}% WR) contre {metrics['short_pnl_usdt']:+.2f} USDT ({metrics['short_win_rate_pct']}% WR) sur les SHORT. Hypothèse : activer le filtre EMA {params['ema_trend']}.",
+                "detail": f"Les LONG génèrent {metrics['long_pnl_usdt']:+.2f} USDT ({metrics['long_win_rate_pct']}% WR) contre {metrics['short_pnl_usdt']:+.2f} USDT ({metrics['short_win_rate_pct']}% WR) sur les SHORT. Hypothèse : exiger l'alignement SMA ou relever le seuil ADX.",
             })
         elif metrics["short_pnl_usdt"] > 0 and metrics["long_pnl_usdt"] < -abs(metrics["short_pnl_usdt"]) * 0.5:
             insights.append({
@@ -3125,8 +3125,9 @@ def run_parameter_sweep(
         "adx_min": "Seuil ADX Minimum",
         "rsi_oversold": "Seuil RSI Survente",
         "rsi_overbought": "Seuil RSI Surachat",
-        "ema_fast": "Période EMA Rapide",
-        "ema_slow": "Période EMA Lente",
+        "sma_fast": "Période SMA Rapide",
+        "sma_slow": "Période SMA Lente",
+        "sr_lookback": "Fenêtre Support/Résistance",
         "cooldown_candles": "Cooldown (bougies)",
         "risk_per_trade_pct": "Risque par Trade (%)",
     }
@@ -3142,9 +3143,9 @@ def run_parameter_sweep(
             raise ValueError(val_err or f"Invalid sweep value '{raw_v}' for {param_name}.")
         cand = dict(norm_base)
         cand[param_name] = typed_val
-        if int(cand["ema_fast"]) >= int(cand["ema_slow"]):
+        if int(cand["sma_fast"]) >= int(cand["sma_slow"]):
             raise ValueError(
-                f"Invalid EMA relationship for {param_name}={typed_val}: ema_fast ({cand['ema_fast']}) must be strictly less than ema_slow ({cand['ema_slow']})."
+                f"Invalid SMA relationship for {param_name}={typed_val}: sma_fast ({cand['sma_fast']}) must be strictly less than sma_slow ({cand['sma_slow']})."
             )
         if float(cand["rsi_oversold"]) >= float(cand["rsi_overbought"]):
             raise ValueError(
@@ -3152,7 +3153,7 @@ def run_parameter_sweep(
             )
         clean_values.append(typed_val)
 
-    required_warmup = max(60, 3 * max(int(norm_base["ema_trend"]), int(norm_base["ema_slow"])))
+    required_warmup = max(60, 3 * max(int(norm_base["sma_slow"]), int(norm_base.get("sr_lookback", 50)), 26))
     raw_df, data_source, _ = load_historical_candles(
         symbol=symbol,
         timeframe=timeframe,
@@ -3286,7 +3287,7 @@ def generate_gemini_lab_analysis(
         )
     if m1.get("max_drawdown_pct", 0) > 10.0:
         hypotheses.append(
-            f"• Drawdown maximal notable (-{m1.get('max_drawdown_pct')}%) : réduire le risque par trade ({p1.get('risk_per_trade_pct')}%) ou activer le filtre de tendance EMA {p1.get('ema_trend')} pourrait amortir les séries de pertes."
+            f"• Drawdown maximal notable (-{m1.get('max_drawdown_pct')}%) : réduire le risque par trade ({p1.get('risk_per_trade_pct')}%) ou renforcer le filtre ADX (adx_min) pourrait amortir les séries de pertes."
         )
     if m1.get("profit_factor", 0) >= 1.25:
         hypotheses.append(
@@ -3314,8 +3315,11 @@ def generate_gemini_lab_analysis(
 # DATABASE PERSISTENCE HELPERS (ADMIN ONLY)
 # ==============================================================================
 def ensure_default_presets(admin_user_id: int) -> None:
+    """Crée les presets officiels (par défaut, partagés) s'il n'en existe encore aucun."""
     db = get_db()
-    row = db.execute("SELECT COUNT(*) AS cnt FROM strategy_lab_presets").fetchone()
+    row = db.execute(
+        "SELECT COUNT(*) AS cnt FROM strategy_lab_presets WHERE COALESCE(is_default, 0) = 1"
+    ).fetchone()
     if row:
         rd = dict(row) if hasattr(row, "keys") else {"cnt": row[0]}
         if int(rd.get("cnt", 0)) > 0:
@@ -3325,8 +3329,9 @@ def ensure_default_presets(admin_user_id: int) -> None:
         db.execute(
             """
             INSERT INTO strategy_lab_presets
-            (name, description, symbol, timeframe, trading_style, params_json, tags, is_favorite, notes, created_by, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s)
+            (name, description, symbol, timeframe, trading_style, params_json, tags, is_favorite, notes,
+             created_by, created_at, updated_at, is_default)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, 1)
             """,
             (
                 p["name"],
@@ -3344,39 +3349,52 @@ def ensure_default_presets(admin_user_id: int) -> None:
         )
 
 
-def list_lab_presets(admin_user_id: int) -> List[Dict[str, Any]]:
-    ensure_default_presets(admin_user_id)
+def _preset_row_to_dict(raw_r: Any, user_id: int, is_admin: bool) -> Dict[str, Any]:
+    r = dict(raw_r)
+    try:
+        params = json.loads(r.get("params_json") or "{}")
+    except Exception:
+        params = {}
+    is_default = bool(r.get("is_default"))
+    owner = int(r.get("created_by") or 0)
+    return {
+        "id": int(r["id"]),
+        "name": r["name"],
+        "description": r.get("description") or "",
+        "symbol": r.get("symbol") or "BTCUSDT",
+        "timeframe": r.get("timeframe") or "15m",
+        "trading_style": r.get("trading_style") or "day",
+        "params": params,
+        "tags": r.get("tags") or "",
+        "is_favorite": bool(r.get("is_favorite")),
+        "notes": r.get("notes") or "",
+        "created_at": float(r.get("created_at") or 0),
+        "updated_at": float(r.get("updated_at") or 0),
+        # Un preset par défaut n'est modifiable que par l'administrateur ; un preset privé que par son propriétaire.
+        "is_default": is_default,
+        "editable": bool(is_admin or (not is_default and owner == int(user_id))),
+    }
+
+
+def list_lab_presets(user_id: int, is_admin: bool = False) -> List[Dict[str, Any]]:
+    """Presets visibles par l'utilisateur : les presets par défaut (admin) + ses propres presets."""
+    ensure_default_presets(int(user_id) if is_admin else 0)
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM strategy_lab_presets ORDER BY is_favorite DESC, updated_at DESC"
+        """
+        SELECT * FROM strategy_lab_presets
+        WHERE COALESCE(is_default, 0) = 1 OR created_by = %s
+        ORDER BY COALESCE(is_default, 0) DESC, is_favorite DESC, updated_at DESC
+        """,
+        (int(user_id),),
     ).fetchall()
-    out = []
-    for raw_r in rows:
-        r = dict(raw_r)
-        try:
-            params = json.loads(r.get("params_json") or "{}")
-        except Exception:
-            params = {}
-        out.append(
-            {
-                "id": int(r["id"]),
-                "name": r["name"],
-                "description": r.get("description") or "",
-                "symbol": r.get("symbol") or "BTCUSDT",
-                "timeframe": r.get("timeframe") or "15m",
-                "trading_style": r.get("trading_style") or "day",
-                "params": params,
-                "tags": r.get("tags") or "",
-                "is_favorite": bool(r.get("is_favorite")),
-                "notes": r.get("notes") or "",
-                "created_at": float(r.get("created_at") or 0),
-                "updated_at": float(r.get("updated_at") or 0),
-            }
-        )
-    return out
+    return [_preset_row_to_dict(r, user_id, is_admin) for r in rows]
 
 
-def save_lab_preset(admin_user_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+MAX_PRIVATE_PRESETS_PER_USER = 60
+
+
+def save_lab_preset(user_id: int, payload: Dict[str, Any], is_admin: bool = False) -> Dict[str, Any]:
     db = get_db()
     now = time.time()
     name = (payload.get("name") or "Stratégie Personnalisée").strip()[:120]
@@ -3388,34 +3406,96 @@ def save_lab_preset(admin_user_id: int, payload: Dict[str, Any]) -> Dict[str, An
     tags = (payload.get("tags") or "custom").strip()[:120]
     notes = (payload.get("notes") or "").strip()[:1000]
     is_fav = 1 if payload.get("is_favorite") else 0
+    # Seul l'administrateur peut publier un preset « par défaut » (visible de tous).
+    want_default = 1 if (is_admin and payload.get("is_default")) else 0
 
+    saved_id: Optional[int] = None
+    copied = False
     preset_id = payload.get("id")
+    existing = None
     if preset_id:
-        db.execute(
-            """
-            UPDATE strategy_lab_presets
-            SET name = %s, description = %s, symbol = %s, timeframe = %s, trading_style = %s,
-                params_json = %s, tags = %s, is_favorite = %s, notes = %s, updated_at = %s
-            WHERE id = %s
-            """,
-            (name, description, symbol, timeframe, style, json.dumps(params), tags, is_fav, notes, now, int(preset_id)),
-        )
-    else:
+        existing = db.execute(
+            "SELECT id, created_by, is_default FROM strategy_lab_presets WHERE id = %s", (int(preset_id),)
+        ).fetchone()
+    if existing:
+        ex = dict(existing)
+        ex_default = bool(ex.get("is_default"))
+        can_edit = is_admin or (not ex_default and int(ex.get("created_by") or 0) == int(user_id))
+        if can_edit:
+            new_default = want_default if (is_admin and "is_default" in payload) else (1 if ex_default else 0)
+            db.execute(
+                """
+                UPDATE strategy_lab_presets
+                SET name = %s, description = %s, symbol = %s, timeframe = %s, trading_style = %s,
+                    params_json = %s, tags = %s, is_favorite = %s, notes = %s, updated_at = %s, is_default = %s
+                WHERE id = %s
+                """,
+                (name, description, symbol, timeframe, style, json.dumps(params), tags, is_fav, notes, now,
+                 new_default, int(preset_id)),
+            )
+            saved_id = int(preset_id)
+        else:
+            # Modifier un preset qui ne vous appartient pas (ex. preset par défaut) crée votre copie privée.
+            copied = True
+            existing = None
+    if saved_id is None:
+        if not is_admin:
+            cnt_row = db.execute(
+                "SELECT COUNT(*) AS cnt FROM strategy_lab_presets WHERE created_by = %s AND COALESCE(is_default, 0) = 0",
+                (int(user_id),),
+            ).fetchone()
+            cnt = int((dict(cnt_row) if hasattr(cnt_row, "keys") else {"cnt": cnt_row[0]}).get("cnt", 0)) if cnt_row else 0
+            if cnt >= MAX_PRIVATE_PRESETS_PER_USER:
+                raise ValueError(f"Limite de {MAX_PRIVATE_PRESETS_PER_USER} presets personnels atteinte : supprimez-en avant d'en créer.")
         db.execute(
             """
             INSERT INTO strategy_lab_presets
-            (name, description, symbol, timeframe, trading_style, params_json, tags, is_favorite, notes, created_by, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (name, description, symbol, timeframe, trading_style, params_json, tags, is_favorite, notes,
+             created_by, created_at, updated_at, is_default)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (name, description, symbol, timeframe, style, json.dumps(params), tags, is_fav, notes, admin_user_id, now, now),
+            (name, description, symbol, timeframe, style, json.dumps(params), tags, is_fav, notes,
+             int(user_id), now, now, want_default),
         )
-    return {"ok": True, "presets": list_lab_presets(admin_user_id)}
+    return {"ok": True, "presets": list_lab_presets(user_id, is_admin), "copied": copied}
 
 
-def delete_lab_preset(admin_user_id: int, preset_id: int) -> List[Dict[str, Any]]:
+def delete_lab_preset(user_id: int, preset_id: int, is_admin: bool = False) -> List[Dict[str, Any]]:
     db = get_db()
-    db.execute("DELETE FROM strategy_lab_presets WHERE id = %s", (int(preset_id),))
-    return list_lab_presets(admin_user_id)
+    row = db.execute(
+        "SELECT id, created_by, is_default FROM strategy_lab_presets WHERE id = %s", (int(preset_id),)
+    ).fetchone()
+    if row:
+        r = dict(row)
+        if is_admin or (not bool(r.get("is_default")) and int(r.get("created_by") or 0) == int(user_id)):
+            db.execute("DELETE FROM strategy_lab_presets WHERE id = %s", (int(preset_id),))
+    return list_lab_presets(user_id, is_admin)
+
+
+# ------------------------------------------------------------------------------
+# Limitation de débit : le Lab est ouvert à tous, les calculs sont coûteux (CPU + Binance).
+# ------------------------------------------------------------------------------
+_LAB_RATE_WINDOW_SECONDS = 60
+_LAB_RATE_MAX_CALLS = 8
+_lab_rate_calls: Dict[int, List[float]] = {}
+
+
+def check_lab_rate_limit(user_id: int, is_admin: bool = False) -> int:
+    """Retourne 0 si le calcul est autorisé, sinon le nombre de secondes à attendre."""
+    if is_admin:
+        return 0
+    import threading
+
+    now = time.time()
+    lock = globals().setdefault("_lab_rate_lock", threading.Lock())
+    with lock:
+        calls = [t for t in _lab_rate_calls.get(int(user_id), []) if now - t < _LAB_RATE_WINDOW_SECONDS]
+        if len(calls) >= _LAB_RATE_MAX_CALLS:
+            _lab_rate_calls[int(user_id)] = calls
+            return max(1, int(_LAB_RATE_WINDOW_SECONDS - (now - calls[0])) + 1)
+        calls.append(now)
+        _lab_rate_calls[int(user_id)] = calls
+    return 0
 
 
 def save_lab_run(
@@ -3480,20 +3560,21 @@ def save_lab_run(
     return int(row["id"]) if row else 0
 
 
-def list_lab_runs(limit: int = 35) -> List[Dict[str, Any]]:
+def list_lab_runs(limit: int = 35, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """user_id=None => toutes les expériences (administrateur) ; sinon uniquement celles de l'utilisateur."""
     db = get_db()
-    rows = db.execute(
-        """
+    where = "WHERE created_by = %s" if user_id is not None else ""
+    query = f"""
         SELECT id, name, preset_id, parent_run_id, market_type, symbol, timeframe, trading_style,
                period_split, start_date, end_date, data_source, candles_count, engine_version,
                strategy_version, status, is_candidate, data_quality_json, params_json, metrics_json,
                tags, is_favorite, notes, created_at
-        FROM strategy_lab_runs
+        FROM strategy_lab_runs {where}
         ORDER BY is_candidate DESC, is_favorite DESC, created_at DESC
         LIMIT %s
-        """,
-        (int(limit),),
-    ).fetchall()
+        """
+    args = (int(user_id), int(limit)) if user_id is not None else (int(limit),)
+    rows = db.execute(query, args).fetchall()
     out = []
     for raw_r in rows:
         r = dict(raw_r)
@@ -3540,9 +3621,14 @@ def list_lab_runs(limit: int = 35) -> List[Dict[str, Any]]:
     return out
 
 
-def get_lab_run_detail(run_id: int) -> Optional[Dict[str, Any]]:
+def get_lab_run_detail(run_id: int, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     db = get_db()
-    raw_r = db.execute("SELECT * FROM strategy_lab_runs WHERE id = %s", (int(run_id),)).fetchone()
+    if user_id is None:
+        raw_r = db.execute("SELECT * FROM strategy_lab_runs WHERE id = %s", (int(run_id),)).fetchone()
+    else:
+        raw_r = db.execute(
+            "SELECT * FROM strategy_lab_runs WHERE id = %s AND created_by = %s", (int(run_id), int(user_id))
+        ).fetchone()
     if not raw_r:
         return None
     r = dict(raw_r)
@@ -3588,12 +3674,19 @@ def update_lab_run_meta(
     tags: Optional[str] = None,
     is_favorite: Optional[bool] = None,
     is_candidate: Optional[bool] = None,
+    user_id: Optional[int] = None,
 ) -> bool:
     db = get_db()
-    raw_row = db.execute(
-        "SELECT id, name, notes, tags, is_favorite, is_candidate FROM strategy_lab_runs WHERE id = %s",
-        (int(run_id),),
-    ).fetchone()
+    if user_id is None:
+        raw_row = db.execute(
+            "SELECT id, name, notes, tags, is_favorite, is_candidate, created_by FROM strategy_lab_runs WHERE id = %s",
+            (int(run_id),),
+        ).fetchone()
+    else:
+        raw_row = db.execute(
+            "SELECT id, name, notes, tags, is_favorite, is_candidate, created_by FROM strategy_lab_runs WHERE id = %s AND created_by = %s",
+            (int(run_id), int(user_id)),
+        ).fetchone()
     if not raw_row:
         return False
     row = dict(raw_row)
@@ -3604,8 +3697,11 @@ def update_lab_run_meta(
     new_cand = (1 if is_candidate else 0) if is_candidate is not None else int(row.get("is_candidate") or 0)
 
     if is_candidate is True:
-        # Clear previous candidate flag so the newly designated candidate stands out clearly
-        db.execute("UPDATE strategy_lab_runs SET is_candidate = 0 WHERE is_candidate = 1")
+        # Une seule expérience « candidate » par propriétaire : ne jamais toucher à celles des autres utilisateurs.
+        db.execute(
+            "UPDATE strategy_lab_runs SET is_candidate = 0 WHERE is_candidate = 1 AND created_by = %s",
+            (int(row.get("created_by") or 0),),
+        )
 
     db.execute(
         "UPDATE strategy_lab_runs SET name = %s, notes = %s, tags = %s, is_favorite = %s, is_candidate = %s WHERE id = %s",
@@ -3614,6 +3710,9 @@ def update_lab_run_meta(
     return True
 
 
-def delete_lab_run(run_id: int) -> None:
+def delete_lab_run(run_id: int, user_id: Optional[int] = None) -> None:
     db = get_db()
-    db.execute("DELETE FROM strategy_lab_runs WHERE id = %s", (int(run_id),))
+    if user_id is None:
+        db.execute("DELETE FROM strategy_lab_runs WHERE id = %s", (int(run_id),))
+    else:
+        db.execute("DELETE FROM strategy_lab_runs WHERE id = %s AND created_by = %s", (int(run_id), int(user_id)))

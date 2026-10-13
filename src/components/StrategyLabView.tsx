@@ -40,13 +40,13 @@ const DEFAULT_LAB_MODELS: StrategyLabModelMeta[] = [
     name: 'Signal & Confluence Model',
     name_fr: 'Modèle Signal & Confluence (Teddy Score)',
     description:
-      "Gouverne le seuil Teddy Score, les directions autorisées (Long/Short), les filtres d'alignement EMA/MACD/Tendance et les seuils de régime (ADX, ATR%, Volume, Cooldown).",
+      "Gouverne le seuil Teddy Score, les directions autorisées (Long/Short), les filtres d'alignement SMA/MACD/Tendance et les seuils de régime (ADX, ATR%, Volume, Cooldown).",
     is_strategy_model: true,
   },
   {
     id: 'indicators',
     name: 'Technical Indicators Model',
-    name_fr: 'Modèle Indicateurs Techniques (EMA / RSI / ADX / ATR / Volume)',
+    name_fr: 'Modèle Indicateurs Techniques (SMA / RSI / ADX / ATR / Volume / Support-Résistance)',
     description:
       "Définit les périodes de calcul des moyennes mobiles exponentielles, du RSI (et ses bornes survente/surachat), de l'ADX, de l'ATR et de la moyenne mobile de volume.",
     is_strategy_model: true,
@@ -73,18 +73,17 @@ const DEFAULT_LAB_PARAM_SPECS: Record<keyof StrategyLabParams, StrategyLabParamS
   min_teddy_score: { model: 'confluence', type: 'int', min: 20, max: 95, unit: '/100', label_fr: "Score Teddy Minimum d'Entrée", label_en: 'Minimum Entry Teddy Score' },
   allow_long: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Autoriser les positions LONG (BUY)', label_en: 'Allow LONG (BUY) positions' },
   allow_short: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Autoriser les positions SHORT (SELL)', label_en: 'Allow SHORT (SELL) positions' },
-  require_ema_alignment: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Exiger alignement EMA rapide / lente', label_en: 'Require Fast / Slow EMA alignment' },
+  require_sma_alignment: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Exiger alignement SMA rapide / lente', label_en: 'Require Fast / Slow SMA alignment' },
   require_macd_confirmation: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Exiger confirmation impulsion MACD', label_en: 'Require MACD momentum confirmation' },
-  require_trend_filter_ema200: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Filtre directionnel strict EMA tendance', label_en: 'Strict directional Trend EMA filter' },
   block_against_strong_trend: { model: 'confluence', type: 'bool', unit: '', label_fr: 'Protection anti contre-tendance forte (ADX >= 30)', label_en: 'Strong counter-trend protection (ADX >= 30)' },
   adx_min: { model: 'confluence', type: 'float', min: 5, max: 60, unit: 'pts', label_fr: 'Seuil ADX Minimum (Force de tendance)', label_en: 'Minimum ADX Threshold (Trend strength)' },
   min_atr_pct: { model: 'confluence', type: 'float', min: 0, max: 5, unit: '%', label_fr: 'Volatilité ATR Minimum (%)', label_en: 'Minimum ATR Volatility (%)' },
   min_volume_ratio: { model: 'confluence', type: 'float', min: 0, max: 5, unit: 'x', label_fr: 'Ratio Volume Minimum (vs MA)', label_en: 'Minimum Volume Ratio (vs MA)' },
   cooldown_candles: { model: 'confluence', type: 'int', min: 0, max: 100, unit: 'candles', label_fr: 'Cooldown après clôture (bougies)', label_en: 'Post-trade Cooldown (candles)' },
 
-  ema_fast: { model: 'indicators', type: 'int', min: 3, max: 100, unit: 'bars', label_fr: 'Période EMA Rapide', label_en: 'Fast EMA Period' },
-  ema_slow: { model: 'indicators', type: 'int', min: 5, max: 250, unit: 'bars', label_fr: 'Période EMA Lente', label_en: 'Slow EMA Period' },
-  ema_trend: { model: 'indicators', type: 'int', min: 20, max: 500, unit: 'bars', label_fr: 'Période EMA Tendance', label_en: 'Trend EMA Period' },
+  sma_fast: { model: 'indicators', type: 'int', min: 3, max: 100, unit: 'bars', label_fr: 'Période SMA Rapide (bot : 20)', label_en: 'Fast SMA Period (bot: 20)' },
+  sma_slow: { model: 'indicators', type: 'int', min: 5, max: 250, unit: 'bars', label_fr: 'Période SMA Lente (bot : 50)', label_en: 'Slow SMA Period (bot: 50)' },
+  sr_lookback: { model: 'indicators', type: 'int', min: 10, max: 200, unit: 'bars', label_fr: 'Fenêtre Support / Résistance (bot : 50)', label_en: 'Support / Resistance Lookback (bot: 50)' },
   rsi_period: { model: 'indicators', type: 'int', min: 4, max: 50, unit: 'bars', label_fr: 'Période RSI', label_en: 'RSI Period' },
   rsi_oversold: { model: 'indicators', type: 'float', min: 10, max: 49, unit: 'pts', label_fr: 'Seuil RSI Survente', label_en: 'RSI Oversold Threshold' },
   rsi_overbought: { model: 'indicators', type: 'float', min: 51, max: 90, unit: 'pts', label_fr: 'Seuil RSI Surachat', label_en: 'RSI Overbought Threshold' },
@@ -339,7 +338,9 @@ const LabCandlesSignalsChart: React.FC<{
 
   const prices: number[] = [];
   candles.forEach((c) => {
-    prices.push(c.high, c.low, c.ema_fast, c.ema_slow);
+    prices.push(c.high, c.low, c.sma_fast, c.sma_slow);
+    if (c.support != null) prices.push(c.support);
+    if (c.resistance != null) prices.push(c.resistance);
   });
   if (selectedTrade) {
     if (selectedTrade.sl_initial) prices.push(selectedTrade.sl_initial);
@@ -353,9 +354,16 @@ const LabCandlesSignalsChart: React.FC<{
   const getY = (val: number) => padT + plotH - ((val - minP) / pRange) * plotH;
 
   const closeLine = candles.map((c, i) => `${getX(i).toFixed(1)},${getY(c.close).toFixed(1)}`).join(' ');
-  const emaFastLine = candles.map((c, i) => `${getX(i).toFixed(1)},${getY(c.ema_fast).toFixed(1)}`).join(' ');
-  const emaSlowLine = candles.map((c, i) => `${getX(i).toFixed(1)},${getY(c.ema_slow).toFixed(1)}`).join(' ');
-  const emaTrendLine = candles.map((c, i) => `${getX(i).toFixed(1)},${getY(c.ema_trend).toFixed(1)}`).join(' ');
+  const smaFastLine = candles.map((c, i) => `${getX(i).toFixed(1)},${getY(c.sma_fast).toFixed(1)}`).join(' ');
+  const smaSlowLine = candles.map((c, i) => `${getX(i).toFixed(1)},${getY(c.sma_slow).toFixed(1)}`).join(' ');
+  const supportLine = candles
+    .map((c, i) => (c.support != null ? `${getX(i).toFixed(1)},${getY(c.support).toFixed(1)}` : ''))
+    .filter(Boolean)
+    .join(' ');
+  const resistanceLine = candles
+    .map((c, i) => (c.resistance != null ? `${getX(i).toFixed(1)},${getY(c.resistance).toFixed(1)}` : ''))
+    .filter(Boolean)
+    .join(' ');
 
   // Resolve trade for a marker candle
   const resolveTradeForCandle = (candleIdx: number): StrategyLabTrade | null => {
@@ -431,10 +439,10 @@ const LabCandlesSignalsChart: React.FC<{
             Close : <strong className="text-[#F1F5F9]">{activeC.close}</strong>
           </span>
           <span className="text-[#10B981]">
-            EMA({params.ema_fast}) : {activeC.ema_fast}
+            SMA({params.sma_fast}) : {activeC.sma_fast}
           </span>
           <span className="text-[#3B82F6]">
-            EMA({params.ema_slow}) : {activeC.ema_slow}
+            SMA({params.sma_slow}) : {activeC.sma_slow}
           </span>
           <span className="text-[#94A3B8]">
             RSI : <strong className="text-[#F1F5F9]">{activeC.rsi}</strong> | ADX :{' '}
@@ -569,9 +577,10 @@ const LabCandlesSignalsChart: React.FC<{
           </g>
         )}
 
-        <polyline fill="none" stroke="#F59E0B" strokeWidth="1.2" strokeDasharray="4 4" points={emaTrendLine} />
-        <polyline fill="none" stroke="#3B82F6" strokeWidth="1.3" points={emaSlowLine} />
-        <polyline fill="none" stroke="#10B981" strokeWidth="1.3" points={emaFastLine} />
+        {resistanceLine && <polyline fill="none" stroke="#FB7185" strokeWidth="1.1" strokeDasharray="4 4" points={resistanceLine} />}
+        {supportLine && <polyline fill="none" stroke="#F59E0B" strokeWidth="1.1" strokeDasharray="4 4" points={supportLine} />}
+        <polyline fill="none" stroke="#3B82F6" strokeWidth="1.3" points={smaSlowLine} />
+        <polyline fill="none" stroke="#10B981" strokeWidth="1.3" points={smaFastLine} />
         <polyline fill="none" stroke="#F1F5F9" strokeWidth="1.6" points={closeLine} />
 
         {/* Interactive Entry & Exit Signal Markers */}
@@ -877,9 +886,9 @@ const DEFAULT_PARAMS: StrategyLabParams = {
   cooldown_candles: 2,
   max_trades_per_day: 8,
   max_consecutive_losses: 4,
-  ema_fast: 20,
-  ema_slow: 50,
-  ema_trend: 200,
+  sma_fast: 20,
+  sma_slow: 50,
+  sr_lookback: 50,
   rsi_period: 14,
   rsi_oversold: 32,
   rsi_overbought: 68,
@@ -890,9 +899,8 @@ const DEFAULT_PARAMS: StrategyLabParams = {
   volume_ma_period: 20,
   min_volume_ratio: 0.65,
   min_teddy_score: 58,
-  require_ema_alignment: true,
+  require_sma_alignment: true,
   require_macd_confirmation: true,
-  require_trend_filter_ema200: false,
   block_against_strong_trend: true,
   sl_mode: 'atr',
   sl_atr_mult: 1.5,
@@ -918,9 +926,8 @@ const REJECTION_LABELS: Record<string, string> = {
   low_volatility_atr: 'Volatilité ATR insuffisante',
   weak_adx_regime: 'Régime ADX trop faible (Range)',
   low_volume: 'Volume relatif insuffisant',
-  ema_misaligned: 'EMAs rapide/lente non alignées',
+  sma_misaligned: 'SMA rapide/lente non alignées',
   macd_divergence: 'Momentum MACD contraire',
-  against_ema200_trend: 'Contre-tendance EMA longue',
   counter_strong_trend: 'Contre tendance forte (ADX >= 30)',
   insufficient_rr: 'Ratio Risque/Rendement insuffisant',
   cooldown_or_limits: 'Cooldown ou limite journalière',
@@ -932,9 +939,8 @@ const REJECTION_LABELS_EN: Record<string, string> = {
   low_volatility_atr: 'Insufficient ATR volatility',
   weak_adx_regime: 'Weak ADX regime (Range)',
   low_volume: 'Insufficient relative volume',
-  ema_misaligned: 'Fast/Slow EMAs misaligned',
+  sma_misaligned: 'Fast/Slow SMAs misaligned',
   macd_divergence: 'Contrary MACD momentum',
-  against_ema200_trend: 'Counter long-term EMA trend',
   counter_strong_trend: 'Counter strong trend (ADX >= 30)',
   insufficient_rr: 'Insufficient Risk/Reward ratio',
   cooldown_or_limits: 'Cooldown or daily trade limit',
@@ -944,9 +950,11 @@ const REJECTION_LABELS_EN: Record<string, string> = {
 interface StrategyLabViewProps {
   onShowToast: (type: 'success' | 'error' | 'info', text: string) => void;
   lang?: AppLang;
+  /** Administrateur : peut publier des presets « par défaut » visibles de tous. */
+  isAdmin?: boolean;
 }
 
-export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, lang = 'fr' }) => {
+export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, lang = 'fr', isAdmin = false }) => {
   // Available markets, presets & saved runs
   const [symbols, setSymbols] = useState<string[]>([
     'BTCUSDT',
@@ -962,6 +970,8 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
   ]);
   const [timeframes, setTimeframes] = useState<string[]>(['1m', '5m', '15m', '1h', '4h', '1d']);
   const [presets, setPresets] = useState<StrategyLabPreset[]>([]);
+  const [selectedPresetId, setSelectedPresetId] = useState<string>('');
+  const [presetAsDefault, setPresetAsDefault] = useState<boolean>(false);
   const [savedRuns, setSavedRuns] = useState<StrategyLabRun[]>([]);
 
   // Active Experiment Configuration
@@ -1006,8 +1016,8 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
 
   // Sub-views inside Strategy Lab
   const [labSection, setLabSection] = useState<
-    'overview' | 'chart' | 'trades' | 'diagnostics' | 'compare' | 'sweep' | 'history'
-  >('overview');
+    'setup' | 'params' | 'raw' | 'ai' | 'overview' | 'chart' | 'trades' | 'diagnostics' | 'compare' | 'sweep' | 'history'
+  >('setup');
   const [paramCategory, setParamCategory] = useState<
     'capital' | 'indicators' | 'confluence' | 'exits'
   >('confluence');
@@ -1241,6 +1251,28 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
     }
   }, [activeRun, selectedModels, onShowToast, lang]);
 
+  // Onglets : l'éditeur de configuration (visuel / brute / prompt IA) suit l'onglet actif.
+  const isEditorTab = labSection === 'params' || labSection === 'raw' || labSection === 'ai';
+  const isResultsTab = !isEditorTab && labSection !== 'setup';
+  useEffect(() => {
+    if (labSection === 'params') {
+      setConfigEditorMode('visual');
+    } else if (labSection === 'raw') {
+      setConfigEditorMode('raw');
+      setRawConfigText(
+        formatRawConfigText(
+          params,
+          selectedModels,
+          labSchema.models || DEFAULT_LAB_MODELS,
+          labSchema.parameters || DEFAULT_LAB_PARAM_SPECS
+        )
+      );
+    } else if (labSection === 'ai') {
+      setConfigEditorMode('ai_prompt');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labSection]);
+
   const executeBacktest = useCallback(
     async (customParams?: StrategyLabParams, isBaselineCompare = false, useRawMode = false) => {
       let targetParams = customParams || params;
@@ -1301,6 +1333,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           );
         } else {
           setActiveRun(res.run);
+          setLabSection((cur) => (cur === 'setup' || cur === 'params' || cur === 'raw' || cur === 'ai' ? 'overview' : cur));
           if (res.runs) setSavedRuns(res.runs);
           setSelectedTrade(null);
           if (res.run?.params) {
@@ -1408,6 +1441,21 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
     );
   };
 
+  const handleDeletePreset = async (presetId: number) => {
+    if (!window.confirm(lang === 'en' ? 'Delete this preset?' : 'Supprimer ce preset ?')) return;
+    try {
+      const res = await apiFetch('/api/admin/strategy-lab/preset', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'delete', preset_id: presetId }),
+      });
+      if (res.presets) setPresets(res.presets);
+      setSelectedPresetId('');
+      onShowToast('success', lang === 'en' ? 'Preset deleted.' : 'Preset supprimé.');
+    } catch (err: any) {
+      onShowToast('error', err.message || (lang === 'en' ? 'Error deleting preset.' : 'Erreur lors de la suppression.'));
+    }
+  };
+
   const handleSavePreset = async () => {
     if (!presetNameInput.trim()) {
       onShowToast(
@@ -1429,6 +1477,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           params,
           tags: presetTagsInput,
           is_favorite: true,
+          ...(isAdmin ? { is_default: presetAsDefault } : {}),
         }),
       });
       if (res.presets) setPresets(res.presets);
@@ -1437,7 +1486,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
       setPresetDescInput('');
       onShowToast(
         'success',
-        lang === 'en' ? 'Strategy saved in Bitsure Presets.' : 'Stratégie sauvegardée dans les Presets Bitsure.'
+        isAdmin && presetAsDefault
+          ? lang === 'en' ? 'Default preset published for all users.' : 'Preset par défaut publié pour tous les utilisateurs.'
+          : lang === 'en' ? 'Strategy saved in your private presets.' : 'Stratégie sauvegardée dans vos presets privés.'
       );
     } catch (err: any) {
       onShowToast('error', err.message || (lang === 'en' ? 'Error saving preset.' : 'Erreur lors de la sauvegarde.'));
@@ -1747,6 +1798,45 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
       </div>
 
       {/* =====================================================================
+          ONGLETS DES OUTILS DU LABORATOIRE
+         ===================================================================== */}
+      <div className="bl-tabs-wrap">
+        <div className="bl-tabs" role="tablist" aria-label={tr(lang, 'Outils du laboratoire', 'Lab tools')}>
+          {[
+            { id: 'setup', label: tr(lang, 'Marché & Période', 'Market & Period'), icon: Filter },
+            { id: 'params', label: tr(lang, 'Paramètres', 'Parameters'), icon: Sliders },
+            { id: 'raw', label: tr(lang, 'Config brute', 'Raw config'), icon: Copy },
+            { id: 'ai', label: tr(lang, 'Prompt IA', 'AI prompt'), icon: Sparkles },
+            { id: 'overview', label: tr(lang, 'Résultats', 'Results'), icon: TrendingUp },
+            { id: 'chart', label: tr(lang, 'Graphique', 'Chart'), icon: Activity },
+            { id: 'trades', label: `${tr(lang, 'Trades', 'Trades')} (${activeRun?.trades?.length || 0})`, icon: Layers },
+            { id: 'diagnostics', label: tr(lang, 'Diagnostics', 'Diagnostics'), icon: ShieldCheck },
+            { id: 'compare', label: compareRun ? tr(lang, 'A/B (actif)', 'A/B (active)') : tr(lang, 'Comparateur A/B', 'A/B compare'), icon: GitCompare },
+            { id: 'sweep', label: tr(lang, 'Optimisation', 'Sweep'), icon: FlaskConical },
+            { id: 'history', label: `${tr(lang, 'Historique', 'History')} (${savedRuns.length})`, icon: Bookmark },
+          ].map((tab) => {
+            const TabIcon = tab.icon;
+            const active = labSection === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setLabSection(tab.id as any)}
+                className={`bl-tab ${active ? 'bl-tab-active' : ''}`}
+              >
+                <TabIcon className="w-3.5 h-3.5" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {labSection === 'setup' && (
+      <>
+      {/* =====================================================================
           MARKET, TIMEFRAME, PERIOD & PRESET SELECTOR STRIP
          ===================================================================== */}
       <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3 items-end">
@@ -1829,23 +1919,45 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           </label>
           <div className="flex gap-2">
             <select
+              value={selectedPresetId}
               onChange={(e) => {
+                setSelectedPresetId(e.target.value);
                 const found = presets.find((p) => String(p.id) === e.target.value);
                 if (found) applyPreset(found);
               }}
-              defaultValue=""
-              className="flex-1 px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs text-[#F1F5F9]"
+              className="flex-1 min-w-0 px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs text-[#F1F5F9]"
             >
               <option value="" disabled>
                 {tr(lang, 'Sélectionner une configuration pré-enregistrée...', 'Select a pre-saved configuration...')}
               </option>
-              {presets.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.is_favorite ? '★ ' : ''}
-                  {p.name} ({p.timeframe.toUpperCase()})
-                </option>
-              ))}
+              <optgroup label={tr(lang, 'Presets par défaut (officiels)', 'Default presets (official)')}>
+                {presets.filter((p) => p.is_default).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    ★ {p.name} ({p.timeframe.toUpperCase()})
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label={tr(lang, 'Mes presets (privés)', 'My presets (private)')}>
+                {presets.filter((p) => !p.is_default).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.timeframe.toUpperCase()})
+                  </option>
+                ))}
+              </optgroup>
             </select>
+            {(() => {
+              const sel = presets.find((p) => String(p.id) === selectedPresetId);
+              return sel && sel.editable ? (
+                <button
+                  type="button"
+                  onClick={() => handleDeletePreset(sel.id)}
+                  title={tr(lang, 'Supprimer ce preset', 'Delete this preset')}
+                  className="px-2.5 py-2 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#FB7185] shrink-0"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              ) : null;
+            })()}
             <button
               type="button"
               onClick={() => {
@@ -1949,12 +2061,16 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
         </p>
       </div>
 
+      </>
+      )}
+
       {/* =====================================================================
           MAIN WORKSPACE GRID: LEFT STRATEGY EDITOR (4 COLS) + RIGHT ANALYTICS (8 COLS)
          ===================================================================== */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* LEFT COLUMN: INTERACTIVE STRATEGY PARAMETER EDITOR (VISUAL / RAW / AI PROMPT) */}
-        <div className="lg:col-span-4 bg-[#111827] border border-white/[0.08] rounded-xl overflow-hidden">
+        {isEditorTab && (
+        <div className="lg:col-span-12 mx-auto w-full max-w-4xl bg-[#111827] border border-white/[0.08] rounded-xl overflow-hidden">
           <div className="p-4 border-b border-white/[0.07] flex items-center justify-between bg-[#0B101B]">
             <div className="flex items-center gap-2">
               <Sliders className="w-4 h-4 text-[#10B981]" />
@@ -1971,47 +2087,6 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                 {tr(lang, 'Référence active', 'Baseline active')}
               </span>
             )}
-          </div>
-
-          {/* =================================================================
-              MODE SWITCHER: VISUAL CONFIG / RAW CONFIG / AI PROMPT
-             ================================================================= */}
-          <div className="grid grid-cols-3 border-b border-white/[0.07] bg-[#090D16] p-1 gap-1 text-xs font-medium">
-            {[
-              { id: 'visual', label: 'Visual Config', icon: Sliders },
-              { id: 'raw', label: 'Raw Config', icon: Copy },
-              { id: 'ai_prompt', label: 'AI Prompt', icon: Sparkles },
-            ].map((modeTab) => {
-              const MIcon = modeTab.icon;
-              const isAct = configEditorMode === modeTab.id;
-              return (
-                <button
-                  key={modeTab.id}
-                  type="button"
-                  onClick={() => {
-                    setConfigEditorMode(modeTab.id as any);
-                    if (modeTab.id === 'raw') {
-                      setRawConfigText(
-                        formatRawConfigText(
-                          params,
-                          selectedModels,
-                          labSchema.models || DEFAULT_LAB_MODELS,
-                          labSchema.parameters || DEFAULT_LAB_PARAM_SPECS
-                        )
-                      );
-                    }
-                  }}
-                  className={`py-2 px-2 rounded-lg flex items-center justify-center gap-1.5 transition-colors ${
-                    isAct
-                      ? 'bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30 font-semibold'
-                      : 'text-[#94A3B8] hover:text-[#F1F5F9] hover:bg-white/[0.04]'
-                  }`}
-                >
-                  <MIcon className="w-3.5 h-3.5" />
-                  <span>{modeTab.label}</span>
-                </button>
-              );
-            })}
           </div>
 
           {/* =================================================================
@@ -2216,19 +2291,14 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                       <div className="space-y-2">
                         {[
                           {
-                            key: 'require_ema_alignment' as const,
-                            label: tr(lang, 'Exiger alignement EMA rapide / lente', 'Require Fast / Slow EMA alignment'),
-                            desc: tr(lang, 'Bloque les achats sous EMA rapide et ventes au-dessus', 'Blocks buys below fast EMA and sells above'),
+                            key: 'require_sma_alignment' as const,
+                            label: tr(lang, 'Exiger alignement SMA rapide / lente', 'Require Fast / Slow SMA alignment'),
+                            desc: tr(lang, 'Bloque les achats sous la SMA rapide et les ventes au-dessus', 'Blocks buys below fast SMA and sells above'),
                           },
                           {
                             key: 'require_macd_confirmation' as const,
                             label: tr(lang, 'Exiger confirmation impulsion MACD', 'Require MACD momentum confirmation'),
                             desc: tr(lang, 'Filtre les entrées à contre-courant de l’histogramme MACD', 'Filters entries against the MACD histogram'),
-                          },
-                          {
-                            key: 'require_trend_filter_ema200' as const,
-                            label: tr(lang, `Filtre directionnel strict EMA ${params.ema_trend}`, `Strict directional EMA ${params.ema_trend} filter`),
-                            desc: tr(lang, 'LONG uniquement au-dessus de EMA tendance, SHORT en-dessous', 'LONG only above trend EMA, SHORT only below'),
                           },
                           {
                             key: 'block_against_strong_trend' as const,
@@ -2606,43 +2676,43 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                       <div className="grid grid-cols-3 gap-2.5">
                         <div>
                           <label className="block text-[10px] text-[#94A3B8] mb-1">
-                            {tr(lang, 'EMA Rapide', 'Fast EMA')}
-                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">ema_fast [3..100]</span>
+                            {tr(lang, 'SMA Rapide', 'Fast SMA')}
+                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">sma_fast [3..100]</span>
                           </label>
                           <input
                             type="number"
                             min={3}
                             max={100}
-                            value={params.ema_fast}
-                            onChange={(e) => handleParamChange('ema_fast', Number(e.target.value))}
+                            value={params.sma_fast}
+                            onChange={(e) => handleParamChange('sma_fast', Number(e.target.value))}
                             className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
                           />
                         </div>
                         <div>
                           <label className="block text-[10px] text-[#94A3B8] mb-1">
-                            {tr(lang, 'EMA Lente', 'Slow EMA')}
-                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">ema_slow [5..250]</span>
+                            {tr(lang, 'SMA Lente', 'Slow SMA')}
+                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">sma_slow [5..250]</span>
                           </label>
                           <input
                             type="number"
                             min={5}
                             max={250}
-                            value={params.ema_slow}
-                            onChange={(e) => handleParamChange('ema_slow', Number(e.target.value))}
+                            value={params.sma_slow}
+                            onChange={(e) => handleParamChange('sma_slow', Number(e.target.value))}
                             className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
                           />
                         </div>
                         <div>
                           <label className="block text-[10px] text-[#94A3B8] mb-1">
-                            {tr(lang, 'EMA Tendance', 'Trend EMA')}
-                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">ema_trend [20..500]</span>
+                            {tr(lang, 'Fenêtre Support/Résistance', 'Support/Resistance window')}
+                            <span className="block text-[9px] font-mono-tabular text-[#64748B]">sr_lookback [10..200]</span>
                           </label>
                           <input
                             type="number"
-                            min={20}
-                            max={500}
-                            value={params.ema_trend}
-                            onChange={(e) => handleParamChange('ema_trend', Number(e.target.value))}
+                            min={10}
+                            max={200}
+                            value={params.sr_lookback}
+                            onChange={(e) => handleParamChange('sr_lookback', Number(e.target.value))}
                             className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded text-xs font-mono-tabular"
                           />
                         </div>
@@ -3111,7 +3181,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                   BACKTEST CONFIG ({tr(lang, 'Séparé des variables de modèles', 'Separated from model variables')})
                 </div>
                 <div>Asset: <strong className="text-[#F1F5F9]">{symbol}</strong> • Timeframe: <strong className="text-[#F1F5F9]">{timeframe}</strong> • Style: <strong className="text-[#F1F5F9]">{tradingStyle.toUpperCase()}</strong></div>
-                <div>Period: <strong className="text-[#F1F5F9]">{activeRun?.start_date || startDate || 'Auto'}</strong> → <strong className="text-[#F1F5F9]">{activeRun?.end_date || endDate || 'Latest closed candle'}</strong> ({maxCandles} candles)</div>
+                <div>Period: <strong className="text-[#F1F5F9]">{activeRun?.start_date || periodRange.start || 'Auto'}</strong> → <strong className="text-[#F1F5F9]">{activeRun?.end_date || periodRange.end || 'Latest closed candle'}</strong> ({maxCandles} candles)</div>
                 <div>Initial simulated capital: <strong className="text-[#10B981]">{params.initial_capital} USDT</strong></div>
               </div>
 
@@ -3228,50 +3298,12 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
             </div>
           )}
         </div>
+        )}
 
         {/* RIGHT COLUMN: ANALYTICS, CHARTS, DIAGNOSTICS, TRADES & SWEEP */}
-        <div className="lg:col-span-8 space-y-6">
+        {isResultsTab && (
+        <div className="lg:col-span-12 space-y-6">
           {/* Sub-navigation tabs */}
-          <div className="bg-[#111827] border border-white/[0.08] rounded-xl p-1.5 flex flex-wrap gap-1">
-            {[
-              { id: 'overview', label: tr(lang, 'Synthèse & Courbe Equity', 'Overview & Equity Curve'), icon: TrendingUp },
-              { id: 'chart', label: tr(lang, 'Graphique & Signaux', 'Chart & Signals'), icon: Activity },
-              {
-                id: 'trades',
-                label: `${tr(lang, 'Journal des Trades', 'Trade Journal')} (${activeRun?.trades?.length || 0})`,
-                icon: Layers,
-              },
-              { id: 'diagnostics', label: tr(lang, 'Diagnostic des Filtres', 'Filter Diagnostics'), icon: Filter },
-              {
-                id: 'compare',
-                label: compareRun
-                  ? tr(lang, 'Comparateur A/B (Actif)', 'A/B Comparator (Active)')
-                  : tr(lang, 'Comparateur A/B', 'A/B Comparator'),
-                icon: GitCompare,
-              },
-              { id: 'sweep', label: tr(lang, 'Optimisation (Sweep)', 'Sensitivity Sweep'), icon: Sparkles },
-              { id: 'history', label: `${tr(lang, 'Historique', 'History')} (${savedRuns.length})`, icon: Bookmark },
-            ].map((tab) => {
-              const Icon = tab.icon;
-              const active = labSection === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setLabSection(tab.id as any)}
-                  className={`px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors ${
-                    active
-                      ? 'bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30'
-                      : 'text-[#94A3B8] hover:text-[#F1F5F9] hover:bg-white/[0.04]'
-                  }`}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                  <span>{tab.label}</span>
-                </button>
-              );
-            })}
-          </div>
-
           {/* =================================================================
               KPI SUMMARY CARDS (Always visible for immediate feedback)
              ================================================================= */}
@@ -3547,7 +3579,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           )}
 
           {/* =================================================================
-              SECTION 2: HISTORICAL PRICE CHART WITH ENTRY / EXIT MARKERS & EMAs
+              SECTION 2: HISTORICAL PRICE CHART WITH ENTRY / EXIT MARKERS & SMAs
              ================================================================= */}
           {labSection === 'chart' && activeRun && (
             <div className="bg-[#111827] border border-white/[0.08] rounded-xl p-5 space-y-4">
@@ -3563,15 +3595,16 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                   <p className="text-xs text-[#64748B]">
                     {tr(
                       lang,
-                      `Superposition Prix Close, EMA Rapide (${activeRun.params.ema_fast}), EMA Lente (${activeRun.params.ema_slow}), EMA Tendance (${activeRun.params.ema_trend}) et marqueurs d'entrée/sortie.`,
-                      `Close Price overlay, Fast EMA (${activeRun.params.ema_fast}), Slow EMA (${activeRun.params.ema_slow}), Trend EMA (${activeRun.params.ema_trend}), and entry/exit markers.`
+                      `Superposition Prix Close, SMA Rapide (${activeRun.params.sma_fast}), SMA Lente (${activeRun.params.sma_slow}), Support/Résistance et marqueurs d'entrée/sortie.`,
+                      `Close Price overlay, Fast SMA (${activeRun.params.sma_fast}), Slow SMA (${activeRun.params.sma_slow}), Support/Resistance, and entry/exit markers.`
                     )}
                   </p>
                 </div>
                 <div className="flex items-center gap-3 text-[11px] font-mono-tabular">
-                  <span className="inline-flex items-center gap-1 text-[#10B981]">● EMA {activeRun.params.ema_fast}</span>
-                  <span className="inline-flex items-center gap-1 text-[#3B82F6]">● EMA {activeRun.params.ema_slow}</span>
-                  <span className="inline-flex items-center gap-1 text-[#F59E0B]">● EMA {activeRun.params.ema_trend}</span>
+                  <span className="inline-flex items-center gap-1 text-[#10B981]">● SMA {activeRun.params.sma_fast}</span>
+                  <span className="inline-flex items-center gap-1 text-[#3B82F6]">● SMA {activeRun.params.sma_slow}</span>
+                  <span className="inline-flex items-center gap-1 text-[#FB7185]">● {tr(lang, 'Résistance', 'Resistance')}</span>
+                  <span className="inline-flex items-center gap-1 text-[#F59E0B]">● {tr(lang, 'Support', 'Support')}</span>
                 </div>
               </div>
 
@@ -4280,7 +4313,20 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
             </div>
           )}
         </div>
+        )}
       </div>
+
+      {(labSection === 'setup' || isEditorTab) && (
+        <button
+          type="button"
+          className="bl-fab"
+          onClick={() => executeBacktest(params, false)}
+          disabled={runningBacktest || periodRange.invalid}
+        >
+          <Play className="w-4 h-4 fill-current" />
+          <span>{runningBacktest ? tr(lang, 'Calcul…', 'Running…') : tr(lang, 'Simuler', 'Simulate')}</span>
+        </button>
+      )}
 
       {/* Modal: Save Preset */}
       {showSavePresetModal && (
@@ -4316,6 +4362,22 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                   className="w-full px-3 py-2 bg-[#090D16] border border-white/15 rounded-lg text-xs text-[#F1F5F9]"
                 />
               </div>
+              <p className="text-[11px] text-[#64748B]">
+                {isAdmin && presetAsDefault
+                  ? tr(lang, 'Ce preset sera visible par tous les utilisateurs (lecture seule).', 'This preset will be visible to all users (read-only).')
+                  : tr(lang, 'Ce preset est privé : vous seul pouvez le voir et le modifier.', 'This preset is private: only you can see and edit it.')}
+              </p>
+              {isAdmin && (
+                <label className="flex items-center gap-2 text-xs text-[#F1F5F9] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={presetAsDefault}
+                    onChange={(e) => setPresetAsDefault(e.target.checked)}
+                    className="accent-[#10B981]"
+                  />
+                  <span>{tr(lang, 'Publier comme preset par défaut (visible de tous)', 'Publish as default preset (visible to everyone)')}</span>
+                </label>
+              )}
               <div>
                 <label className="block text-xs text-[#94A3B8] mb-1">Tags</label>
                 <input
