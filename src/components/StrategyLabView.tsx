@@ -1703,6 +1703,133 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
     URL.revokeObjectURL(url);
   };
 
+  // Export complet TXT (structuré, lisible par une IA) — réutilise l'état courant du backtest
+  const exportFullResultsTxt = () => {
+    if (!activeRun) return;
+    const NA = 'N/A';
+    const v = (x: any): string => {
+      if (x === null || x === undefined || x === '') return NA;
+      if (typeof x === 'object') return JSON.stringify(x);
+      return String(x).replace(/[\r\n|]+/g, ' ');
+    };
+    const kv = (obj: Record<string, any> | undefined | null): string[] =>
+      obj && Object.keys(obj).length ? Object.entries(obj).map(([k, val]) => `${k}: ${v(val)}`) : [NA];
+    const table = (cols: string[], rows: any[][]): string[] =>
+      rows.length ? [cols.join(' | '), ...rows.map((r) => r.map(v).join(' | '))] : [NA];
+    const sec = (title: string, body: string[]): string[] => ['', '='.repeat(70), `## ${title}`, '='.repeat(70), ...body];
+
+    const r = activeRun;
+    const out: string[] = [];
+    out.push('BITSURE STRATEGY LAB - EXPORT COMPLET DES RESULTATS');
+    out.push('FORMAT: sections "## ...", lignes "champ: valeur", tableaux separes par " | " (1re ligne = en-tete). N/A = donnee non disponible.');
+    out.push(...sec('0. IDENTIFICATION DU BACKTEST', kv({
+      exported_at: new Date().toISOString(),
+      run_id: r.id,
+      run_name: r.name,
+      symbol: r.symbol,
+      timeframe: r.timeframe,
+      trading_style: r.trading_style,
+      data_source: r.data_source,
+      start_date: r.start_date,
+      end_date: r.end_date,
+      candles_count: r.candles_count,
+      execution_ms: r.execution_ms,
+      max_candles_setting: maxCandles,
+      selected_models: r.selected_models?.join(', '),
+      tags: r.tags,
+      notes: r.notes,
+      created_at: r.created_at ? new Date(r.created_at * (r.created_at < 1e12 ? 1000 : 1)).toISOString() : undefined,
+    })));
+    out.push(...sec('1. PARAMETRES COMPLETS DU BACKTEST', kv(r.params as any)));
+    if (r.config_changes && r.config_changes.length) {
+      out.push(...sec('1b. PARAMETRES MODIFIES (config_changes)', [
+        ...r.config_changes.map((c: any) => kv(c).join(' ; ')),
+      ]));
+    }
+    out.push(...sec('2. SYNTHESE & METRIQUES (summary / metrics)', kv(r.metrics as any).filter((l) => !l.startsWith('by_exit_reason:'))));
+    out.push(...sec('2b. RAISONS DE SORTIE (by_exit_reason)', table(
+      ['exit_reason', 'count', 'wins', 'pnl_usdt'],
+      Object.entries((r.metrics?.by_exit_reason || {}) as Record<string, any>).map(([k, x]) => [k, x?.count, x?.wins, x?.pnl_usdt])
+    )));
+    out.push(...sec('3. COURBE EQUITY', table(
+      ['timestamp', 'equity', 'balance', 'drawdown_pct', 'drawdown_usdt', 'price'],
+      (r.equity_curve || []).map((e) => [e.timestamp, e.equity, e.balance, e.drawdown_pct, e.drawdown_usdt, e.price])
+    )));
+    out.push(...sec(`4. JOURNAL DES TRADES COMPLET (${r.trades?.length || 0} trades, sans filtre)`, table(
+      ['id', 'symbol', 'side', 'entry_time', 'exit_time', 'bars_held', 'entry_price', 'exit_price', 'sl_initial', 'tp_initial', 'qty', 'notional_usdt', 'margin_used', 'pnl_usdt', 'pnl_pct', 'r_multiple', 'fees_usdt', 'mfe_pct', 'mae_pct', 'teddy_score', 'exit_reason', 'partial_taken', 'entry_reasons'],
+      (r.trades || []).map((t: any) => [t.id, t.symbol, t.side, t.entry_time, t.exit_time, t.bars_held, t.entry_price, t.exit_price, t.sl_initial, t.tp_initial, t.qty, t.notional_usdt, t.margin_used, t.pnl_usdt, t.pnl_pct, t.r_multiple, t.fees_usdt, t.mfe_pct, t.mae_pct, t.teddy_score, t.exit_reason, t.partial_taken, (t.entry_reasons || []).join('; ')])
+    )));
+    out.push(...sec('5. GRAPHIQUE & SIGNAUX (bougies + indicateurs + marqueurs)', table(
+      ['index', 'timestamp', 'open', 'high', 'low', 'close', 'volume', 'sma_fast', 'sma_slow', 'support', 'resistance', 'bb_upper', 'bb_lower', 'rsi', 'adx', 'marker_type', 'marker_trade_id', 'marker_side', 'marker_price', 'marker_sl', 'marker_tp', 'marker_score', 'marker_reason', 'marker_exit_reason', 'marker_pnl_usdt'],
+      (r.candles || []).map((c) => [c.index, c.timestamp, c.open, c.high, c.low, c.close, c.volume, c.sma_fast, c.sma_slow, c.support, c.resistance, c.bb_upper, c.bb_lower, c.rsi, c.adx, c.marker?.type, c.marker?.trade_id, c.marker?.side, c.marker?.price, c.marker?.sl, c.marker?.tp, c.marker?.score, c.marker?.reason, c.marker?.exit_reason, c.marker?.pnl_usdt])
+    )));
+    const ss = r.signals_summary;
+    out.push(...sec('6. DIAGNOSTIC DES FILTRES (signals_summary)', ss ? [
+      ...kv({ total_candles_evaluated: ss.total_candles_evaluated, valid_signals: ss.valid_signals, executed_trades: ss.executed_trades }),
+      '',
+      '### rejection_counts',
+      ...table(['filter', 'rejections'], Object.entries(ss.rejection_counts || {}).map(([k, n]) => [k, n])),
+      '',
+      '### rejected_sample',
+      ...table(['timestamp', 'price', 'candidate', 'score', 'rejected_by', 'reason'],
+        (ss.rejected_sample || []).map((x) => [x.timestamp, x.price, x.candidate, x.score, x.rejected_by, x.reason])),
+    ] : [NA]));
+    out.push(...sec('7. DIAGNOSTIC DU COMPORTEMENT DE LA STRATEGIE (diagnostics)', table(
+      ['severity', 'title', 'detail'],
+      (r.diagnostics || []).map((d) => [d.severity, d.title, d.detail])
+    )));
+    out.push(...sec('8. COMPARATEUR A/B', compareRun ? [
+      '### run_B (comparaison)',
+      ...kv({ run_name: compareRun.name, symbol: compareRun.symbol, timeframe: compareRun.timeframe, start_date: compareRun.start_date, end_date: compareRun.end_date, candles_count: compareRun.candles_count }),
+      '',
+      '### parametres differents A vs B',
+      ...table(['param', 'A_actif', 'B_comparaison'],
+        (Object.keys(r.params) as (keyof StrategyLabParams)[])
+          .filter((k) => r.params[k] !== compareRun.params?.[k])
+          .map((k) => [k, r.params[k], compareRun.params?.[k]])),
+      '',
+      '### metriques A vs B',
+      ...table(['metric', 'A_actif', 'B_comparaison'],
+        Object.keys(r.metrics || {})
+          .filter((k) => k !== 'by_exit_reason')
+          .map((k) => [k, (r.metrics as any)[k], (compareRun.metrics as any)?.[k]])),
+      '',
+      `### trades_B (${compareRun.trades?.length || 0})`,
+      ...table(['id', 'side', 'entry_time', 'exit_time', 'entry_price', 'exit_price', 'pnl_usdt', 'r_multiple', 'exit_reason'],
+        (compareRun.trades || []).map((t) => [t.id, t.side, t.entry_time, t.exit_time, t.entry_price, t.exit_price, t.pnl_usdt, t.r_multiple, t.exit_reason])),
+    ] : [NA + ' (aucun run B de comparaison actif)']));
+    out.push(...sec('9. OPTIMISATION / SWEEP', sweepResult ? [
+      ...kv({ param_name: sweepResult.param_name, param_label: sweepResult.param_label }),
+      '### best',
+      ...kv(sweepResult.best),
+      '### results',
+      ...(Array.isArray(sweepResult.results) && sweepResult.results.length
+        ? (() => {
+            const cols = Array.from(new Set(sweepResult.results.flatMap((x: any) => Object.keys(x || {})))) as string[];
+            return table(cols, sweepResult.results.map((x: any) => cols.map((c) => x?.[c])));
+          })()
+        : [NA]),
+    ] : [NA + ' (aucun sweep execute)']));
+    out.push(...sec(`10. HISTORIQUE DES RUNS SAUVEGARDES (${savedRuns.length})`, table(
+      ['id', 'name', 'symbol', 'timeframe', 'trading_style', 'start_date', 'end_date', 'candles_count', 'total_trades', 'net_profit_usdt', 'total_return_pct', 'win_rate_pct', 'profit_factor', 'max_drawdown_pct', 'sharpe_ratio', 'is_favorite', 'tags', 'notes', 'created_at'],
+      savedRuns.map((h) => [h.id, h.name, h.symbol, h.timeframe, h.trading_style, h.start_date, h.end_date, h.candles_count, h.metrics?.total_trades, h.metrics?.net_profit_usdt, h.metrics?.total_return_pct, h.metrics?.win_rate_pct, h.metrics?.profit_factor, h.metrics?.max_drawdown_pct, h.metrics?.sharpe_ratio, h.is_favorite, h.tags, h.notes, h.created_at])
+    )));
+    out.push('', '=== FIN DE L\'EXPORT ===');
+
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '_');
+    const safe = (x: any) => String(x ?? 'na').replace(/[^A-Za-z0-9_-]+/g, '-');
+    const fileName = `bitsure_lab_${safe(r.symbol)}_${safe(r.timeframe)}_${safe(r.trading_style)}_${safe(r.start_date)}_${safe(r.end_date)}_${stamp}.txt`;
+    const blob = new Blob(['\uFEFF' + out.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   // Filtered trades for Trade Journal table
   const filteredTrades = useMemo(() => {
     const list = activeRun?.trades || [];
@@ -1784,6 +1911,15 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           >
             <Copy className="w-3.5 h-3.5 text-[#F59E0B]" />
             <span>{tr(lang, 'Rapport JSON', 'JSON Report')}</span>
+          </button>
+          <button
+            type="button"
+            onClick={exportFullResultsTxt}
+            disabled={!activeRun}
+            className="px-3.5 py-2 rounded-lg bg-[#1E293B] hover:bg-[#334155] disabled:opacity-40 border border-white/10 text-xs font-medium text-[#F1F5F9] flex items-center gap-1.5 transition-colors"
+          >
+            <Download className="w-3.5 h-3.5 text-[#10B981]" />
+            <span>{tr(lang, 'Exporter les résultats', 'Export results')}</span>
           </button>
           <button
             type="button"
