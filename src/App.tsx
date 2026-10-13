@@ -2300,8 +2300,8 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex flex-col md:flex-row">
-      {/* Left Single Navigation Sidebar (Hidden on mobile, fixed sidebar on desktop) */}
-      <aside className="hidden md:flex w-64 shrink-0 border-r border-white/[0.07] bg-[#0B101B] flex-col justify-between">
+      {/* Left Single Navigation Sidebar (Hidden on mobile, sticky fixed-height sidebar on desktop) */}
+      <aside className="hidden md:flex w-64 shrink-0 border-r border-white/[0.07] bg-[#0B101B] flex-col justify-between md:sticky md:top-0 md:h-screen md:overflow-y-auto">
         <div>
           {/* Brand Logo */}
           <div className="h-16 px-5 border-b border-white/[0.07] flex items-center justify-between">
@@ -2993,7 +2993,7 @@ export function App() {
                   </div>
 
                   {/* Autres indicateurs du bot : SMA 20/50, Bollinger, Volume, Fibonacci, Divergence RSI */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-4">
                     <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
                       <div className="text-xs text-[#64748B]">{tr(lang, 'Moyennes mobiles SMA 20 / 50')}</div>
                       <div className="font-mono-tabular text-sm font-semibold text-[#F1F5F9] mt-1">
