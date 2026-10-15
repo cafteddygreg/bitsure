@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   FlaskConical,
   Play,
@@ -1441,7 +1441,27 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
     );
   };
 
-  const handleDeletePreset = async (presetId: number) => {
+  // Opérations ponctuelles (preset, chargement/suppression d'expérience) : anti double clic + état « en cours ».
+  const [busyOps, setBusyOps] = useState<Record<string, boolean>>({});
+  const busyRef = useRef<Set<string>>(new Set());
+  const isBusy = (key: string) => Boolean(busyOps[key]);
+  const withBusy = async (key: string, fn: () => Promise<void>) => {
+    if (busyRef.current.has(key)) return;
+    busyRef.current.add(key);
+    setBusyOps((prev) => ({ ...prev, [key]: true }));
+    try {
+      await fn();
+    } finally {
+      busyRef.current.delete(key);
+      setBusyOps((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }
+  };
+
+  const _handleDeletePreset = async (presetId: number) => {
     if (!window.confirm(lang === 'en' ? 'Delete this preset?' : 'Supprimer ce preset ?')) return;
     try {
       const res = await apiFetch('/api/admin/strategy-lab/preset', {
@@ -1456,7 +1476,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
     }
   };
 
-  const handleSavePreset = async () => {
+  const _handleSavePreset = async () => {
     if (!presetNameInput.trim()) {
       onShowToast(
         'error',
@@ -1495,7 +1515,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
     }
   };
 
-  const handleLoadSavedRun = async (runSummary: StrategyLabRun, asComparison = false) => {
+  const _handleLoadSavedRun = async (runSummary: StrategyLabRun, asComparison = false) => {
     if (!runSummary.id) return;
     try {
       const res = await apiFetch(`/api/admin/strategy-lab/run-detail?id=${runSummary.id}`);
@@ -1546,6 +1566,27 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
       );
     }
   };
+
+  const handleDeletePreset = (presetId: number) => withBusy('delete-preset', () => _handleDeletePreset(presetId));
+  const handleSavePreset = () => withBusy('save-preset', () => _handleSavePreset());
+  const handleLoadSavedRun = (runSummary: StrategyLabRun, asComparison = false) =>
+    withBusy(`load-run-${runSummary.id}`, () => _handleLoadSavedRun(runSummary, asComparison));
+  const handleDeleteSavedRun = (runId: number) =>
+    withBusy(`delete-run-${runId}`, async () => {
+      try {
+        const res = await apiFetch('/api/admin/strategy-lab/run-meta', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'delete', run_id: runId }),
+        });
+        if (res.runs) setSavedRuns(res.runs);
+        onShowToast('success', lang === 'en' ? `Experiment #${runId} deleted.` : `Expérience #${runId} supprimée.`);
+      } catch (err: any) {
+        onShowToast(
+          'error',
+          err.message || (lang === 'en' ? 'Unable to delete this experiment.' : 'Impossible de supprimer cette expérience.')
+        );
+      }
+    });
 
   const handleRunSweep = async () => {
     setRunningSweep(true);
@@ -2087,8 +2128,9 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                 <button
                   type="button"
                   onClick={() => handleDeletePreset(sel.id)}
+                  disabled={isBusy('delete-preset')}
                   title={tr(lang, 'Supprimer ce preset', 'Delete this preset')}
-                  className="px-2.5 py-2 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#FB7185] shrink-0"
+                  className="px-2.5 py-2 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#FB7185] shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -4410,29 +4452,26 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                       <button
                         type="button"
                         onClick={() => handleLoadSavedRun(run, false)}
-                        className="px-2.5 py-1.5 rounded bg-[#1E293B] hover:bg-[#334155] text-[11px] text-[#F1F5F9] flex items-center gap-1"
+                        disabled={isBusy(`load-run-${run.id}`)}
+                        className="px-2.5 py-1.5 rounded bg-[#1E293B] hover:bg-[#334155] text-[11px] text-[#F1F5F9] flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <Eye className="w-3 h-3 text-[#10B981]" />
-                        <span>{tr(lang, 'Charger', 'Load')}</span>
+                        <span>{isBusy(`load-run-${run.id}`) ? tr(lang, 'Chargement…', 'Loading…') : tr(lang, 'Charger', 'Load')}</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => handleLoadSavedRun(run, true)}
-                        className="px-2.5 py-1.5 rounded bg-[#1E293B] hover:bg-[#334155] text-[11px] text-[#60A5FA] flex items-center gap-1"
+                        disabled={isBusy(`load-run-${run.id}`)}
+                        className="px-2.5 py-1.5 rounded bg-[#1E293B] hover:bg-[#334155] text-[11px] text-[#60A5FA] flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <GitCompare className="w-3 h-3" />
                         <span>{tr(lang, 'Comparer (A)', 'Compare (A)')}</span>
                       </button>
                       <button
                         type="button"
-                        onClick={async () => {
-                          const res = await apiFetch('/api/admin/strategy-lab/run-meta', {
-                            method: 'POST',
-                            body: JSON.stringify({ action: 'delete', run_id: run.id }),
-                          });
-                          if (res.runs) setSavedRuns(res.runs);
-                        }}
-                        className="p-1.5 rounded bg-[#F43F5E]/10 hover:bg-[#F43F5E]/20 text-[#FB7185]"
+                        onClick={() => handleDeleteSavedRun(run.id)}
+                        disabled={isBusy(`delete-run-${run.id}`)}
+                        className="p-1.5 rounded bg-[#F43F5E]/10 hover:bg-[#F43F5E]/20 text-[#FB7185] disabled:opacity-50 disabled:cursor-not-allowed"
                         title={tr(lang, 'Supprimer cette expérience', 'Delete this experiment')}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -4535,9 +4574,10 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
               <button
                 type="button"
                 onClick={handleSavePreset}
-                className="px-4 py-2 rounded-lg bg-[#10B981] text-[#090D16] font-semibold text-xs"
+                disabled={isBusy('save-preset')}
+                className="px-4 py-2 rounded-lg bg-[#10B981] text-[#090D16] font-semibold text-xs disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {tr(lang, 'Enregistrer', 'Save')}
+                {isBusy('save-preset') ? tr(lang, 'Enregistrement…', 'Saving…') : tr(lang, 'Enregistrer', 'Save')}
               </button>
             </div>
           </div>

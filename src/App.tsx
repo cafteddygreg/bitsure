@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './index.css';
 import {
   apiFetch,
@@ -342,10 +342,45 @@ export function App() {
 
   const showToast = useCallback((text: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ text, type });
+    // Les erreurs restent plus longtemps : la raison fournie par le backend doit pouvoir être lue.
+    const duration = type === 'error' ? 10000 : 4500;
     setTimeout(() => {
       setToast((prev) => (prev?.text === text ? null : prev));
-    }, 4500);
+    }, duration);
   }, []);
+
+  // Actions asynchrones en cours (clé -> libellé affiché). Sert au bandeau « Traitement… »,
+  // à la désactivation des boutons et au blocage des doubles soumissions.
+  const [pendingActions, setPendingActions] = useState<Record<string, string>>({});
+  const pendingRef = useRef<Set<string>>(new Set());
+  const isPending = useCallback((key: string) => Boolean(pendingActions[key]), [pendingActions]);
+  const runAction = useCallback(
+    async (key: string, label: string, fn: () => Promise<void>): Promise<void> => {
+      if (pendingRef.current.has(key)) return; // double clic / double soumission : ignoré
+      pendingRef.current.add(key);
+      setPendingActions((prev) => ({ ...prev, [key]: label }));
+      try {
+        await fn();
+      } finally {
+        pendingRef.current.delete(key);
+        setPendingActions((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      }
+    },
+    []
+  );
+  // Message d'erreur lisible. Pour une opération réelle (ordre, fermeture), un timeout ou une coupure
+  // réseau ne prouve PAS que l'opération a échoué : on le dit explicitement.
+  const describeActionError = (err: any, mayHaveReachedExchange = false): string => {
+    const msg = String(err?.message || err || 'Erreur inconnue');
+    if (mayHaveReachedExchange && (err?.code === 'TIMEOUT' || err?.code === 'NETWORK_ERROR')) {
+      return `${msg} — Résultat INCONNU : vérifiez vos positions et ordres Binance avant de réessayer.`;
+    }
+    return msg;
+  };
 
   const loadUserAndCoreData = useCallback(async () => {
     setApiDiagChecking(true);
@@ -943,7 +978,7 @@ export function App() {
     showToast('Vous êtes déconnecté.', 'info');
   };
 
-  const handleOpenPaperOrder = async (e: React.FormEvent) => {
+  const _handleOpenPaperOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       const res = await apiFetch('/api/paper/open', {
@@ -969,7 +1004,7 @@ export function App() {
     }
   };
 
-  const handleClosePaperPosition = async (positionId: string) => {
+  const _handleClosePaperPosition = async (positionId: string) => {
     try {
       const res = await apiFetch('/api/paper/close', {
         method: 'POST',
@@ -984,7 +1019,7 @@ export function App() {
     }
   };
 
-  const handleResetPaperAccount = async () => {
+  const _handleResetPaperAccount = async () => {
     try {
       const res = await apiFetch('/api/paper/reset', {
         method: 'POST',
@@ -1030,7 +1065,7 @@ export function App() {
     }
   };
 
-  const handleUpdateTradingConfig = async (patch: Partial<TradingConfigState> & { pin?: string }) => {
+  const _handleUpdateTradingConfig = async (patch: Partial<TradingConfigState> & { pin?: string }) => {
     const wantsEnableAutoTrade = patch.enabled === true || patch.auto_trade === true;
     const candidatePin = (patch.pin ?? safetyPinInput ?? '').trim();
     if (wantsEnableAutoTrade && user?.has_pin && !candidatePin) {
@@ -1045,15 +1080,24 @@ export function App() {
         method: 'POST',
         body: JSON.stringify(wantsEnableAutoTrade ? { ...patch, pin: candidatePin } : patch),
       });
-      const cfgRes = await apiFetch('/api/trading/config');
-      setTradingCfg(cfgRes.config);
-      setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
+      let refreshFailed = false;
+      try {
+        const cfgRes = await apiFetch('/api/trading/config');
+        setTradingCfg(cfgRes.config);
+        setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
+      } catch {
+        refreshFailed = true;
+      }
       if (pinModalAction === 'enable_autotrade') {
         setPinModalAction(null);
         setPinModalValue('');
         setPinModalError('');
       }
-      showToast('Paramètres de trading mis à jour.', 'success');
+      if (refreshFailed) {
+        showToast('Paramètres enregistrés par le serveur, mais leur relecture a échoué : rechargez la page pour confirmer.', 'info');
+      } else {
+        showToast('Paramètres de trading mis à jour.', 'success');
+      }
     } catch (err: any) {
       const msg = String(err.message || '');
       if (
@@ -1070,7 +1114,7 @@ export function App() {
     }
   };
 
-  const handleSafetyAction = async (action: string, reason?: string, customPin?: string) => {
+  const _handleSafetyAction = async (action: string, reason?: string, customPin?: string) => {
     const candidatePin = (customPin ?? safetyPinInput ?? '').trim();
     if ((action === 'clearsafe' || action === 'unlock') && user?.has_pin && !candidatePin) {
       setPinModalError('');
@@ -1084,15 +1128,23 @@ export function App() {
         method: 'POST',
         body: JSON.stringify({ action, reason, pin: candidatePin }),
       });
-      const cfgRes = await apiFetch('/api/trading/config');
-      setTradingCfg(cfgRes.config);
-      setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
+      let refreshFailed = false;
+      try {
+        const cfgRes = await apiFetch('/api/trading/config');
+        setTradingCfg(cfgRes.config);
+        setLiveTrades(cfgRes.live_trades || { open: [], closed: [] });
+      } catch {
+        refreshFailed = true;
+      }
       if (pinModalAction === 'unlock_safety') {
         setPinModalAction(null);
         setPinModalValue('');
         setPinModalError('');
       }
-      showToast(res.message, 'success');
+      showToast(
+        `${res.message || 'Action de sécurité effectuée.'}${refreshFailed ? ' (relecture de l\'état échouée : rechargez la page)' : ''}`,
+        'success'
+      );
     } catch (err: any) {
       const msg = String(err.message || '');
       if (
@@ -1102,7 +1154,7 @@ export function App() {
         setPinModalError(msg);
         setPinModalAction('unlock_safety');
       }
-      showToast(msg, 'error');
+      showToast(describeActionError(err, action === 'emergency_stop'), 'error');
     }
   };
 
@@ -1120,7 +1172,7 @@ export function App() {
     }
   };
 
-  const handleSaveBinanceKeys = async (e: React.FormEvent) => {
+  const _handleSaveBinanceKeys = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       const res = await apiFetch('/api/trading/credentials', {
@@ -1140,7 +1192,7 @@ export function App() {
     }
   };
 
-  const handleTestBinanceConnection = async () => {
+  const _handleTestBinanceConnection = async () => {
     setTestingApiConn(true);
     try {
       const res = await apiFetch('/api/trading/test-connection', { method: 'POST' });
@@ -1153,7 +1205,7 @@ export function App() {
     }
   };
 
-  const handleCloseLivePosition = async (tradeId?: number, symbol?: string, direction?: string) => {
+  const _handleCloseLivePosition = async (tradeId?: number, symbol?: string, direction?: string) => {
     try {
       const res = await apiFetch('/api/trading/close-position', {
         method: 'POST',
@@ -1164,13 +1216,13 @@ export function App() {
         }),
       });
       await loadLiveAccountAndOrders();
-      showToast(res.message, 'success');
+      showToast(res.message || 'Position fermée.', 'success');
     } catch (err: any) {
-      showToast(err.message, 'error');
+      showToast(describeActionError(err, true), 'error');
     }
   };
 
-  const handleCancelLiveOrder = async (symbol: string, orderId: string) => {
+  const _handleCancelLiveOrder = async (symbol: string, orderId: string) => {
     try {
       const res = await apiFetch('/api/trading/cancel-order', {
         method: 'POST',
@@ -1183,7 +1235,7 @@ export function App() {
     }
   };
 
-  const handleLiveOrderAction = async (action: 'validate' | 'execute', customPin?: string) => {
+  const _handleLiveOrderAction = async (action: 'validate' | 'execute', customPin?: string) => {
     const candidatePin = (customPin ?? safetyPinInput ?? '').trim();
     if (action === 'execute' && !candidatePin) {
       if (!user?.has_pin) {
@@ -1229,7 +1281,7 @@ export function App() {
       });
       if (action === 'validate') {
         setLiveOrderDraftCheck(res.checks);
-        showToast(res.message, 'info');
+        showToast(res.message || 'Ordre validé : vous pouvez confirmer l\'envoi.', 'info');
       } else {
         setLiveOrderDraftCheck(null);
         if (pinModalAction === 'execute_live_order') {
@@ -1238,7 +1290,7 @@ export function App() {
           setPinModalError('');
         }
         await loadLiveAccountAndOrders();
-        showToast(res.message, 'success');
+        showToast(res.message || 'Ordre réel accepté par le serveur.', 'success');
       }
     } catch (err: any) {
       const msg = String(err.message || '');
@@ -1249,11 +1301,11 @@ export function App() {
         setPinModalError(msg);
         setPinModalAction('execute_live_order');
       }
-      showToast(msg, 'error');
+      showToast(describeActionError(err, action === 'execute'), 'error');
     }
   };
 
-  const handleRedeemPromo = async (e: React.FormEvent) => {
+  const _handleRedeemPromo = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       const res = await apiFetch('/api/user/promo', {
@@ -1268,7 +1320,7 @@ export function App() {
     }
   };
 
-  const handleGenerateBinancePay = async (plan: 'pro' | 'vip') => {
+  const _handleGenerateBinancePay = async (plan: 'pro' | 'vip') => {
     try {
       const res = await apiFetch('/api/user/binance-pay', {
         method: 'POST',
@@ -1282,7 +1334,7 @@ export function App() {
     }
   };
 
-  const handleSavePin = async (e: React.FormEvent) => {
+  const _handleSavePin = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       const res = await apiFetch('/api/user/pin', {
@@ -1298,7 +1350,7 @@ export function App() {
     }
   };
 
-  const handleCreateSupportTicket = async (e: React.FormEvent) => {
+  const _handleCreateSupportTicket = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       const res = await apiFetch('/api/support/tickets', {
@@ -1313,6 +1365,76 @@ export function App() {
       showToast(err.message, 'error');
     }
   };
+
+  // --- Enveloppes anti double-clic + feedback « en cours » (les handlers d'origine gardent leur logique) ---
+  const en = lang === 'en';
+  const handleOpenPaperOrder = (e: React.FormEvent) =>
+    runAction('paper-open', en ? 'Opening paper position…' : 'Ouverture de la position Paper…', () => _handleOpenPaperOrder(e));
+  const handleClosePaperPosition = (positionId: string) =>
+    runAction(`paper-close-${positionId}`, en ? 'Closing paper position…' : 'Clôture de la position Paper…', () =>
+      _handleClosePaperPosition(positionId)
+    );
+  const handleResetPaperAccount = () =>
+    runAction('paper-reset', en ? 'Resetting paper account…' : 'Réinitialisation du compte Paper…', () => _handleResetPaperAccount());
+  // Pas de blocage ici : plusieurs réglages successifs doivent rester possibles (clé unique par appel).
+  const handleUpdateTradingConfig = (patch: Partial<TradingConfigState> & { pin?: string }) =>
+    runAction(
+      `trading-config-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      en ? 'Saving trading settings…' : 'Enregistrement des paramètres de trading…',
+      () => _handleUpdateTradingConfig(patch)
+    );
+  const handleSafetyAction = (action: string, reason?: string, customPin?: string) =>
+    runAction(
+      `safety-${action}`,
+      action === 'emergency_stop'
+        ? en
+          ? 'Emergency stop: closing positions…'
+          : "Arrêt d'urgence : fermeture des positions…"
+        : en
+        ? 'Updating safety state…'
+        : "Mise à jour de l'état de sécurité…",
+      () => _handleSafetyAction(action, reason, customPin)
+    );
+  const handleSaveBinanceKeys = (e: React.FormEvent) =>
+    runAction('binance-save', en ? 'Saving and verifying API keys…' : 'Enregistrement et vérification des clés API…', () =>
+      _handleSaveBinanceKeys(e)
+    );
+  const handleTestBinanceConnection = () =>
+    runAction('binance-test', en ? 'Testing Binance connection…' : 'Test de la connexion Binance…', () =>
+      _handleTestBinanceConnection()
+    );
+  const handleCloseLivePosition = (tradeId?: number, symbol?: string, direction?: string) =>
+    runAction(
+      `live-close-${tradeId || 0}-${symbol || ''}`,
+      en ? 'Closing position on Binance…' : 'Fermeture de la position sur Binance…',
+      () => _handleCloseLivePosition(tradeId, symbol, direction)
+    );
+  const handleCancelLiveOrder = (symbol: string, orderId: string) =>
+    runAction(`live-cancel-${orderId}`, en ? 'Cancelling order…' : "Annulation de l'ordre…", () =>
+      _handleCancelLiveOrder(symbol, orderId)
+    );
+  const handleLiveOrderAction = (action: 'validate' | 'execute', customPin?: string) =>
+    runAction(
+      'live-order',
+      action === 'execute'
+        ? en
+          ? 'Sending real order to Binance…'
+          : "Envoi de l'ordre réel à Binance…"
+        : en
+        ? 'Validating order…'
+        : "Validation de l'ordre…",
+      () => _handleLiveOrderAction(action, customPin)
+    );
+  const handleRedeemPromo = (e: React.FormEvent) =>
+    runAction('promo', en ? 'Checking promo code…' : 'Vérification du code promo…', () => _handleRedeemPromo(e));
+  const handleGenerateBinancePay = (plan: 'pro' | 'vip') =>
+    runAction('binance-pay', en ? 'Generating payment memo…' : 'Génération du mémo de paiement…', () =>
+      _handleGenerateBinancePay(plan)
+    );
+  const handleSavePin = (e: React.FormEvent) =>
+    runAction('save-pin', en ? 'Saving PIN…' : 'Enregistrement du code PIN…', () => _handleSavePin(e));
+  const handleCreateSupportTicket = (e: React.FormEvent) =>
+    runAction('support-ticket', en ? 'Sending ticket…' : 'Envoi du ticket…', () => _handleCreateSupportTicket(e));
 
   const authFormModal = (mode: 'login' | 'register', isFullPage = false) => (
     <div
@@ -2737,20 +2859,41 @@ export function App() {
         )}
 
         {/* Toast Notification Banner */}
-        {toast && (
+        {(toast || Object.keys(pendingActions).length > 0) && (
           <div
-            className={`mx-6 mt-4 px-4 py-2.5 rounded-lg border text-xs flex items-center justify-between ${
-              toast.type === 'success'
-                ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#34D399]'
-                : toast.type === 'error'
-                ? 'bg-[#F43F5E]/15 border-[#F43F5E]/40 text-[#FB7185]'
-                : 'bg-[#3B82F6]/15 border-[#3B82F6]/40 text-[#60A5FA]'
-            }`}
+            role="status"
+            aria-live="polite"
+            className="sticky top-2 z-50 mx-3 sm:mx-6 mt-4 space-y-2 pointer-events-none"
           >
-            <span>{toast.text}</span>
-            <button onClick={() => setToast(null)} className="opacity-70 hover:opacity-100">
-              ✕
-            </button>
+            {Object.keys(pendingActions).length > 0 && (
+              <div className="pointer-events-auto rounded-lg bg-[#090D16] shadow-lg shadow-black/40">
+                <div className="px-4 py-2.5 rounded-lg border text-xs flex items-center gap-2 bg-[#3B82F6]/15 border-[#3B82F6]/40 text-[#60A5FA]">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
+                  <span>
+                    {Object.values(pendingActions)[0]}
+                    {Object.keys(pendingActions).length > 1 ? ` (+${Object.keys(pendingActions).length - 1})` : ''}
+                  </span>
+                </div>
+              </div>
+            )}
+            {toast && (
+              <div className="pointer-events-auto rounded-lg bg-[#090D16] shadow-lg shadow-black/40">
+                <div
+                  className={`px-4 py-2.5 rounded-lg border text-xs flex items-center justify-between gap-3 ${
+                    toast.type === 'success'
+                      ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#34D399]'
+                      : toast.type === 'error'
+                      ? 'bg-[#F43F5E]/15 border-[#F43F5E]/40 text-[#FB7185]'
+                      : 'bg-[#3B82F6]/15 border-[#3B82F6]/40 text-[#60A5FA]'
+                  }`}
+                >
+                  <span className="break-words min-w-0">{toast.text}</span>
+                  <button onClick={() => setToast(null)} className="opacity-70 hover:opacity-100 shrink-0">
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -3197,9 +3340,16 @@ export function App() {
 
                       <button
                         type="submit"
-                        className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors"
+                        disabled={isPending('paper-open')}
+                        className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {lang === 'en' ? `Open Paper Position (${selectedSymbol})` : `Ouvrir Position Paper (${selectedSymbol})`}
+                        {isPending('paper-open')
+                          ? lang === 'en'
+                            ? 'Processing…'
+                            : 'Traitement…'
+                          : lang === 'en'
+                          ? `Open Paper Position (${selectedSymbol})`
+                          : `Ouvrir Position Paper (${selectedSymbol})`}
                       </button>
                     </form>
                   </div>
@@ -3379,7 +3529,8 @@ export function App() {
                 </div>
                 <button
                   onClick={handleResetPaperAccount}
-                  className="px-3.5 py-2 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] transition-colors"
+                  disabled={isPending('paper-reset')}
+                  className="px-3.5 py-2 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {tr(lang, 'Réinitialiser le capital (10 000 USDT)')}
                 </button>
@@ -3503,9 +3654,10 @@ export function App() {
                               <td className="py-3.5 px-4 text-right">
                                 <button
                                   onClick={() => handleClosePaperPosition(pos.id)}
-                                  className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px]"
+                                  disabled={isPending(`paper-close-${pos.id}`)}
+                                  className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
-                                  {tr(lang, 'Clôturer')}
+                                  {isPending(`paper-close-${pos.id}`) ? tr(lang, 'Traitement…') : tr(lang, 'Clôturer')}
                                 </button>
                               </td>
                             </tr>
@@ -3819,7 +3971,8 @@ export function App() {
                   {(tradingCfg.safety_lock || tradingCfg.safety_warn) && (
                     <button
                       onClick={() => handleSafetyAction('clearsafe')}
-                      className="px-3.5 py-2 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors"
+                      disabled={isPending('safety-clearsafe')}
+                      className="px-3.5 py-2 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {tr(lang, 'Acquitter / Déverrouiller (/clearsafe)')}
                     </button>
@@ -3841,14 +3994,15 @@ export function App() {
                   )}
                   <button
                     onClick={() => handleSafetyAction('emergency_stop')}
-                    className="px-3.5 py-2 bg-[#F43F5E] hover:bg-[#E11D48] text-white font-semibold rounded-lg transition-colors"
+                    disabled={isPending('safety-emergency_stop')}
+                    className="px-3.5 py-2 bg-[#F43F5E] hover:bg-[#E11D48] text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     title={
                       lang === 'en'
                         ? 'Close all open positions and disable AutoTrade (/emergency)'
                         : 'Ferme toutes les positions ouvertes et désactive AutoTrade (/emergency)'
                     }
                   >
-                    🛑 Emergency Stop All (/emergency)
+                    {isPending('safety-emergency_stop') ? '⏳ Emergency Stop…' : '🛑 Emergency Stop All (/emergency)'}
                   </button>
                   <button
                     onClick={() =>
@@ -4221,7 +4375,8 @@ export function App() {
                           <button
                             type="button"
                             onClick={() => handleSafetyAction('reset_daily_loss')}
-                            className="px-2.5 py-1.5 bg-[#1E293B] hover:bg-[#334155] rounded text-[11px] text-[#F1F5F9]"
+                            disabled={isPending('safety-reset_daily_loss')}
+                            className="px-2.5 py-1.5 bg-[#1E293B] hover:bg-[#334155] rounded text-[11px] text-[#F1F5F9] disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             Reset
                           </button>
@@ -4513,11 +4668,11 @@ export function App() {
                       <button
                         type="button"
                         onClick={handleTestBinanceConnection}
-                        disabled={testingApiConn}
-                        className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] flex items-center gap-1.5"
+                        disabled={testingApiConn || isPending('binance-test')}
+                        className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <RefreshCw className={`w-3.5 h-3.5 ${testingApiConn ? 'animate-spin text-[#10B981]' : ''}`} />
-                        <span>{tr(lang, 'Tester Connexion')}</span>
+                        <span>{testingApiConn ? tr(lang, 'Test en cours…') : tr(lang, 'Tester Connexion')}</span>
                       </button>
                     </div>
 
@@ -4554,9 +4709,10 @@ export function App() {
                       </label>
                       <button
                         type="submit"
-                        className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors"
+                        disabled={isPending('binance-save')}
+                        className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {tr(lang, 'Enregistrer & Vérifier les Clés API')}
+                        {isPending('binance-save') ? tr(lang, 'Vérification en cours…') : tr(lang, 'Enregistrer & Vérifier les Clés API')}
                       </button>
                     </form>
                   </div>
@@ -4877,14 +5033,15 @@ export function App() {
                     <div className="flex gap-2 pt-1">
                       <button
                         type="button"
+                        disabled={isPending('live-order')}
                         onClick={() => handleLiveOrderAction('validate')}
-                        className="flex-1 py-2.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] font-semibold rounded-lg transition-colors"
+                        className="flex-1 py-2.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {tr(lang, "1. Valider l'Ordre")}
+                        {isPending('live-order') ? tr(lang, 'Traitement…') : tr(lang, "1. Valider l'Ordre")}
                       </button>
                       <button
                         type="button"
-                        disabled={!liveOrderDraftCheck}
+                        disabled={!liveOrderDraftCheck || isPending('live-order')}
                         onClick={() => handleLiveOrderAction('execute')}
                         className={`flex-1 py-2.5 font-semibold rounded-lg transition-colors ${
                           liveOrderDraftCheck
@@ -4892,7 +5049,7 @@ export function App() {
                             : 'bg-[#090D16] text-[#64748B] border border-white/5 cursor-not-allowed'
                         }`}
                       >
-                        {tr(lang, '2. Confirmer Envoi Réel')}
+                        {isPending('live-order') ? tr(lang, 'Exécution en cours…') : tr(lang, '2. Confirmer Envoi Réel')}
                       </button>
                     </div>
                   </div>
@@ -4990,9 +5147,10 @@ export function App() {
                                       <button
                                         type="button"
                                         onClick={() => handleCloseLivePosition(t.id, t.symbol, t.direction)}
-                                        className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px]"
+                                        disabled={isPending(`live-close-${t.id}-${t.symbol}`)}
+                                        className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
                                       >
-                                        {tr(lang, 'Fermer')} (#{t.id})
+                                        {isPending(`live-close-${t.id}-${t.symbol}`) ? tr(lang, 'Fermeture…') : <>{tr(lang, 'Fermer')} (#{t.id})</>}
                                       </button>
                                     </td>
                                   </tr>
@@ -5024,9 +5182,10 @@ export function App() {
                                         <button
                                           type="button"
                                           onClick={() => handleCloseLivePosition(0, rp.symbol, dir)}
-                                          className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px]"
+                                          disabled={isPending(`live-close-0-${rp.symbol}`)}
+                                          className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
                                         >
-                                          {tr(lang, 'Fermer')} ({rp.symbol})
+                                          {isPending(`live-close-0-${rp.symbol}`) ? tr(lang, 'Fermeture…') : <>{tr(lang, 'Fermer')} ({rp.symbol})</>}
                                         </button>
                                       </td>
                                     </tr>
@@ -5087,9 +5246,10 @@ export function App() {
                                   <button
                                     type="button"
                                     onClick={() => handleCancelLiveOrder(ord.symbol, String(ord.orderId))}
-                                    className="px-2 py-1 bg-[#1E293B] hover:bg-[#F43F5E]/20 text-[#94A3B8] hover:text-[#FB7185] rounded text-[11px]"
+                                    disabled={isPending(`live-cancel-${String(ord.orderId)}`)}
+                                    className="px-2 py-1 bg-[#1E293B] hover:bg-[#F43F5E]/20 text-[#94A3B8] hover:text-[#FB7185] rounded text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
-                                    {tr(lang, 'Annuler')}
+                                    {isPending(`live-cancel-${String(ord.orderId)}`) ? tr(lang, 'Annulation…') : tr(lang, 'Annuler')}
                                   </button>
                                 </td>
                               </tr>
@@ -5199,23 +5359,26 @@ export function App() {
                     />
                     <button
                       type="submit"
-                      className="px-4 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg"
+                      disabled={isPending('promo')}
+                      className="px-4 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {tr(lang, 'Activer Code')}
+                      {isPending('promo') ? tr(lang, 'Vérification…') : tr(lang, 'Activer Code')}
                     </button>
                   </form>
 
                   <div className="grid grid-cols-2 gap-3 pt-2 text-xs">
                     <button
                       onClick={() => handleGenerateBinancePay('pro')}
-                      className="p-3.5 rounded-lg bg-[#090D16] border border-[#10B981]/40 hover:bg-[#10B981]/10 text-left space-y-1 transition-colors"
+                      disabled={isPending('binance-pay')}
+                      className="p-3.5 rounded-lg bg-[#090D16] border border-[#10B981]/40 hover:bg-[#10B981]/10 text-left space-y-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <div className="font-semibold text-[#10B981]">{tr(lang, 'Générer Mémo Binance Pay PRO')}</div>
                       <div className="font-mono-tabular text-[#F1F5F9]">{tr(lang, '19 USDT / mois')}</div>
                     </button>
                     <button
                       onClick={() => handleGenerateBinancePay('vip')}
-                      className="p-3.5 rounded-lg bg-[#090D16] border border-[#F59E0B]/40 hover:bg-[#F59E0B]/10 text-left space-y-1 transition-colors"
+                      disabled={isPending('binance-pay')}
+                      className="p-3.5 rounded-lg bg-[#090D16] border border-[#F59E0B]/40 hover:bg-[#F59E0B]/10 text-left space-y-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <div className="font-semibold text-[#F59E0B]">{tr(lang, 'Générer Mémo Binance Pay VIP')}</div>
                       <div className="font-mono-tabular text-[#F1F5F9]">{tr(lang, '49 USDT / mois')}</div>
@@ -5280,9 +5443,10 @@ export function App() {
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="submit"
-                        className="px-4 py-2 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-[#F1F5F9] font-semibold"
+                        disabled={isPending('save-pin')}
+                        className="px-4 py-2 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-[#F1F5F9] font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {tr(lang, 'Enregistrer le Code PIN')}
+                        {isPending('save-pin') ? tr(lang, 'Enregistrement…') : tr(lang, 'Enregistrer le Code PIN')}
                       </button>
                       {user.has_pin && (
                         <>
@@ -5359,9 +5523,10 @@ export function App() {
                   </div>
                   <button
                     type="submit"
-                    className="px-4 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg"
+                    disabled={isPending('support-ticket')}
+                    className="px-4 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {tr(lang, "Envoyer à l'Administrateur")}
+                    {isPending('support-ticket') ? tr(lang, 'Envoi…') : tr(lang, "Envoyer à l'Administrateur")}
                   </button>
                 </form>
 
