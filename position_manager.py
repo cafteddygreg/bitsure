@@ -36,6 +36,12 @@ from binance_manager import (
     ORDER_CONTEXT_MANUAL_AUTHENTICATED,
     ORDER_CONTEXT_EMERGENCY,
 )
+try:
+    from binance_manager import BinancePositionNotFound
+except ImportError:  # modules de test qui stubent binance_manager sans cette exception
+    class BinancePositionNotFound(BinanceClientError):  # type: ignore[no-redef]
+        """Refus métier : aucune position Binance correspondante."""
+
 from trading_logger import get_trading_logger, log_trade_closed, log_error
 from trading_safety import engage_safe_mode, engage_safety_warn, clear_safety_warn, flush_safety_notifications
 from utils import normalize_symbol
@@ -209,13 +215,19 @@ def close_trade(trade: Dict[str, Any], exit_reason: str, current_price: float) -
                 UPDATE trades
                 SET status = 'closed', closed_at = %s, exit_reason = %s,
                     pnl_usdt = %s, pnl_pct = %s
-                WHERE id = %s
+                WHERE id = %s AND status = 'open'
                 """,
                 (time.time(), exit_reason, pnl_usdt, pnl_pct, trade["id"]),
             )
+            already_closed = getattr(cur, "rowcount", 1) == 0
         conn.commit()
     finally:
         conn.close()
+
+    if already_closed:
+        # Double fermeture évitée : le trade a déjà été clôturé (autre tâche / fermeture manuelle).
+        # On ne ré-enregistre ni la perte ni le PnL journalier.
+        return pnl_usdt, pnl_pct
 
     if pnl_usdt < 0:
         record_trade_loss(trade["user_id"], abs(pnl_usdt))
@@ -343,6 +355,27 @@ def _persist_new_sl(trade_id: int, new_sl: float, sl_order_id: Optional[str] = N
         conn.commit()
     finally:
         conn.close()
+
+
+# Durée (s) pendant laquelle on laisse un ordre SL/TP Binance encore actif se déclencher seul
+# avant de forcer une fermeture de sécurité (prix déjà au-delà du niveau).
+PROTECTIVE_ORDER_GRACE_SECONDS = 45
+_breach_since: Dict[int, float] = {}
+_closing_trades: set = set()
+
+
+def _protective_order_alive(user_id: int, symbol: str, order_id: Any) -> bool:
+    """Vrai si l'ordre de protection enregistré existe réellement parmi les ordres ouverts Binance.
+    Lève BinanceClientError (erreur réseau/API réelle) si la vérification est impossible."""
+    if not order_id:
+        return False
+    open_orders = get_open_binance_orders(user_id, market_type="futures", symbol=normalize_symbol(symbol))
+    return any(str(o.get("orderId")) == str(order_id) for o in open_orders if isinstance(o, dict))
+
+
+def _is_business_refusal(err: Exception) -> bool:
+    """Refus métier (position absente / fermeture refusée) par opposition à une erreur réseau/API."""
+    return isinstance(err, BinancePositionNotFound) or "Fermeture refusée" in str(err)
 
 
 def _remote_position_exists(user_id: int, symbol: str, direction: str) -> bool:
@@ -621,10 +654,16 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
             )
 
+            if not (hit_tp or hit_sl):
+                _breach_since.pop(trade["id"], None)
+
             if hit_tp or hit_sl:
                 reason = "TP" if hit_tp else "SL"
                 protective_order_id = trade.get("tp_order_id") if hit_tp else trade.get("sl_order_id")
                 exit_price = current_price
+                safety_close = False
+                if trade["id"] in _closing_trades:
+                    continue  # fermeture déjà en cours pour ce trade : pas de double ordre
                 if trade["market_type"] == "spot":
                     # En Spot, si un ordre OCO (sl_order_id / tp_order_id) existe, on l'annule d'abord pour libérer le solde si non encore exécuté
                     _cancel_remaining_protection(trade, "MANUAL")
@@ -654,22 +693,54 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
                         except Exception:
                             # L'ordre OCO côté exchange a déjà vendu la position Spot
                             pass
-                elif not protective_order_id:
-                    close_res = close_position(
-                        trade["user_id"],
-                        trade["symbol"],
-                        trade["direction"],
-                        trade["quantity"],
-                        trade["market_type"],
-                        execution_context=ORDER_CONTEXT_AUTOTRADE,
-                    )
-                    if isinstance(close_res, dict) and close_res.get("executed_price"):
-                        exit_price = float(close_res["executed_price"])
-                elif _remote_position_exists(trade["user_id"], trade["symbol"], trade["direction"]):
-                    # La position existe encore côté Binance : ne jamais clôturer localement par supposition
-                    continue
+                else:
+                    # Futures : le niveau SL/TP est franchi. L'ordre de protection enregistré n'est cru que s'il
+                    # existe réellement sur Binance ; sinon (ou s'il ne se déclenche pas), fermeture de sécurité.
+                    if not protective_order_id:
+                        safety_close = True
+                    elif not _protective_order_alive(trade["user_id"], trade["symbol"], protective_order_id):
+                        safety_close = True
+                        logger.warning(
+                            "Ordre protecteur %s introuvable côté Binance pour trade #%s (%s) alors que %s est franchi : fermeture de sécurité.",
+                            protective_order_id, trade["id"], trade["symbol"], reason,
+                        )
+                    elif _remote_position_exists(trade["user_id"], trade["symbol"], trade["direction"]):
+                        # Ordre actif et position encore ouverte : on laisse Binance exécuter, avec un délai de grâce.
+                        first_seen = _breach_since.setdefault(trade["id"], time.time())
+                        if time.time() - first_seen < PROTECTIVE_ORDER_GRACE_SECONDS:
+                            continue
+                        safety_close = True
+                        logger.warning(
+                            "Ordre protecteur %s actif mais non déclenché depuis %ss (trade #%s %s) : fermeture de sécurité.",
+                            protective_order_id, PROTECTIVE_ORDER_GRACE_SECONDS, trade["id"], trade["symbol"],
+                        )
+                    if safety_close:
+                        _closing_trades.add(trade["id"])
+                        try:
+                            close_res = close_position(
+                                trade["user_id"],
+                                trade["symbol"],
+                                trade["direction"],
+                                trade["quantity"],
+                                trade["market_type"],
+                                execution_context=ORDER_CONTEXT_AUTOTRADE,
+                            )
+                            if isinstance(close_res, dict) and close_res.get("executed_price"):
+                                exit_price = float(close_res["executed_price"])
+                        except BinancePositionNotFound:
+                            # Aucune position réelle sur Binance : ce n'est pas une panne réseau,
+                            # on synchronise l'état local (prix réel de sortie si retrouvable).
+                            exit_price = _resolve_real_exit_price(trade, current_price)
+                            logger.info(
+                                "Trade #%s %s: aucune position Binance, synchronisation locale (%s).",
+                                trade["id"], trade["symbol"], reason,
+                            )
+                        finally:
+                            _closing_trades.discard(trade["id"])
+                _breach_since.pop(trade["id"], None)
                 if trade["market_type"] != "spot":
-                    _cancel_remaining_protection(trade, reason)
+                    # Fermeture de sécurité : on annule SL ET TP restants (aucun ordre orphelin).
+                    _cancel_remaining_protection(trade, "SAFETY" if safety_close else reason)
                 pnl_usdt, pnl_pct = close_trade(trade, reason, exit_price)
                 if context and hasattr(context, "bot"):
                     await context.bot.send_message(
@@ -735,7 +806,10 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         except BinanceClientError as e:
             log_error(logger, trade["user_id"], "monitor_open_positions", str(e))
-            engage_safety_warn(trade["user_id"], f"Erreur réseau/API pendant surveillance position: {e}", context=context)
+            if _is_business_refusal(e):
+                engage_safety_warn(trade["user_id"], f"Refus métier pendant surveillance position (pas une erreur réseau): {e}", context=context)
+            else:
+                engage_safety_warn(trade["user_id"], f"Erreur réseau/API pendant surveillance position: {e}", context=context)
         except Exception as e:
             log_error(logger, trade["user_id"], "monitor_open_positions_unexpected", str(e))
 

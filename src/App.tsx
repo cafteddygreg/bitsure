@@ -1366,6 +1366,55 @@ export function App() {
     }
   };
 
+  // PNL actuel d'une position ouverte : prix temps réel existant (livePrices) x données de la position.
+  // Sans prix disponible, on retombe sur la valeur Binance déjà fournie (unrealized_pnl) ; sinon « — ».
+  const computeOpenPnl = (
+    symbol: any,
+    direction: any,
+    entryPrice: any,
+    quantity: any,
+    leverage: any,
+    fallbackUsdt?: any
+  ): { usdt: number; pct: number | null } | null => {
+    const sym = String(symbol || '').toUpperCase();
+    const px = Number(livePrices[sym]?.price ?? livePrices[String(symbol || '')]?.price ?? 0);
+    const entry = Number(entryPrice);
+    const qty = Number(quantity);
+    if (px > 0 && entry > 0 && qty > 0) {
+      const isBuy = String(direction || '').toUpperCase().startsWith('B');
+      const usdt = (isBuy ? px - entry : entry - px) * qty;
+      const margin = (entry * qty) / Math.max(1, Number(leverage) || 1);
+      return { usdt, pct: margin > 0 ? (usdt / margin) * 100 : null };
+    }
+    if (fallbackUsdt !== undefined && fallbackUsdt !== null && Number.isFinite(Number(fallbackUsdt))) {
+      return { usdt: Number(fallbackUsdt), pct: null };
+    }
+    return null;
+  };
+  const renderOpenPnl = (pnl: { usdt: number; pct: number | null } | null) => {
+    if (!pnl) {
+      return <span className="text-[#64748B]">—</span>;
+    }
+    const rounded = Math.round(pnl.usdt * 100) / 100;
+    const tone = rounded > 0 ? 'text-[#10B981]' : rounded < 0 ? 'text-[#F43F5E]' : 'text-[#94A3B8]';
+    const sign = rounded > 0 ? '+' : rounded < 0 ? '-' : '';
+    const pctRounded = pnl.pct === null ? null : Math.round(pnl.pct * 100) / 100;
+    return (
+      <div className={`font-semibold ${tone}`}>
+        <div>
+          {sign}
+          {Math.abs(rounded).toFixed(2)} USDT
+        </div>
+        {pctRounded !== null && (
+          <div className="text-[10px] font-normal opacity-80">
+            {pctRounded > 0 ? '+' : pctRounded < 0 ? '-' : ''}
+            {Math.abs(pctRounded).toFixed(2)} %
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // --- Enveloppes anti double-clic + feedback « en cours » (les handlers d'origine gardent leur logique) ---
   const en = lang === 'en';
   const handleOpenPaperOrder = (e: React.FormEvent) =>
@@ -5102,6 +5151,7 @@ export function App() {
                             <th className="py-2.5 px-4 text-right">{tr(lang, 'Quantité')}</th>
                             <th className="py-2.5 px-4 text-right">{tr(lang, 'Entrée')}</th>
                             <th className="py-2.5 px-4 text-right">SL / TP</th>
+                            <th className="py-2.5 px-4 text-right">{tr(lang, 'PNL actuel')}</th>
                             <th className="py-2.5 px-4 text-right">{tr(lang, 'Action (/close)')}</th>
                           </tr>
                         </thead>
@@ -5118,7 +5168,7 @@ export function App() {
                             if (liveTrades.open.length === 0 && remoteUnmatched.length === 0) {
                               return (
                                 <tr>
-                                  <td colSpan={6} className="py-6 text-center text-[#64748B] font-sans">
+                                  <td colSpan={7} className="py-6 text-center text-[#64748B] font-sans">
                                     {tr(lang, 'Aucune position ouverte enregistrée localement ou sur Binance.')}
                                   </td>
                                 </tr>
@@ -5143,6 +5193,22 @@ export function App() {
                                       <span className="text-[#F43F5E]">{t.sl_price ?? '—'}</span> /{' '}
                                       <span className="text-[#10B981]">{t.tp_price ?? '—'}</span>
                                     </td>
+                                    <td className="py-3 px-4 text-right whitespace-nowrap">
+                                      {renderOpenPnl(
+                                        computeOpenPnl(
+                                          t.symbol,
+                                          t.direction,
+                                          t.entry_price,
+                                          t.quantity,
+                                          t.leverage,
+                                          (liveAccount?.positions || []).find(
+                                            (rp: any) =>
+                                              String(rp.symbol).toUpperCase() === String(t.symbol).toUpperCase() &&
+                                              String(rp.side || '').toUpperCase().startsWith(String(t.direction || '').toUpperCase())
+                                          )?.unrealized_pnl
+                                        )
+                                      )}
+                                    </td>
                                     <td className="py-3 px-4 text-right">
                                       <button
                                         type="button"
@@ -5157,7 +5223,15 @@ export function App() {
                                 ))}
                                 {remoteUnmatched.map((rp: any) => {
                                   const dir = String(rp.side || '').toUpperCase().startsWith('SELL') ? 'SELL' : 'BUY';
-                                  const upnl = Number(rp.unrealized_pnl || 0);
+                                  const remotePnl = computeOpenPnl(
+                                    rp.symbol,
+                                    dir,
+                                    rp.entry_price,
+                                    rp.quantity,
+                                    rp.leverage,
+                                    rp.unrealized_pnl
+                                  );
+                                  const upnl = remotePnl ? remotePnl.usdt : Number(rp.unrealized_pnl || 0);
                                   return (
                                     <tr key={`remote-${rp.symbol}-${dir}`} className="hover:bg-white/[0.02] bg-[#F59E0B]/[0.03]">
                                       <td className="py-3 px-4 font-semibold text-[#F1F5F9]">
@@ -5178,6 +5252,7 @@ export function App() {
                                           {upnl.toFixed(2)} USDT
                                         </span>
                                       </td>
+                                      <td className="py-3 px-4 text-right whitespace-nowrap">{renderOpenPnl(remotePnl)}</td>
                                       <td className="py-3 px-4 text-right">
                                         <button
                                           type="button"

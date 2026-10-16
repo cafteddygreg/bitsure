@@ -168,6 +168,10 @@ class BinanceClientError(Exception):
     """Erreur applicative levée par ce module (message safe à afficher à l'utilisateur)."""
 
 
+class BinancePositionNotFound(BinanceClientError):
+    """Refus métier (et non erreur réseau/API) : aucune position Binance correspondante à fermer."""
+
+
 ORDER_CONTEXT_AUTOTRADE = "autotrade"
 ORDER_CONTEXT_MANUAL_AUTHENTICATED = "manual_authenticated"
 ORDER_CONTEXT_EMERGENCY = "emergency_stop"
@@ -1068,8 +1072,16 @@ def close_position(
                 if same_dir and execution_context in (ORDER_CONTEXT_MANUAL_AUTHENTICATED, ORDER_CONTEXT_EMERGENCY):
                     # L'utilisateur ferme manuellement ou en urgence : on ferme la quantité réellement ouverte (ou min)
                     effective_qty = float(same_dir[0]["quantity"]) if float(quantity) <= 0 else min(float(quantity), float(same_dir[0]["quantity"]))
+                elif same_dir and execution_context == ORDER_CONTEXT_AUTOTRADE:
+                    # AutoTrade : la position correspondante existe mais sa quantité diffère de la quantité locale
+                    # (réduction partielle, arrondi, fusion One-Way…). On ferme la quantité RÉELLEMENT présente.
+                    effective_qty = float(same_dir[0]["quantity"])
+                    logger.warning(
+                        "close_position AUTOTRADE %s %s: quantité locale %s != quantité Binance %s, fermeture de la quantité Binance.",
+                        symbol, direction, quantity, effective_qty,
+                    )
                 else:
-                    raise BinanceClientError(
+                    raise BinancePositionNotFound(
                         f"Fermeture refusée: aucune position Binance {symbol} {direction} "
                         f"avec quantité attendue {quantity}."
                     )
@@ -1136,6 +1148,11 @@ def close_position(
             "closed_quantity": float(qty),
         }
     except (BinanceAPIException, BinanceOrderException) as e:
+        if market_type == "futures" and getattr(e, "code", None) == -2022:
+            # ReduceOnly rejeté : la position a disparu entre la lecture et l'ordre (déjà fermée) -> refus métier.
+            raise BinancePositionNotFound(
+                f"Fermeture refusée: position Binance {symbol} {direction} déjà fermée (reduceOnly rejeté)."
+            )
         raise BinanceClientError(f"Erreur Binance à la fermeture : {getattr(e, 'message', str(e))}")
 
 
