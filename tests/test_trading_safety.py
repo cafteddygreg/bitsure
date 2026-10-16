@@ -542,7 +542,7 @@ class TradingSafetyTests(unittest.TestCase):
         # 2. Sans Whitelist ni Watchlist : uniquement les 3 symboles documentés du bot
         cfg_default = TradingConfig(user_id=42, symbol_whitelist=[])
         syms_def, _ = _resolve_requested_scan_symbols(42, cfg_default)
-        self.assertEqual(syms_def, ["BTCUSDT", "ETHUSDT", "XAUUSD"])
+        self.assertEqual(syms_def, ["BTCUSDT", "ETHUSDT", "XAUUSDT"])
 
 
 if __name__ == "__main__":

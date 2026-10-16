@@ -1,6 +1,6 @@
 # 🧸 Bitsure Teddy v2.0 — Plateforme & Bot Telegram d'Analyse Quantitative, Paper Trading & AutoTrade Binance
 
-**Bitsure Teddy v2.0** est un écosystème complet de trading algorithmique et d'analyse quantitative multi-actifs (**Crypto & Or / XAUUSD**). Il combine :
+**Bitsure Teddy v2.0** est un écosystème complet de trading algorithmique et d'analyse quantitative multi-actifs (**Crypto & Or / XAUUSDT**). Il combine :
 1. **Un Bot Telegram institutionnel (`main.py`)** avec menus interactifs, scanner multi-timeframes, Paper Trading, AutoTrade Binance (Spot & Futures USDT-M), Live Trading manuel, gestion du risque dynamique et interpréteur de logs IA (`/logs`).
 2. **Une Plateforme Web Quantitative (`server.ts` + `web_api_server.py` + React/Vite)** connectée en temps réel au même moteur Python et à la même base de données (PostgreSQL en production / SQLite autonome en local).
 
@@ -76,7 +76,7 @@ Pour garantir une **sélectivité institutionnelle** et éviter le sur-trading s
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
 | **`BTCUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.5%` | `4 / 6` |
 | **`ETHUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.8%` | `4 / 6` |
-| **`XAUUSD`** | Matière Première (Or) | Yahoo (`GC=F`) / TwelveData | `22` | `48 – 66` | `34 – 52` | `2.5%` | `4 / 6` |
+| **`XAUUSDT`** | Matière Première (Or) — perpétuel TradFi Binance Futures (USD-M, pas de marché Spot) | Binance Futures (`/fapi`) | `22` | `48 – 66` | `34 – 52` | `2.5%` | `4 / 6` |
 
 ### Paramètres Calibrés par Défaut (`config.py`)
 - **Score Teddy Minimum (`DEFAULT_MIN_SCORE`)** : `68 / 100` (calibré par validation walk-forward hors échantillon).
@@ -94,7 +94,7 @@ Chaque appel à `/analyse <symbole>` ou scan périodique exécute un pipeline d�
 
 1. **Vérification des Horaires de Marché (`market_hours.py`)** :
    - Les cryptomonnaies sont analysées 24h/24 et 7j/7.
-   - L'Or (`XAUUSD`) et le Forex respectent la fermeture du week-end (vendredi 22h00 UTC à dimanche 22h00 UTC).
+   - L'Or (`XAUUSDT`, perpétuel Binance 24/7) est traité comme les autres symboles Binance ; seul le Forex hors Binance respecte la fermeture du week-end.
 2. **Calcul des Indicateurs Techniques (`indicators.py`)** :
    - Moyennes mobiles simples **SMA 20, SMA 50, SMA 200**.
    - **RSI (14)** avec détection de pente et zones d'élan (momentum).
@@ -167,7 +167,7 @@ Toute la configuration métier est déjà codée et calibrée dans `config.py`. 
 ### Variables Optionnelles
 | Variable | Description | Exemple / Défaut |
 | :--- | :--- | :--- |
-| **`TWELVEDATA_API_KEY`** | Clé API TwelveData (flux WebSocket/REST additionnel pour `XAUUSD` / Forex). | *(Vide par défaut, fallback Yahoo Finance)* |
+| **`TWELVEDATA_API_KEY`** | Clé API TwelveData (flux WebSocket/REST additionnel pour le Forex hors Binance). | *(Vide par défaut, fallback Yahoo Finance)* |
 | **`BINANCE_ID`** | Votre identifiant Binance Pay affiché aux utilisateurs lors d'un paiement `/pay_binance`. | `123456789` |
 | **`GEMINI_API_KEY`** | Clé API Google Gemini pour enrichir la commande admin `/logs` avec une synthèse IA. *(Si vide, le moteur de diagnostic local fonctionne à 100% avec 0 token).* | `AIzaSy...` |
 | **`GEMINI_LOG_MODEL`** | Modèle Gemini utilisé par `/logs`. | `gemini-3.1-flash-lite` |
@@ -236,7 +236,7 @@ Dans Telegram, toutes les commandes affichées par `/help` sont formatées pour 
 - `/support` — Contacter l'administrateur ou le support technique.
 
 ### 📊 Analyse Quantitative & Marché
-- `/analyse <symbole>` — Analyse technique complète avec **Teddy Score**, confluence MTF, SL, TP et R:R (ex: `/analyse BTCUSDT` ou `/analyse XAUUSD`).
+- `/analyse <symbole>` — Analyse technique complète avec **Teddy Score**, confluence MTF, SL, TP et R:R (ex: `/analyse BTCUSDT` ou `/analyse XAUUSDT`).
 - `/price <symbole>` — Obtenir le cours en temps réel et la variation.
 - `/trend <symbole>` — Analyse détaillée de la tendance court, moyen et long terme (SMA 20/50/200, ADX).
 - `/volatility <symbole>` — Indicateurs de volatilité (ATR absolu, ATR%, largeur des Bandes de Bollinger).

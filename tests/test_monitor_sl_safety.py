@@ -34,8 +34,12 @@ except ImportError:
     _b.client, _b.exceptions = _bc, _be
     sys.modules.update({"binance": _b, "binance.client": _bc, "binance.exceptions": _be})
 
+# D'autres fichiers de tests remplacent binance_manager / position_manager par des stubs dans sys.modules :
+# on charge ici les VRAIS modules, puis on restaure les stubs pour ne pas perturber les autres tests.
+_stubbed = {k: sys.modules.pop(k) for k in ("binance_manager", "position_manager") if k in sys.modules}
 import binance_manager as bm
 import position_manager as pm
+sys.modules.update(_stubbed)
 
 
 def _trade(**kw):

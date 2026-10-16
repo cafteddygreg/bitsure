@@ -338,7 +338,7 @@ def _init_web_schema_and_seed():
         um.set_account_status(admin_uid, ACCOUNT_STATUS_APPROVED)
         pt.init_capital(admin_uid, PAPER_DEFAULT_CAPITAL)
         trading_config.ensure_config_row(admin_uid)
-        for sym in ("BTCUSDT", "ETHUSDT", "XAUUSD"):
+        for sym in ("BTCUSDT", "ETHUSDT", "XAUUSDT"):
             um.add_to_watchlist(admin_uid, sym)
 
         existing_admin = db.execute("SELECT email, user_id, password_hash FROM web_accounts WHERE LOWER(email) = %s", (ADMIN_EMAIL,)).fetchone()
@@ -1540,7 +1540,7 @@ def _load_fallback_csv(symbol: str):
                         df["timestamp"] = pd.to_datetime(df["timestamp"])
                         df.set_index("timestamp", inplace=True)
                     df.columns = [c.capitalize() for c in df.columns]
-                    if sym_clean == "XAUUSD" and "Close" in df.columns and float(df["Close"].iloc[-1]) > 10000:
+                    if sym_clean == "XAUUSDT" and "Close" in df.columns and float(df["Close"].iloc[-1]) > 10000:
                         scale = 2650.0 / float(df["Close"].iloc[-1])
                         for col in ("Open", "High", "Low", "Close"):
                             if col in df.columns:
@@ -1550,7 +1550,7 @@ def _load_fallback_csv(symbol: str):
                 logger.warning("Fallback CSV read error (%s): %s", path, e)
 
     # Ultimate in-memory fallback so df is never None even if scratch directory is absent in container
-    base_price = 68500.0 if sym_clean == "BTCUSDT" else (2650.0 if sym_clean == "XAUUSD" else 3450.0)
+    base_price = 68500.0 if sym_clean == "BTCUSDT" else (2650.0 if sym_clean == "XAUUSDT" else 3450.0)
     now_utc = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     rows = []
     p = base_price * 0.985
@@ -2377,7 +2377,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             if path == "/api/market/tickers":
                 fetcher = DataFetcher.get_instance()
-                symbols = ["BTCUSDT", "ETHUSDT", "XAUUSD"]
+                symbols = ["BTCUSDT", "ETHUSDT", "XAUUSDT"]
                 tickers = []
                 for sym in symbols:
                     price_raw = run_coro(fetcher.get_realtime_price(sym))
@@ -2500,7 +2500,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                             "tp1": None,
                             "tp2": None,
                             "rr_ratio": None,
-                            "asset_class": "gold" if sym == "XAUUSD" else "crypto",
+                            "asset_class": "gold" if sym == "XAUUSDT" else "crypto",
                             "params_used": {},
                             "score_detail": {},
                             "indicators": {},
@@ -3071,7 +3071,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
                 PaperTrader().init_capital(uid, PAPER_DEFAULT_CAPITAL)
                 trading_config.ensure_config_row(uid)
-                for s in ("BTCUSDT", "ETHUSDT", "XAUUSD"):
+                for s in ("BTCUSDT", "ETHUSDT", "XAUUSDT"):
                     um.add_to_watchlist(uid, s)
 
                 pw_hash = _hash_password_secure(password)

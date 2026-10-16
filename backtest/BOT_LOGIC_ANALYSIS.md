@@ -151,7 +151,7 @@ Dans `position_manager.py` :
 
 ### `SYMBOL_CONFIGS` dans `config.py`
 
-Les symboles natifs de la stratégie sont `BTCUSDT`, `ETHUSDT` et `XAUUSD`.
+Les symboles natifs de la stratégie sont `BTCUSDT`, `ETHUSDT` et `XAUUSDT`.
 
 Exemples :
 

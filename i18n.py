@@ -173,7 +173,7 @@ TEXTS = {
         "symboles_list": (
             "📊 *SYMBOLES BINANCE POPULAIRES*\n\n"
             "🪙 *Cryptos*\nBTCUSDT – Bitcoin (USDT)\nETHUSDT – Ethereum (USDT)\n\n"
-            "✨ *Matières premières*\nXAUUSD – Or (Gold)\n\n"
+            "✨ *Matières premières*\nXAUUSDT – Or (Gold)\n\n"
             "💡 Exemple : /analyse BTCUSDT"
         ),
         "symbol_not_found": "Symbole non trouvé.",
@@ -589,7 +589,7 @@ TEXTS = {
         "symboles_list": (
             "📊 *POPULAR BINANCE SYMBOLS*\n\n"
             "🪙 *Cryptos*\nBTCUSDT – Bitcoin (USDT)\nETHUSDT – Ethereum (USDT)\n\n"
-            "✨ *Commodities*\nXAUUSD – Gold\n\n"
+            "✨ *Commodities*\nXAUUSDT – Gold\n\n"
             "💡 Example: /analyse BTCUSDT"
         ),
         "symbol_not_found": "Symbol not found.",

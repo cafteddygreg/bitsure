@@ -27,7 +27,7 @@ import re
 #   "BTC-USDT" → "BTCUSDT"
 #   "btcusdt"  → "BTCUSDT"
 #   "ETHUSDT"  → "ETHUSDT"   (already canonical, no-op)
-#   "XAU/USD"  → "XAUUSD"
+#   "XAU/USD"  → "XAUUSDT"  (alias historique, XAUUSDT = perpétuel Or Binance Futures)
 # ---------------------------------------------------------------------------
 
 # Separator characters to strip before comparing tokens
@@ -61,13 +61,14 @@ def normalize_symbol(symbol: str) -> str:
     # Étape 4 — Suppression des suffixes PERP / SWAP / FUTURES collés
     s = _PERP_SUFFIX_RE.sub("", s)
 
-    # Étape 5 — Conversion des alias courts vers les symboles officiellement documentés (BTCUSDT, ETHUSDT, XAUUSD)
+    # Étape 5 — Conversion des alias courts vers les symboles officiellement documentés (BTCUSDT, ETHUSDT, XAUUSDT)
     if s in ("BTC", "XBT"):
         s = "BTCUSDT"
     elif s == "ETH":
         s = "ETHUSDT"
-    elif s == "XAU":
-        s = "XAUUSD"
+    elif s in ("XAU", "XAUUSD"):
+        # "XAUUSD" n'est plus un symbole Bitsure : simple alias d'entrée (anciennes données, saisies « XAU/USD »).
+        s = "XAUUSDT"
 
     # Étape 6 — Vérification stricte : seuls les symboles documentés dans le bot sont autorisés
     from config import DOCUMENTED_SYMBOLS

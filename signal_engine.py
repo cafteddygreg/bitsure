@@ -67,7 +67,7 @@ ASSET_CLASS_RULES = {
         "min_sl_pct": 0.0060,  # Distance SL minimale (0.60% du prix) validée hors échantillon
     },
     "metal": {
-        "symbols": {"XAUUSD"},
+        "symbols": {"XAUUSDT"},
         "sl_factor": 1.00,
         "tp_factor": 1.00,
         "adx_delta": 0,
@@ -500,7 +500,7 @@ class SignalEngine:
         Args:
             df:     DataFrame OHLC (minimum 60 bougies clôturées).
             lang:   Code langue ("en" ou "fr").
-            symbol: Symbole (ex: "BTCUSDT", "ETHUSDT", "XAUUSD").
+            symbol: Symbole (ex: "BTCUSDT", "ETHUSDT", "XAUUSDT").
             style:  Style de trading ("scalping", "scalping_15m", "day", "swing", "position", ou None pour fallback config.py).
             htf_data: Dictionnaire optionnel de DataFrames de timeframes supérieurs {'1h': df_1h, '4h': df_4h, '1d': df_1d}.
             now:    Horodatage de référence pour exclure toute bougie non clôturée.

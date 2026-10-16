@@ -117,8 +117,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               <div className="inline-flex items-center gap-2 text-xs font-mono-tabular uppercase tracking-wider text-[#10B981] border-l-2 border-[#10B981] pl-3">
                 {tr(
                   lang,
-                  'Architecture Quantitative Multi-Timeframe • BTC • ETH • XAU/USD',
-                  'Multi-Timeframe Quantitative Architecture • BTC • ETH • XAU/USD'
+                  'Architecture Quantitative Multi-Timeframe • BTC • ETH • XAU/USDT',
+                  'Multi-Timeframe Quantitative Architecture • BTC • ETH • XAU/USDT'
                 )}
               </div>
 

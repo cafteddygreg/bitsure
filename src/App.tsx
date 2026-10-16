@@ -84,7 +84,7 @@ type ActiveTab =
 const SYMBOLS = [
   { id: 'BTCUSDT', label: 'BTC / USDT', category: 'Crypto Spot/Perp' },
   { id: 'ETHUSDT', label: 'ETH / USDT', category: 'Crypto Spot/Perp' },
-  { id: 'XAUUSD', label: 'XAU / USD (Or)', labelEn: 'XAU / USD (Gold)', category: 'Matières Premières' },
+  { id: 'XAUUSDT', label: 'XAU / USDT (Or)', labelEn: 'XAU / USDT (Gold)', category: 'Matières Premières' },
 ];
 
 const TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d'];
@@ -340,12 +340,16 @@ export function App() {
   // Toast feedback banner
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = useCallback((text: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ text, type });
     // Les erreurs restent plus longtemps : la raison fournie par le backend doit pouvoir être lue.
     const duration = type === 'error' ? 10000 : 4500;
-    setTimeout(() => {
-      setToast((prev) => (prev?.text === text ? null : prev));
+    // Un seul minuteur actif : un ancien toast ne ferme pas un toast plus récent au texte identique.
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
     }, duration);
   }, []);
 
@@ -624,8 +628,8 @@ export function App() {
     let unmounted = false;
 
     const endpoints = [
-      'wss://data-stream.binance.vision/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker/paxgusdt@miniTicker/btcusdt@bookTicker/ethusdt@bookTicker/paxgusdt@bookTicker',
-      'wss://stream.binance.com:9443/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker/paxgusdt@miniTicker/btcusdt@bookTicker/ethusdt@bookTicker/paxgusdt@bookTicker',
+      'wss://data-stream.binance.vision/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker/btcusdt@bookTicker/ethusdt@bookTicker',
+      'wss://stream.binance.com:9443/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker/btcusdt@bookTicker/ethusdt@bookTicker',
     ];
     let epIndex = 0;
 
@@ -646,7 +650,7 @@ export function App() {
             const d = msg?.data || msg;
             if (!d || !d.s) return;
             const rawSym = String(d.s).toUpperCase();
-            const sym = rawSym === 'PAXGUSDT' ? 'XAUUSD' : rawSym;
+            const sym = rawSym;
             if (d.e === '24hrMiniTicker' || d.c) {
               const closeP = parseFloat(d.c);
               const openP = parseFloat(d.o);
@@ -792,7 +796,7 @@ export function App() {
     runAnalysis(selectedSymbol, selectedTimeframe, selectedStyle, true);
     runMultiScan(selectedTimeframe, selectedStyle, false);
 
-    // Fetch backend tickers (covers XAUUSD + fallback for BTCUSDT/ETHUSDT) every 2.5s
+    // Fetch backend tickers (covers XAUUSDT, which has no Spot stream, + fallback for BTCUSDT/ETHUSDT) every 2.5s
     const fetchBackendTickers = () => {
       apiFetch('/api/market/tickers')
         .then((res) => {
@@ -1034,7 +1038,7 @@ export function App() {
     }
   };
 
-  const handleAddAlert = async (e: React.FormEvent) => {
+  const _handleAddAlert = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       const res = await apiFetch('/api/alerts/add', {
@@ -1052,7 +1056,7 @@ export function App() {
     }
   };
 
-  const handleDeleteAlert = async (alertId: number) => {
+  const _handleDeleteAlert = async (alertId: number) => {
     try {
       const res = await apiFetch('/api/alerts/delete', {
         method: 'POST',
@@ -1158,7 +1162,7 @@ export function App() {
     }
   };
 
-  const handleResetPinLockout = async () => {
+  const _handleResetPinLockout = async () => {
     try {
       const res = await apiFetch('/api/user/pin', {
         method: 'POST',
@@ -1484,6 +1488,22 @@ export function App() {
     runAction('save-pin', en ? 'Saving PIN…' : 'Enregistrement du code PIN…', () => _handleSavePin(e));
   const handleCreateSupportTicket = (e: React.FormEvent) =>
     runAction('support-ticket', en ? 'Sending ticket…' : 'Envoi du ticket…', () => _handleCreateSupportTicket(e));
+  const handleAddAlert = (e: React.FormEvent) =>
+    runAction('alert-add', en ? 'Saving price alert…' : "Enregistrement de l'alerte prix…", () => _handleAddAlert(e));
+  const handleDeleteAlert = (alertId: number) =>
+    runAction(`alert-delete-${alertId}`, en ? 'Deleting alert…' : "Suppression de l'alerte…", () => _handleDeleteAlert(alertId));
+  const handleClearAlerts = () =>
+    runAction('alert-clear', en ? 'Deleting all alerts…' : 'Suppression de toutes les alertes…', async () => {
+      try {
+        const r = await apiFetch('/api/alerts/clear', { method: 'POST' });
+        setAlerts(r.alerts || []);
+        showToast(tr(lang, 'Toutes les alertes ont été supprimées.'), 'info');
+      } catch (err: any) {
+        showToast(err.message, 'error');
+      }
+    });
+  const handleResetPinLockout = () =>
+    runAction('pin-unlock', en ? 'Unlocking PIN…' : 'Déverrouillage du code PIN…', () => _handleResetPinLockout());
 
   const authFormModal = (mode: 'login' | 'register', isFullPage = false) => (
     <div
@@ -2912,7 +2932,7 @@ export function App() {
           <div
             role="status"
             aria-live="polite"
-            className="sticky top-2 z-50 mx-3 sm:mx-6 mt-4 space-y-2 pointer-events-none"
+            className="fixed z-[100] top-[max(0.5rem,env(safe-area-inset-top))] inset-x-2 sm:inset-x-auto sm:right-4 sm:top-4 sm:w-[26rem] max-w-full space-y-2 pointer-events-none"
           >
             {Object.keys(pendingActions).length > 0 && (
               <div className="pointer-events-auto rounded-lg bg-[#090D16] shadow-lg shadow-black/40">
@@ -3411,7 +3431,7 @@ export function App() {
                   <div>
                     <div className="flex items-center gap-2.5">
                       <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
-                        {tr(lang, 'Scanner Multi-Marchés (BTCUSDT • ETHUSDT • XAUUSD)')}
+                        {tr(lang, 'Scanner Multi-Marchés (BTCUSDT • ETHUSDT • XAUUSDT)')}
                       </h3>
                       {lastScannedAt && (
                         <span className="text-[11px] font-mono-tabular text-[#10B981] bg-[#10B981]/10 border border-[#10B981]/30 px-2 py-0.5 rounded">
@@ -3830,9 +3850,10 @@ export function App() {
                   </div>
                   <button
                     type="submit"
-                    className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors"
+                    disabled={isPending('alert-add')}
+                    className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                   >
-                    {tr(lang, "Activer l'Alerte Prix")}
+                    {isPending('alert-add') ? tr(lang, 'Traitement…') : tr(lang, "Activer l'Alerte Prix")}
                   </button>
                 </form>
               </div>
@@ -3844,15 +3865,11 @@ export function App() {
                   </h3>
                   {alerts.length > 0 && (
                     <button
-                      onClick={() =>
-                        apiFetch('/api/alerts/clear', { method: 'POST' }).then((r) => {
-                          setAlerts(r.alerts || []);
-                          showToast(tr(lang, 'Toutes les alertes ont été supprimées.'), 'info');
-                        })
-                      }
-                      className="text-xs text-[#F43F5E] hover:underline"
+                      onClick={handleClearAlerts}
+                      disabled={isPending('alert-clear')}
+                      className="text-xs text-[#F43F5E] hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {tr(lang, 'Tout effacer')}
+                      {isPending('alert-clear') ? tr(lang, 'Traitement…') : tr(lang, 'Tout effacer')}
                     </button>
                   )}
                 </div>
@@ -3882,7 +3899,8 @@ export function App() {
                         </div>
                         <button
                           onClick={() => handleDeleteAlert(a.id)}
-                          className="p-1.5 text-[#64748B] hover:text-[#F43F5E] transition-colors"
+                          disabled={isPending(`alert-delete-${a.id}`)}
+                          className="p-1.5 text-[#64748B] hover:text-[#F43F5E] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -5528,7 +5546,8 @@ export function App() {
                           <button
                             type="button"
                             onClick={handleResetPinLockout}
-                            className="px-3 py-2 bg-[#090D16] hover:bg-white/[0.05] border border-white/15 rounded-lg text-[#94A3B8] hover:text-[#F1F5F9]"
+                            disabled={isPending('pin-unlock')}
+                            className="px-3 py-2 bg-[#090D16] hover:bg-white/[0.05] border border-white/15 rounded-lg text-[#94A3B8] hover:text-[#F1F5F9] disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             {lang === 'en' ? 'Reset PIN Lockout' : 'Débloquer essai PIN'}
                           </button>
@@ -6166,14 +6185,22 @@ export function App() {
                       />
                       <button
                         onClick={() =>
-                          apiFetch('/api/admin/log-doctor', {
-                            method: 'POST',
-                            body: JSON.stringify({ question: doctorQuestion }),
-                          }).then((r) => setDoctorReport(r.report))
+                          runAction('log-doctor', en ? 'Analyzing logs…' : 'Analyse des logs…', async () => {
+                            try {
+                              const r = await apiFetch('/api/admin/log-doctor', {
+                                method: 'POST',
+                                body: JSON.stringify({ question: doctorQuestion }),
+                              });
+                              setDoctorReport(r.report);
+                            } catch (err: any) {
+                              showToast(err.message, 'error');
+                            }
+                          })
                         }
-                        className="px-3.5 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg"
+                        disabled={isPending('log-doctor')}
+                        className="px-3.5 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        {tr(lang, 'Analyser')}
+                        {isPending('log-doctor') ? tr(lang, 'Traitement…') : tr(lang, 'Analyser')}
                       </button>
                     </div>
                     <pre className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] text-[11px] font-mono-tabular text-[#94A3B8] whitespace-pre-wrap max-h-64 overflow-y-auto">
@@ -6502,11 +6529,12 @@ export function App() {
                         <button
                           type="button"
                           onClick={() =>
-                            apiFetch('/api/admin/operations', {
-                              method: 'POST',
-                              body: JSON.stringify({ operation: 'export_signals_csv' }),
-                            })
-                              .then((res) => {
+                            runAction('export-signals', en ? 'Exporting signals…' : 'Export des signaux…', async () => {
+                              try {
+                                const res = await apiFetch('/api/admin/operations', {
+                                  method: 'POST',
+                                  body: JSON.stringify({ operation: 'export_signals_csv' }),
+                                });
                                 if (res.csv) {
                                   const blob = new Blob([res.csv], { type: 'text/csv;charset=utf-8;' });
                                   const url = URL.createObjectURL(blob);
@@ -6517,14 +6545,20 @@ export function App() {
                                   a.click();
                                   document.body.removeChild(a);
                                   URL.revokeObjectURL(url);
+                                  showToast(res.message || (en ? 'Export downloaded.' : 'Export téléchargé.'), 'success');
+                                } else {
+                                  // Aucun fichier reçu : ce n'est pas un succès, on affiche le message du backend tel quel.
+                                  showToast(res.message || (en ? 'No data to export.' : 'Aucune donnée à exporter.'), 'info');
                                 }
-                                showToast(res.message, 'success');
-                              })
-                              .catch((err) => showToast(err.message, 'error'))
+                              } catch (err: any) {
+                                showToast(err.message, 'error');
+                              }
+                            })
                           }
-                          className="px-3 py-1.5 bg-[#10B981]/15 hover:bg-[#10B981]/25 border border-[#10B981]/40 text-[#10B981] rounded-lg text-xs font-semibold"
+                          disabled={isPending('export-signals')}
+                          className="px-3 py-1.5 bg-[#10B981]/15 hover:bg-[#10B981]/25 border border-[#10B981]/40 text-[#10B981] rounded-lg text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
                         >
-                          {lang === 'en' ? 'Export Signals CSV' : 'Exporter Signaux CSV'}
+                          {isPending('export-signals') ? tr(lang, 'Traitement…') : lang === 'en' ? 'Export Signals CSV' : 'Exporter Signaux CSV'}
                         </button>
                         <button
                           type="button"
@@ -6765,7 +6799,8 @@ export function App() {
                     <button
                       type="button"
                       onClick={handleResetPinLockout}
-                      className="px-3 py-1.5 rounded bg-[#10B981] text-[#090D16] font-semibold text-xs inline-block"
+                      disabled={isPending('pin-unlock')}
+                      className="px-3 py-1.5 rounded bg-[#10B981] text-[#090D16] font-semibold text-xs inline-block disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {lang === 'en'
                         ? 'Reset anti-bruteforce timer now'

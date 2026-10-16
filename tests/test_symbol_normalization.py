@@ -71,8 +71,11 @@ VALID_CASES = [
     # Perp / Futures suffixes
     ("btcusdt_perp", "BTCUSDT"),
     # Precious metals / documented pairs
-    ("XAU/USD",   "XAUUSD"),
-    ("xauusd",    "XAUUSD"),
+    ("XAU/USD",   "XAUUSDT"),   # alias historique
+    ("xauusd",    "XAUUSDT"),   # alias historique
+    ("XAUUSDT",   "XAUUSDT"),
+    ("xau-usdt",  "XAUUSDT"),
+    ("XAU",       "XAUUSDT"),
     # Leading / trailing whitespace
     ("  BTCUSDT  ", "BTCUSDT"),
     ("  eth/usdt  ", "ETHUSDT"),
@@ -135,7 +138,7 @@ def test_is_valid_symbol(raw, expected):
 # ---------------------------------------------------------------------------
 
 IDEMPOTENT_CASES = [
-    "BTCUSDT", "ETHUSDT", "XAUUSD",
+    "BTCUSDT", "ETHUSDT", "XAUUSDT",
 ]
 
 

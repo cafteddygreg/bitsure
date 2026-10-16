@@ -1057,7 +1057,7 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
             f"• Style de stratégie : *{style}*\n"
             f"• Score minimum exigé : *{config.min_score}/100*\n"
             f"• Symboles ciblés ({req_source_str}) : `{req_symbols_str}`\n\n"
-            f"💡 _Seuls les symboles documentés dans le bot (`BTCUSDT`, `ETHUSDT`, `XAUUSD`) sont analysés._",
+            f"💡 _Seuls les symboles documentés dans le bot (`BTCUSDT`, `ETHUSDT`, `XAUUSDT`) sont analysés._",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )

@@ -68,8 +68,11 @@ class AlertManager:
                 # 1. Récupérer toutes les alertes non déclenchées sur les symboles documentés
                 from config import DOCUMENTED_SYMBOLS
                 with self.lock:
+                    # Migration de l'ancien symbole « XAUUSD » vers XAUUSDT (alertes encore actives).
+                    self.conn.execute("UPDATE alerts SET symbol = 'XAUUSDT' WHERE triggered = 0 AND UPPER(symbol) = 'XAUUSD'")
+                    self.conn.commit()
                     rows = self.conn.execute(
-                        "SELECT * FROM alerts WHERE triggered = 0 AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'XAUUSD')"
+                        "SELECT * FROM alerts WHERE triggered = 0 AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'XAUUSDT')"
                     ).fetchall()
                     alerts = [dict(r) for r in rows if str(r["symbol"]).upper() in DOCUMENTED_SYMBOLS]
 

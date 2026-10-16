@@ -175,7 +175,7 @@ _KNOWN_PATTERNS: List[Tuple[re.Pattern, str, str, str]] = [
         re.compile(r"data_unavailable|Impossible de récupérer|empty|No data", re.IGNORECASE),
         "📉 Données de marché indisponibles pour ce symbole",
         "Le fournisseur de prix n'a pas renvoyé de bougies historiques pour cette paire ou ce timeframe.",
-        "Utilise un symbole standardisé comme `BTCUSDT`, `ETHUSDT` ou `XAUUSD` et vérifie la source avec `/switchapi` (admin).",
+        "Utilise un symbole standardisé comme `BTCUSDT`, `ETHUSDT` ou `XAUUSDT` et vérifie la source avec `/switchapi` (admin).",
     ),
 ]
 

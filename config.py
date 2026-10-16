@@ -26,7 +26,7 @@ ADMIN_USERNAME = "@btsrteddy"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Optionnel (uniquement si tu analyses XAUUSD / Forex hors Binance ou reçois des paiements Binance Pay)
+# Optionnel (uniquement si tu analyses Forex hors Binance ou reçois des paiements Binance Pay)
 TWELVEDATA_API_KEY = os.environ.get("TWELVEDATA_API_KEY", "")
 BINANCE_ID = os.environ.get("BINANCE_ID", "")
 
@@ -95,8 +95,12 @@ DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET = os.environ.get(
 DOCUMENTED_SYMBOLS = (
     "BTCUSDT",
     "ETHUSDT",
-    "XAUUSD",
+    "XAUUSDT",
 )
+
+# Symboles qui n'existent que sur Binance USD-M Futures (pas de marché Spot) : TradFi Perpetual (or).
+# Leurs prix/historiques doivent être lus sur /fapi, jamais sur /api/v3.
+FUTURES_ONLY_SYMBOLS = frozenset({"XAUUSDT"})
 
 # Paramètres par défaut d'un profil de trading (optimisés haute sélectivité : gagner plus, perdre moins)
 AUTO_TRADE_DEFAULT = False
@@ -177,7 +181,7 @@ RR_RATIO_TARGET = 2.10                   # Objectif Risk/Reward calibré à 2.10
 SYMBOL_CONFIGS = {
     "BTCUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.5, "min_cond": 4},
     "ETHUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.8, "min_cond": 4},
-    "XAUUSD":  {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 2.5, "min_cond": 4},
+    "XAUUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 2.5, "min_cond": 4},
 }
 
 DATA_DIR = "data"

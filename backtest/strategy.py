@@ -17,7 +17,7 @@ RR_RATIO_TARGET = 2.10
 SYMBOL_CONFIGS = {
     "BTCUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.5, "min_cond": 4},
     "ETHUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.8, "min_cond": 4},
-    "XAUUSD": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 2.5, "min_cond": 4},
+    "XAUUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 2.5, "min_cond": 4},
 }
 
 STYLE_CONFIG = {

@@ -599,8 +599,14 @@ class UserManager:
     def get_watchlist(self, user_id: int) -> List[str]:
         from config import DOCUMENTED_SYMBOLS
         try:
+            # Migration de l'ancien symbole « XAUUSD » vers XAUUSDT (sans doublon) avant le nettoyage ci-dessous.
             self.conn.execute(
-                "DELETE FROM watchlist WHERE user_id = %s AND UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'XAUUSD')",
+                "INSERT INTO watchlist (user_id, symbol) SELECT user_id, 'XAUUSDT' FROM watchlist "
+                "WHERE user_id = %s AND UPPER(symbol) = 'XAUUSD' ON CONFLICT DO NOTHING",
+                (user_id,),
+            )
+            self.conn.execute(
+                "DELETE FROM watchlist WHERE user_id = %s AND UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'XAUUSDT')",
                 (user_id,),
             )
             self.conn.commit()

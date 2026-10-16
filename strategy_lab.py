@@ -25,6 +25,7 @@ import pandas as pd
 import database as _db_mod
 from indicators import macd, adx, bollinger_bands, sma, rsi as calc_rsi, atr as calc_atr
 from data_fetcher import normalize_symbol
+from config import FUTURES_ONLY_SYMBOLS
 
 
 def get_db():
@@ -42,7 +43,7 @@ SUPPORTED_LAB_MARKETS = ["futures", "spot"]
 SUPPORTED_LAB_SYMBOLS = [
     "BTCUSDT",
     "ETHUSDT",
-    "XAUUSD",
+    "XAUUSDT",
     "SOLUSDT",
     "BNBUSDT",
     "XRPUSDT",
@@ -56,8 +57,8 @@ SUPPORTED_LAB_SYMBOLS = [
 def _normalize_lab_symbol(raw_symbol: Optional[str]) -> str:
     """Normalizes symbols for Strategy Lab (supports documented symbols + extended crypto research pairs)."""
     s = str(raw_symbol or "BTCUSDT").strip().upper().replace("/", "").replace("-", "")
-    if s in ("XAUUSD", "GOLD", "XAUUSDT", "PAXGUSDT"):
-        return "XAUUSD"
+    if s in ("XAUUSD", "GOLD", "XAUUSDT"):
+        return "XAUUSDT"
     if s in SUPPORTED_LAB_SYMBOLS:
         return s
     try:
@@ -1552,8 +1553,12 @@ def load_historical_candles(
     Returns (DataFrame, data_source_label, stats_dict).
     """
     symbol = _normalize_lab_symbol(symbol or "BTCUSDT")
-    binance_query_symbol = "PAXGUSDT" if symbol == "XAUUSD" else symbol
-    market_type = "spot" if (str(market_type).lower() == "spot" or symbol == "XAUUSD") else "futures"
+    binance_query_symbol = symbol
+    # XAUUSDT n'existe que sur USD-M Futures (pas de marché Spot) : on force le marché réel du symbole.
+    if symbol in FUTURES_ONLY_SYMBOLS:
+        market_type = "futures"
+    else:
+        market_type = "spot" if str(market_type).lower() == "spot" else "futures"
     if timeframe not in SUPPORTED_LAB_TIMEFRAMES:
         timeframe = "15m"
     max_candles = max(80, min(2500, int(max_candles or 800)))
@@ -1634,7 +1639,7 @@ def load_historical_candles(
             fetch_start_ms = query_start_ms
 
         import requests
-        if market_type == "futures" and symbol != "XAUUSD":
+        if market_type == "futures":
             endpoints = [
                 ("https://fapi.binance.com/fapi/v1/klines", "Binance USD-M Futures API"),
                 ("https://data-api.binance.vision/api/v3/klines", "Binance Vision Archive"),

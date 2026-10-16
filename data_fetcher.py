@@ -15,7 +15,7 @@ from config import (
     TWELVEDATA_API_KEY,
     PRICE_CACHE_TTL, HISTORY_CACHE_TTL,
     DEFAULT_TIMEFRAME, HISTORY_PERIOD,
-    TWELVEDATA_WS_URL
+    TWELVEDATA_WS_URL, FUTURES_ONLY_SYMBOLS
 )
 from utils import cache_key, normalize_symbol
 
@@ -29,7 +29,7 @@ class DataFetcher:
         self.price_cache = {}
         self.history_cache = {}
         self.subscribed_symbols = set([
-            "BTCUSDT", "ETHUSDT", "XAUUSD"
+            "BTCUSDT", "ETHUSDT", "XAUUSDT"
         ])
         self.ws = None
         self.ws_thread = None
@@ -123,8 +123,7 @@ class DataFetcher:
         if symbol.endswith("USDT"):
             return None
         if symbol in self.price_cache:
-            ttl = min(PRICE_CACHE_TTL, 4) if symbol == "XAUUSD" else PRICE_CACHE_TTL
-            if time.time() - self.price_cache[symbol]["timestamp"] < ttl:
+            if time.time() - self.price_cache[symbol]["timestamp"] < PRICE_CACHE_TTL:
                 return self.price_cache[symbol]
         return None
 
@@ -147,12 +146,16 @@ class DataFetcher:
         binance_sym = symbol
 
         if symbol.endswith("USDT"):
-            price_urls = (
-                f"https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol={binance_sym}",
-                f"https://api.binance.com/api/v3/ticker/bookTicker?symbol={binance_sym}",
-                f"https://api1.binance.com/api/v3/ticker/bookTicker?symbol={binance_sym}",
-                f"https://fapi.binance.com/fapi/v1/ticker/bookTicker?symbol={binance_sym}",
-            )
+            if symbol in FUTURES_ONLY_SYMBOLS:
+                # Pas de marché Spot (ex: XAUUSDT, perpétuel TradFi) : on lit uniquement USD-M Futures.
+                price_urls = (f"https://fapi.binance.com/fapi/v1/ticker/bookTicker?symbol={binance_sym}",)
+            else:
+                price_urls = (
+                    f"https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol={binance_sym}",
+                    f"https://api.binance.com/api/v3/ticker/bookTicker?symbol={binance_sym}",
+                    f"https://api1.binance.com/api/v3/ticker/bookTicker?symbol={binance_sym}",
+                    f"https://fapi.binance.com/fapi/v1/ticker/bookTicker?symbol={binance_sym}",
+                )
             for url in price_urls:
                 try:
                     r = requests.get(url, timeout=5)
@@ -186,47 +189,6 @@ class DataFetcher:
             except Exception as e:
                 logger.warning(f"Price error {symbol}: {e}")
 
-        # 3. Or Spot Temps Réel pour XAUUSD (évite l'écart de +25$ du contrat Futures COMEX GC=F)
-        if symbol == "XAUUSD":
-            for gold_url in (
-                "https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol=PAXGUSDT",
-                "https://api.binance.com/api/v3/ticker/bookTicker?symbol=PAXGUSDT",
-                "https://api1.binance.com/api/v3/ticker/bookTicker?symbol=PAXGUSDT",
-            ):
-                try:
-                    r = requests.get(gold_url, timeout=5)
-                    if r.status_code == 200:
-                        data = r.json()
-                        bid = float(data.get("bidPrice", 0) or 0)
-                        ask = float(data.get("askPrice", 0) or 0)
-                        if bid > 0 or ask > 0:
-                            price = (bid + ask) / 2.0 if (bid and ask) else (bid or ask)
-                            return {"price": price, "bid": bid or price, "ask": ask or price, "timestamp": time.time()}
-                except Exception:
-                    pass
-            try:
-                r = requests.get("https://api.coinbase.com/v2/prices/XAU-USD/spot", timeout=5)
-                if r.status_code == 200:
-                    amt = float((r.json().get("data") or {}).get("amount") or 0)
-                    if amt > 0:
-                        spread = max(amt * 0.0003, 0.05)
-                        return {"price": amt, "bid": amt - spread / 2, "ask": amt + spread / 2, "timestamp": time.time()}
-            except Exception:
-                pass
-
-        # 4. Repli Yahoo Finance si nécessaire
-        try:
-            import yfinance as yf
-            yf_map = {"XAUUSD": "GC=F"}
-            yf_sym = yf_map.get(symbol)
-            if yf_sym:
-                hist = yf.Ticker(yf_sym).history(period="1d", interval="5m")
-                if hist is not None and not hist.empty:
-                    p = float(hist["Close"].iloc[-1])
-                    spread = max(p * 0.0005, 0.01)
-                    return {"price": p, "bid": p - spread / 2, "ask": p + spread / 2, "timestamp": time.time()}
-        except Exception:
-            pass
         return None
 
     # =========================================================
@@ -235,8 +197,8 @@ class DataFetcher:
 
     async def get_historical_data(self, symbol: str, timeframe: str = DEFAULT_TIMEFRAME, period: str = HISTORY_PERIOD) -> Optional[pd.DataFrame]:
         symbol = normalize_symbol(symbol)
-        # Actifs Binance & XAUUSD Spot : toujours frais à la demande
-        if symbol.endswith("USDT") or symbol == "XAUUSD":
+        # Actifs Binance : toujours frais à la demande
+        if symbol.endswith("USDT"):
             return await self._fetch_history(symbol, timeframe)
         # Actifs TwelveData : cache conservé pour respecter les quotas API
         key = cache_key(symbol, timeframe, period)
@@ -254,7 +216,8 @@ class DataFetcher:
             target_sym = symbol
             try:
                 from binance_manager import get_klines_dataframe
-                df = get_klines_dataframe(target_sym, timeframe, market_type="spot", limit=500)
+                hist_market = "futures" if target_sym in FUTURES_ONLY_SYMBOLS else "spot"
+                df = get_klines_dataframe(target_sym, timeframe, market_type=hist_market, limit=500)
                 if df is not None and not df.empty:
                     return df
             except Exception as e:
@@ -294,49 +257,6 @@ class DataFetcher:
             except Exception as e:
                 logger.warning(f"History error {symbol}: {e}")
 
-        # 3. Or Spot Temps Réel OHLCV (XAUUSD -> PAXGUSDT Spot 1:1 1oz Gold)
-        if symbol == "XAUUSD":
-            for kline_base in (
-                "https://data-api.binance.vision/api/v3/klines",
-                "https://api.binance.com/api/v3/klines",
-                "https://api1.binance.com/api/v3/klines",
-            ):
-                try:
-                    r = requests.get(
-                        kline_base,
-                        params={"symbol": "PAXGUSDT", "interval": timeframe, "limit": 500},
-                        timeout=7,
-                    )
-                    if r.status_code == 200:
-                        klines = r.json()
-                        if isinstance(klines, list) and len(klines) > 0:
-                            df = pd.DataFrame(
-                                klines,
-                                columns=[
-                                    "OpenTime", "Open", "High", "Low", "Close", "Volume",
-                                    "CloseTime", "QuoteAssetVolume", "NumberOfTrades",
-                                    "TakerBuyBaseVolume", "TakerBuyQuoteVolume", "Ignore",
-                                ],
-                            )
-                            df["Date"] = pd.to_datetime(df["OpenTime"], unit="ms")
-                            df.set_index("Date", inplace=True)
-                            return df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
-                except Exception as e:
-                    logger.debug(f"XAUUSD Spot History mirror error ({kline_base}): {e}")
-
-        # 4. Repli Yahoo Finance (ex: XAUUSD -> PAXG-USD ou GC=F recalibré sur le spot)
-        try:
-            import yfinance as yf
-            yf_map = {"XAUUSD": "PAXG-USD"}
-            yf_sym = yf_map.get(symbol)
-            if yf_sym:
-                yf_interval = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}.get(timeframe, "1h")
-                yf_period = "5d" if yf_interval in ("1m", "5m", "15m") else "60d"
-                hist = yf.Ticker(yf_sym).history(period=yf_period, interval=yf_interval)
-                if hist is not None and not hist.empty:
-                    return hist[["Open", "High", "Low", "Close", "Volume"]].astype(float)
-        except Exception as e:
-            logger.warning(f"YFinance history error {symbol}: {e}")
         return None
 
     # =========================================================
