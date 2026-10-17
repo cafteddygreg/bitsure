@@ -34,10 +34,12 @@ def _owned(job: Optional[Dict[str, Any]], user_id: int, is_admin: bool) -> bool:
     return bool(job) and (is_admin or int(job["user_id"]) == int(user_id))
 
 
-def overview(user_id: int, is_admin: bool, style: str = "day") -> Tuple[int, Dict[str, Any]]:
+def overview(user_id: int, is_admin: bool, style: str = "day", light: bool = False) -> Tuple[int, Dict[str, Any]]:
     _ensure_schema()
     style = style if style in engine.VALID_STYLES else "day"
     jobs = store.list_jobs(None if is_admin else user_id, limit=30)
+    if light:  # suivi de progression : uniquement la liste des jobs (réponse légère)
+        return 200, {"ok": True, "jobs": jobs}
     return 200, {
         "ok": True,
         "parameters": get_optimizable_parameters(style),

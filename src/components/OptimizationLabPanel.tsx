@@ -107,6 +107,17 @@ export const OptimizationLabPanel: React.FC<Props> = ({
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [activeJob, setActiveJob] = useState<OptJob | null>(null);
   const mounted = useRef(true);
+  // Refs : le parent recrée `onShowToast` à chaque rendu (prix en direct) ; sans refs, le minuteur de suivi
+  // serait réinitialisé en permanence et ne se déclencherait jamais.
+  const onShowToastRef = useRef(onShowToast);
+  onShowToastRef.current = onShowToast;
+  const activeJobRef = useRef<OptJob | null>(null);
+  activeJobRef.current = activeJob;
+  const styleRef = useRef(tradingStyle);
+  styleRef.current = tradingStyle;
+  const langRef = useRef(lang);
+  langRef.current = lang;
+  const prevStatus = useRef<Record<string, string>>({});
 
   const label = (p: OptParam) => (en ? p.label_en : p.label_fr);
   const isBusy = (k: string) => !!busy[k];
@@ -119,17 +130,46 @@ export const OptimizationLabPanel: React.FC<Props> = ({
     }
   }, []);
 
-  const loadOverview = useCallback(async (silent = true) => {
+  const notifyTransitions = (list: OptJob[]) => {
+    const prev = prevStatus.current;
+    const l = langRef.current;
+    list.forEach((j) => {
+      const before = prev[j.job_id];
+      if (before && (before === 'queued' || before === 'running') && before !== j.status) {
+        if (j.status === 'completed') onShowToastRef.current('success', `${j.job_id} — ${tr(l, 'optimisation terminée.', 'optimization completed.')}`);
+        else if (j.status === 'failed') onShowToastRef.current('error', `${j.job_id} — ${tr(l, 'optimisation échouée', 'optimization failed')}${j.error ? ` : ${j.error}` : ''}`);
+        else if (j.status === 'cancelled') onShowToastRef.current('info', `${j.job_id} — ${tr(l, 'optimisation annulée.', 'optimization cancelled.')}`);
+      }
+      prev[j.job_id] = j.status;
+    });
+  };
+
+  const loadOverview = useCallback(async (silent = true, light = false) => {
     try {
-      const res = await apiFetch(`${API}/overview?style=${encodeURIComponent(tradingStyle)}`);
+      const res = await apiFetch(`${API}/overview?style=${encodeURIComponent(styleRef.current)}${light ? '&light=1' : ''}`, { cache: 'no-store' });
       if (!mounted.current) return;
-      setCatalog(res.parameters || []);
-      setJobs(res.jobs || []);
-      if (res.limits) setLimits(res.limits);
+      if (!light) {
+        setCatalog(res.parameters || []);
+        if (res.limits) setLimits(res.limits);
+      }
+      const list: OptJob[] = res.jobs || [];
+      notifyTransitions(list);
+      setJobs(list);
     } catch (err: any) {
-      if (!silent) onShowToast('error', err.message);
+      if (!silent) onShowToastRef.current('error', err.message);
     }
-  }, [tradingStyle, onShowToast]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const refreshActiveJob = useCallback(async () => {
+    const current = activeJobRef.current;
+    if (!current) return;
+    try {
+      const r = await apiFetch(`${API}/job?id=${encodeURIComponent(current.job_id)}`, { cache: 'no-store' });
+      if (mounted.current && r.job) setActiveJob(r.job);
+    } catch {
+      /* silencieux : le prochain cycle réessaiera */
+    }
+  }, []);
 
   useEffect(() => {
     mounted.current = true;
@@ -144,23 +184,26 @@ export const OptimizationLabPanel: React.FC<Props> = ({
     loadOverview(false);
   }, [tradingStyle]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Suivi automatique tant qu'une optimisation est en attente ou en cours (le job continue côté serveur même si la page est fermée)
-  const hasActive = jobs.some((j) => j.status === 'queued' || j.status === 'running');
+  // Suivi automatique (toutes les 3 s) tant qu'une optimisation est en attente ou en cours : le job continue côté serveur
+  // même si la page est fermée. Le minuteur ne dépend que d'un booléen stable (pas de réinitialisation à chaque rendu).
+  const isActiveStatus = (st?: string) => st === 'queued' || st === 'running';
+  const needsPolling = jobs.some((j) => isActiveStatus(j.status)) || isActiveStatus(activeJob?.status);
   useEffect(() => {
-    if (!hasActive && !(activeJob && (activeJob.status === 'queued' || activeJob.status === 'running'))) return;
-    const t = setInterval(async () => {
-      await loadOverview(true);
-      if (activeJob) {
-        try {
-          const r = await apiFetch(`${API}/job?id=${encodeURIComponent(activeJob.job_id)}`);
-          if (mounted.current && r.job) setActiveJob(r.job);
-        } catch {
-          /* silencieux : le prochain cycle réessaiera */
-        }
-      }
-    }, 5000);
-    return () => clearInterval(t);
-  }, [hasActive, activeJob?.job_id, activeJob?.status, loadOverview]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!needsPolling) return;
+    const tick = () => {
+      loadOverview(true, true);
+      refreshActiveJob();
+    };
+    const t = setInterval(tick, 3000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') tick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [needsPolling, loadOverview, refreshActiveJob]);
 
   const toggleParam = (p: OptParam) => {
     setPlan(null);

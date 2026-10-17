@@ -370,6 +370,15 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.api.cancel(1, False, job_id)[1]["status"], "cancelled")
         self.assertEqual(self.api.cancel(1, False, job_id)[0], 409)
 
+    def test_light_overview_has_jobs_only(self):
+        self.api.create(1, False, REQUEST)
+        st, out = self.api.overview(1, False, "day", light=True)
+        self.assertEqual(st, 200)
+        self.assertEqual(len(out["jobs"]), 1)
+        self.assertNotIn("parameters", out)
+        st, full = self.api.overview(1, False, "day")
+        self.assertIn("parameters", full)
+
     def test_report_available_once_completed(self):
         st, out = self.api.create(1, False, REQUEST)
         worker_loop(once=True, db=self.db, notifier=FakeNotifier(), loader=fake_loader)

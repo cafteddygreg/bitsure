@@ -2854,7 +2854,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 from optimization import api as opt_api
                 _sub = path[len("/api/admin/strategy-lab/optimization/"):]
                 if _sub == "overview":
-                    _st, _payload = opt_api.overview(user_id, is_admin, query.get("style", "day"))
+                    _st, _payload = opt_api.overview(user_id, is_admin, query.get("style", "day"), str(query.get("light", "")) == "1")
                 elif _sub == "job":
                     _st, _payload = opt_api.get_job(user_id, is_admin, str(query.get("id", "")))
                 elif _sub == "report":
