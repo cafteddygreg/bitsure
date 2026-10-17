@@ -4,3 +4,11 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
+
+  # Optimization Lab : worker d'arrière-plan (même repository, même base PostgreSQL que le service principal).
+  # Variables requises : DATABASE_URL ; optionnelle : TELEGRAM_TOKEN (notifications). Ne démarre ni bot ni serveur web.
+  - type: worker
+    name: bitsure-optimization-worker
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python optimization_worker.py

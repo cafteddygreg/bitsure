@@ -351,6 +351,19 @@ Lors du premier lancement, 4 profils sont automatiquement initialisés pour perm
 
 ---
 
+## 🧬 9 bis. Optimization Lab (Strategy Lab → onglet « Optimization Lab »)
+
+Recherche automatique de configurations robustes sur le **moteur de backtest réel** de Strategy Lab (`strategy_lab.run_backtest_experiment`) : aucune logique de trading n'est dupliquée, la configuration de production n'est jamais modifiée (paramètres injectés via `raw_params`).
+
+- **Paramètres optimisables** : détectés depuis le code (uniquement ceux réellement lus par le moteur ; jamais capital/levier/frais/secrets).
+- **Méthodes** : Grid Search et Random Search (seed reproductible). Le nombre de configurations est calculé et affiché avant lancement ; une grille trop grande est refusée (aucune réduction silencieuse).
+- **Protocole** : Training (60 %) sur toutes les configurations → Validation (20 %) sur les meilleures → Out-of-Sample (20 %) jamais utilisé pour choisir, uniquement pour détecter le surapprentissage.
+- **Résultats** : meilleure performance brute, meilleur compromis, meilleure robustesse (stabilité des voisins, cohérence train/val), meilleure configuration globale, comparaison avec la configuration actuelle, sensibilité par paramètre, Monte Carlo (rééchantillonnage des trades réels), rapport HTML autonome. Walk-Forward : non implémenté (le moteur n'expose pas de fenêtres glissantes).
+- **Jobs persistants** (PostgreSQL : `optimization_jobs`, `optimization_results`) : identifiants `OPT-AAAA-NNNNN`, statuts `queued / running / completed / failed / cancelled`, reprise automatique si le worker disparaît (heartbeat > 120 s), annulation depuis l'interface.
+- **Worker séparé** (même repository) : `python optimization_worker.py` (`--once` pour traiter la file puis quitter). Service Railway/Render distinct du service web ; variables : `DATABASE_URL` (obligatoire), `TELEGRAM_TOKEN` (notifications), `OPT_NOTIFY_INTERVAL_SECONDS` (défaut 900).
+- **API** : `GET /api/admin/strategy-lab/optimization/{overview,job,report}`, `POST .../{plan,create,cancel}`.
+- Outil de recherche uniquement : ne modifie pas le trading live, n'active pas AutoTrade, ne garantit aucune rentabilité.
+
 ## 🩺 10. Diagnostic IA (`/logs`), Watchdog & Sécurité
 
 - **Tampon de Logs Circulaire (`log_doctor.py`)** : Capture en temps réel tous les événements `INFO`, `WARNING` et `ERROR` en mémoire sans saturer le disque.

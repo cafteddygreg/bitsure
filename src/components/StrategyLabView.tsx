@@ -22,6 +22,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { apiFetch } from '../api';
+import { OptimizationLabPanel } from './OptimizationLabPanel';
 import { AppLang, tr } from '../i18n';
 import {
   StrategyLabParams,
@@ -1016,7 +1017,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
 
   // Sub-views inside Strategy Lab
   const [labSection, setLabSection] = useState<
-    'setup' | 'params' | 'raw' | 'ai' | 'overview' | 'chart' | 'trades' | 'diagnostics' | 'compare' | 'sweep' | 'history'
+    'setup' | 'params' | 'raw' | 'ai' | 'overview' | 'chart' | 'trades' | 'diagnostics' | 'compare' | 'sweep' | 'optimization' | 'history'
   >('setup');
   const [paramCategory, setParamCategory] = useState<
     'capital' | 'indicators' | 'confluence' | 'exits'
@@ -1989,7 +1990,8 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
             { id: 'trades', label: `${tr(lang, 'Trades', 'Trades')} (${activeRun?.trades?.length || 0})`, icon: Layers },
             { id: 'diagnostics', label: tr(lang, 'Diagnostics', 'Diagnostics'), icon: ShieldCheck },
             { id: 'compare', label: compareRun ? tr(lang, 'A/B (actif)', 'A/B (active)') : tr(lang, 'Comparateur A/B', 'A/B compare'), icon: GitCompare },
-            { id: 'sweep', label: tr(lang, 'Optimisation', 'Sweep'), icon: FlaskConical },
+            { id: 'sweep', label: tr(lang, 'Balayage', 'Sweep'), icon: FlaskConical },
+            { id: 'optimization', label: 'Optimization Lab', icon: Sparkles },
             { id: 'history', label: `${tr(lang, 'Historique', 'History')} (${savedRuns.length})`, icon: Bookmark },
           ].map((tab) => {
             const TabIcon = tab.icon;
@@ -3485,7 +3487,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           {/* =================================================================
               KPI SUMMARY CARDS (Always visible for immediate feedback)
              ================================================================= */}
-          {m && (
+          {m && labSection !== 'optimization' && (
             <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
               <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-3.5">
                 <div className="text-[10px] font-mono-tabular uppercase text-[#64748B]">
@@ -4248,6 +4250,22 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           {/* =================================================================
               SECTION 6: CONTROLLED PARAMETER SENSITIVITY SWEEP (GRID TEST)
              ================================================================= */}
+          {labSection === 'optimization' && (
+            <OptimizationLabPanel
+              lang={lang}
+              onShowToast={onShowToast}
+              symbol={symbol}
+              timeframe={timeframe}
+              tradingStyle={tradingStyle}
+              startDate={startDate}
+              endDate={endDate}
+              baseParams={Object.fromEntries(
+                Object.entries(params as Record<string, any>).filter(([k]) => k in (labSchema.parameters as Record<string, unknown>))
+              )}
+              onLoadParams={(p) => setParams((prev) => ({ ...prev, ...p }))}
+            />
+          )}
+
           {labSection === 'sweep' && (
             <div className="bg-[#111827] border border-white/[0.08] rounded-xl p-5 space-y-4">
               <div>

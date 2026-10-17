@@ -12,6 +12,7 @@ STRICT ISOLATION GUARANTEE:
 """
 
 import os
+import copy
 import json
 import time
 import math
@@ -2137,6 +2138,8 @@ def run_backtest_experiment(
     max_candles: int = 1000,
     allow_unreliable_data: bool = False,
     preloaded_df: Optional[Tuple[pd.DataFrame, str]] = None,
+    opt_cache: Optional[Dict[str, Any]] = None,
+    lean: bool = False,
 ) -> Dict[str, Any]:
     """
     Runs a complete, deterministic candle-by-candle backtest simulation with zero look-ahead bias.
@@ -2206,13 +2209,21 @@ def run_backtest_experiment(
         )
 
     # Step 4: Validate candles & data quality
-    cleaned_df, data_quality = validate_and_clean_ohlcv(
-        raw_df,
-        timeframe=timeframe,
-        cached_candles_count=cache_stats.get("cached", 0),
-        fetched_candles_count=cache_stats.get("fetched", 0),
-        data_source=data_source,
-    )
+    # `opt_cache` (Optimization Lab uniquement) : le nettoyage OHLCV ne dépend pas des paramètres testés,
+    # on le calcule une seule fois par jeu de données. Sans opt_cache, comportement strictement inchangé.
+    if opt_cache is not None and "cleaned" in opt_cache:
+        cleaned_df, _dq_cached = opt_cache["cleaned"]
+        data_quality = copy.deepcopy(_dq_cached)
+    else:
+        cleaned_df, data_quality = validate_and_clean_ohlcv(
+            raw_df,
+            timeframe=timeframe,
+            cached_candles_count=cache_stats.get("cached", 0),
+            fetched_candles_count=cache_stats.get("fetched", 0),
+            data_source=data_source,
+        )
+        if opt_cache is not None:
+            opt_cache["cleaned"] = (cleaned_df, copy.deepcopy(data_quality))
     if period_clamped_warning:
         data_quality.setdefault("warnings", []).append(period_clamped_warning)
         if data_quality.get("status") == "VALID":
@@ -2231,7 +2242,21 @@ def run_backtest_experiment(
         )
 
     # Step 5: Compute indicators on the FULL loaded history first (avoids resetting indicators on split boundaries)
-    df = _compute_lab_indicators(cleaned_df, params)
+    if opt_cache is not None:
+        _ind_key = tuple(
+            int(params.get(k, d))
+            for k, d in (
+                ("sma_fast", 20), ("sma_slow", 50), ("sr_lookback", 50), ("rsi_period", 14),
+                ("atr_period", 14), ("adx_period", 14), ("volume_ma_period", 20),
+            )
+        )
+        _ind_store = opt_cache.setdefault("indicators", {})
+        df = _ind_store.get(_ind_key)
+        if df is None:
+            df = _compute_lab_indicators(cleaned_df, params)
+            _ind_store[_ind_key] = df
+    else:
+        df = _compute_lab_indicators(cleaned_df, params)
     total_n = len(df)
     timestamps = list(df.index)
 
@@ -2737,6 +2762,8 @@ def run_backtest_experiment(
             }
         )
 
+        if lean:
+            continue  # mode Optimization Lab : pas de série graphique (le calcul des trades est déjà terminé)
         chart_candles.append(
             {
                 "index": i,

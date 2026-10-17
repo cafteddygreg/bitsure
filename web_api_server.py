@@ -2850,6 +2850,20 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 })
                 return
 
+            if path.startswith("/api/admin/strategy-lab/optimization/"):
+                from optimization import api as opt_api
+                _sub = path[len("/api/admin/strategy-lab/optimization/"):]
+                if _sub == "overview":
+                    _st, _payload = opt_api.overview(user_id, is_admin, query.get("style", "day"))
+                elif _sub == "job":
+                    _st, _payload = opt_api.get_job(user_id, is_admin, str(query.get("id", "")))
+                elif _sub == "report":
+                    _st, _payload = opt_api.get_report(user_id, is_admin, str(query.get("id", "")))
+                else:
+                    _st, _payload = 404, {"ok": False, "error": f"Point d'accès inconnu : {path}"}
+                self._send_json(_st, _payload)
+                return
+
             if path == "/api/admin/strategy-lab/run-detail":
                 import strategy_lab
                 run_id = int(query.get("id", "0") or 0)
@@ -4313,6 +4327,20 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     "run": result,
                     "runs": strategy_lab.list_lab_runs(limit=35, user_id=None if is_admin else user_id),
                 })
+                return
+
+            if path.startswith("/api/admin/strategy-lab/optimization/"):
+                from optimization import api as opt_api
+                _sub = path[len("/api/admin/strategy-lab/optimization/"):]
+                if _sub == "plan":
+                    _st, _payload = opt_api.plan(body)
+                elif _sub == "create":
+                    _st, _payload = opt_api.create(user_id, is_admin, body)
+                elif _sub == "cancel":
+                    _st, _payload = opt_api.cancel(user_id, is_admin, str(body.get("id", "")))
+                else:
+                    _st, _payload = 404, {"ok": False, "error": f"Point d'accès inconnu : {path}"}
+                self._send_json(_st, _payload)
                 return
 
             if path == "/api/admin/strategy-lab/sweep":
