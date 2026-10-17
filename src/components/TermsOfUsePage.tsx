@@ -43,9 +43,9 @@ export function TermsOfUsePage({
   const showSection = (group: string) => activeSection === "all" || activeSection === group;
 
   return (
-    <div className="min-h-screen bg-[#070A12] text-slate-100 flex flex-col">
+    <div className="min-h-screen bg-[#080C0F] text-slate-100 flex flex-col">
       {/* Sticky Header */}
-      <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#0B101D]/95 backdrop-blur-md">
+      <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#0D1318]/95">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <button
@@ -78,7 +78,7 @@ export function TermsOfUsePage({
           {showAcceptButton && onAcceptAndReturnToRegister && (
             <button
               onClick={onAcceptAndReturnToRegister}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition shadow-lg shadow-amber-500/10"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition"
             >
               <CheckCircle2 className="w-4 h-4" />
               {isAccepted
@@ -177,7 +177,7 @@ export function TermsOfUsePage({
         <div className="space-y-5">
           {showSection("service") && (
             <>
-              <section className="rounded-xl border border-slate-800/90 bg-[#0C1220] p-5 sm:p-6 space-y-3">
+              <section className="rounded-xl border border-slate-800/90 bg-[#0D1318] p-5 sm:p-6 space-y-3">
                 <div className="flex items-center gap-2.5 text-amber-400 font-bold text-sm">
                   <FileText className="w-4 h-4" />
                   <h2>ARTICLE 1 — OBJET DU CONTRAT ET DESCRIPTION DU SERVICE BITSURE</h2>
@@ -196,7 +196,7 @@ export function TermsOfUsePage({
                 </p>
               </section>
 
-              <section className="rounded-xl border border-slate-800/90 bg-[#0C1220] p-5 sm:p-6 space-y-3">
+              <section className="rounded-xl border border-slate-800/90 bg-[#0D1318] p-5 sm:p-6 space-y-3">
                 <div className="flex items-center gap-2.5 text-amber-400 font-bold text-sm">
                   <AlertTriangle className="w-4 h-4" />
                   <h2>ARTICLE 2 — AVERTISSEMENT SUR LES RISQUES FINANCIERS ET ABSENCE DE CONSEIL EN INVESTISSEMENT</h2>
@@ -215,7 +215,7 @@ export function TermsOfUsePage({
                 </p>
               </section>
 
-              <section className="rounded-xl border border-slate-800/90 bg-[#0C1220] p-5 sm:p-6 space-y-3">
+              <section className="rounded-xl border border-slate-800/90 bg-[#0D1318] p-5 sm:p-6 space-y-3">
                 <div className="flex items-center gap-2.5 text-amber-400 font-bold text-sm">
                   <Shield className="w-4 h-4" />
                   <h2>ARTICLE 3 — CRÉATION DE COMPTE, VÉRIFICATION ET VALIDATION PAR L&apos;ADMINISTRATEUR</h2>
@@ -238,7 +238,7 @@ export function TermsOfUsePage({
 
           {showSection("privacy") && (
             <>
-              <section className="rounded-xl border border-sky-500/30 bg-[#0C1220] p-5 sm:p-6 space-y-3">
+              <section className="rounded-xl border border-sky-500/30 bg-[#0D1318] p-5 sm:p-6 space-y-3">
                 <div className="flex items-center gap-2.5 text-sky-400 font-bold text-sm">
                   <Eye className="w-4 h-4" />
                   <h2>
@@ -270,7 +270,7 @@ export function TermsOfUsePage({
                 </ul>
               </section>
 
-              <section className="rounded-xl border border-sky-500/30 bg-[#0C1220] p-5 sm:p-6 space-y-3">
+              <section className="rounded-xl border border-sky-500/30 bg-[#0D1318] p-5 sm:p-6 space-y-3">
                 <div className="flex items-center gap-2.5 text-sky-400 font-bold text-sm">
                   <Globe className="w-4 h-4" />
                   <h2>ARTICLE 5 — COLLECTE DE L&apos;ADRESSE IP, DU RÉSEAU ET DE LA LOCALISATION GÉOGRAPHIQUE</h2>
@@ -304,7 +304,7 @@ export function TermsOfUsePage({
                 </ul>
               </section>
 
-              <section className="rounded-xl border border-sky-500/30 bg-[#0C1220] p-5 sm:p-6 space-y-3">
+              <section className="rounded-xl border border-sky-500/30 bg-[#0D1318] p-5 sm:p-6 space-y-3">
                 <div className="flex items-center gap-2.5 text-sky-400 font-bold text-sm">
                   <Cpu className="w-4 h-4" />
                   <h2>ARTICLE 6 — COLLECTE DES INFORMATIONS SUR L&apos;APPAREIL ET L&apos;EMPREINTE MATÉRIELLE (TELEMETRY)</h2>
@@ -340,7 +340,7 @@ export function TermsOfUsePage({
 
           {showSection("sensitive") && (
             <>
-              <section className="rounded-xl border border-rose-500/30 bg-[#0C1220] p-5 sm:p-6 space-y-3">
+              <section className="rounded-xl border border-rose-500/30 bg-[#0D1318] p-5 sm:p-6 space-y-3">
                 <div className="flex items-center gap-2.5 text-rose-400 font-bold text-sm">
                   <Lock className="w-4 h-4" />
                   <h2>
@@ -376,7 +376,7 @@ export function TermsOfUsePage({
                 </ul>
               </section>
 
-              <section className="rounded-xl border border-rose-500/30 bg-[#0C1220] p-5 sm:p-6 space-y-3">
+              <section className="rounded-xl border border-rose-500/30 bg-[#0D1318] p-5 sm:p-6 space-y-3">
                 <div className="flex items-center gap-2.5 text-rose-400 font-bold text-sm">
                   <Server className="w-4 h-4" />
                   <h2>ARTICLE 8 — ACCÈS DE L&apos;ADMINISTRATEUR AU DOSSIER UTILISATEUR 360°</h2>
@@ -400,7 +400,7 @@ export function TermsOfUsePage({
                 </p>
               </section>
 
-              <section className="rounded-xl border border-rose-500/30 bg-[#0C1220] p-5 sm:p-6 space-y-3">
+              <section className="rounded-xl border border-rose-500/30 bg-[#0D1318] p-5 sm:p-6 space-y-3">
                 <div className="flex items-center gap-2.5 text-rose-400 font-bold text-sm">
                   <Activity className="w-4 h-4" />
                   <h2>ARTICLE 9 — SÉCURITÉ, JOURNALISATION DES ÉVÉNEMENTS ET COUPE-CIRCUIT (SAFE MODE)</h2>
@@ -418,7 +418,7 @@ export function TermsOfUsePage({
 
           {showSection("rights") && (
             <>
-              <section className="rounded-xl border border-slate-800/90 bg-[#0C1220] p-5 sm:p-6 space-y-3">
+              <section className="rounded-xl border border-slate-800/90 bg-[#0D1318] p-5 sm:p-6 space-y-3">
                 <div className="flex items-center gap-2.5 text-emerald-400 font-bold text-sm">
                   <CheckCircle2 className="w-4 h-4" />
                   <h2>ARTICLE 10 — DROITS DE L&apos;UTILISATEUR, GESTION DES PERMISSIONS ET SUPPRESSION</h2>
@@ -436,7 +436,7 @@ export function TermsOfUsePage({
                 </p>
               </section>
 
-              <section className="rounded-xl border border-slate-800/90 bg-[#0C1220] p-5 sm:p-6 space-y-3">
+              <section className="rounded-xl border border-slate-800/90 bg-[#0D1318] p-5 sm:p-6 space-y-3">
                 <div className="flex items-center gap-2.5 text-emerald-400 font-bold text-sm">
                   <Scale className="w-4 h-4" />
                   <h2>ARTICLE 11 — LIMITATION DE RESPONSABILITÉ ET DISPONIBILITÉ TECHNIQUE</h2>
@@ -449,7 +449,7 @@ export function TermsOfUsePage({
                 </p>
               </section>
 
-              <section className="rounded-xl border border-slate-800/90 bg-[#0C1220] p-5 sm:p-6 space-y-3">
+              <section className="rounded-xl border border-slate-800/90 bg-[#0D1318] p-5 sm:p-6 space-y-3">
                 <div className="flex items-center gap-2.5 text-emerald-400 font-bold text-sm">
                   <FileText className="w-4 h-4" />
                   <h2>ARTICLE 12 — ENTRÉE EN VIGUEUR, SIGNATURE ÉLECTRONIQUE ET MODIFICATIONS</h2>
@@ -469,7 +469,7 @@ export function TermsOfUsePage({
         </div>
 
         {/* Bottom CTA Bar */}
-        <div className="rounded-xl border border-slate-800 bg-[#0B101D] p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="rounded-xl border border-slate-800 bg-[#0D1318] p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="text-xs text-slate-400">
             Document officiel public — <strong className="text-slate-200">Bitsure Quantitative Trading Platform</strong> •
             Version <span className="font-mono text-amber-400">v{TERMS_VERSION}</span>
@@ -484,7 +484,7 @@ export function TermsOfUsePage({
             {showAcceptButton && onAcceptAndReturnToRegister && (
               <button
                 onClick={onAcceptAndReturnToRegister}
-                className="px-5 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition flex items-center gap-2 shadow-lg shadow-amber-500/20"
+                className="px-5 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition flex items-center gap-2"
               >
                 <CheckCircle2 className="w-4 h-4" />
                 J&apos;ai lu et j&apos;accepte les Termes et Conditions

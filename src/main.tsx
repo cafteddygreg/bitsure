@@ -2,6 +2,9 @@ import React, { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
+import { installStackTables } from './components/ui/stackTables';
+
+installStackTables();
 
 window.addEventListener('unhandledrejection', (event) => {
   const msg = String(event.reason?.message || event.reason || '');
@@ -30,12 +33,12 @@ class RootErrorBoundary extends React.Component<
   render() {
     if (this.state.error) {
       return (
-        <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex items-center justify-center p-6 font-sans">
-          <div className="max-w-lg w-full bg-[#111827] border border-white/15 rounded-xl p-6 space-y-4">
-            <h2 className="text-base font-bold text-[#F43F5E]">
+        <div className="min-h-screen bg-[#080C0F] text-[#E8EEF2] flex items-center justify-center p-6 font-sans">
+          <div className="max-w-lg w-full bg-[#0D1318] border border-white/15 rounded-xl p-6 space-y-4">
+            <h2 className="text-base font-bold text-[#F04438]">
               Une erreur d&apos;affichage a été interceptée
             </h2>
-            <p className="text-xs text-[#94A3B8] font-mono break-words bg-[#090D16] p-3 rounded border border-white/10">
+            <p className="text-xs text-[#8B98A4] font-mono break-words bg-[#080C0F] p-3 rounded border border-white/10">
               {String(this.state.error?.message || this.state.error)}
             </p>
             <div className="flex gap-2">
@@ -45,7 +48,7 @@ class RootErrorBoundary extends React.Component<
                   this.setState({ error: null });
                   window.location.reload();
                 }}
-                className="px-4 py-2 bg-[#10B981] text-[#090D16] text-xs font-semibold rounded-lg"
+                className="px-4 py-2 bg-[#20C997] text-[#080C0F] text-xs font-semibold rounded-lg"
               >
                 Recharger l&apos;interface
               </button>
@@ -60,7 +63,7 @@ class RootErrorBoundary extends React.Component<
                   }
                   window.location.href = '/';
                 }}
-                className="px-4 py-2 bg-[#1E293B] border border-white/10 text-[#F1F5F9] text-xs font-semibold rounded-lg"
+                className="px-4 py-2 bg-[#172129] border border-white/10 text-[#E8EEF2] text-xs font-semibold rounded-lg"
               >
                 Réinitialiser la session locale
               </button>

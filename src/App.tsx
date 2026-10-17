@@ -26,6 +26,7 @@ import { LandingPage } from './components/LandingPage';
 import { StrategyLabView } from './components/StrategyLabView';
 import { TermsOfUsePage } from './components/TermsOfUsePage';
 import { AdminUsersIntelligenceTab } from './components/AdminUsersIntelligenceTab';
+import { PageHeader, StatusBadge, InfoTip, Sparkline } from './components/ui';
 import {
   Activity,
   AlertTriangle,
@@ -101,6 +102,7 @@ export function App() {
   const [returnToRegisterAfterTerms, setReturnToRegisterAfterTerms] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>('intelligence');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const lastTabByHubRef = useRef<Record<string, ActiveTab>>({});
   const [lang, setLang] = useState<AppLang>(getInitialLang);
 
   // Auth & User State
@@ -266,6 +268,18 @@ export function App() {
   >({});
   const [priceFlash, setPriceFlash] = useState<Record<string, 'up' | 'down' | null>>({});
   const [wsConnected, setWsConnected] = useState(false);
+  // Historique de session des prix reçus (flux réel uniquement) : alimente les sparklines du ticker.
+  const priceHistoryRef = useRef<Record<string, number[]>>({});
+  useEffect(() => {
+    Object.entries(livePrices).forEach(([sym, t]) => {
+      if (!t || !Number.isFinite(t.price)) return;
+      const arr = priceHistoryRef.current[sym] || (priceHistoryRef.current[sym] = []);
+      if (arr[arr.length - 1] !== t.price) {
+        arr.push(t.price);
+        if (arr.length > 120) arr.shift();
+      }
+    });
+  }, [livePrices]);
 
   // Paper Trading State
   const [paperStats, setPaperStats] = useState<PaperStats | null>(null);
@@ -1397,10 +1411,10 @@ export function App() {
   };
   const renderOpenPnl = (pnl: { usdt: number; pct: number | null } | null) => {
     if (!pnl) {
-      return <span className="text-[#64748B]">—</span>;
+      return <span className="text-[#6E7B88]">—</span>;
     }
     const rounded = Math.round(pnl.usdt * 100) / 100;
-    const tone = rounded > 0 ? 'text-[#10B981]' : rounded < 0 ? 'text-[#F43F5E]' : 'text-[#94A3B8]';
+    const tone = rounded > 0 ? 'text-[#20C997]' : rounded < 0 ? 'text-[#F04438]' : 'text-[#8B98A4]';
     const sign = rounded > 0 ? '+' : rounded < 0 ? '-' : '';
     const pctRounded = pnl.pct === null ? null : Math.round(pnl.pct * 100) / 100;
     return (
@@ -1509,20 +1523,20 @@ export function App() {
     <div
       className={
         isFullPage
-          ? 'bg-[#111827] border border-white/15 rounded-2xl max-w-md w-full p-6 sm:p-8 space-y-5 shadow-2xl'
-          : 'bg-[#111827] border border-white/15 rounded-xl max-w-md w-full p-6 space-y-5'
+          ? 'bg-[#0D1318] border border-white/15 rounded-lg max-w-md w-full p-6 sm:p-8 space-y-5'
+          : 'bg-[#0D1318] border border-white/15 rounded-xl max-w-md w-full p-6 space-y-5'
       }
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-[#10B981]/15 border border-[#10B981]/40 flex items-center justify-center text-[#10B981] font-display font-bold">
+          <div className="w-8 h-8 rounded-lg bg-[#20C997]/15 border border-[#20C997]/40 flex items-center justify-center text-[#20C997] font-display font-bold">
             B
           </div>
           <div>
-            <h3 className="font-display text-base sm:text-lg font-bold text-[#F1F5F9]">
+            <h3 className="font-display text-base sm:text-lg font-bold text-[#E8EEF2]">
               {mode === 'login' ? tr(lang, 'Connexion Bitsure Teddy') : tr(lang, 'Créer un compte Bitsure Teddy')}
             </h3>
-            <p className="text-[11px] text-[#64748B]">
+            <p className="text-[11px] text-[#6E7B88]">
               {mode === 'login'
                 ? tr(lang, 'Accès sécurisé au terminal quantitatif')
                 : tr(lang, 'Inscription soumise à validation administrateur')}
@@ -1533,7 +1547,7 @@ export function App() {
           <button
             type="button"
             onClick={handleToggleLang}
-            className="px-2 py-1 rounded bg-[#090D16] border border-white/10 text-[10px] font-mono-tabular uppercase text-[#94A3B8] hover:text-[#F1F5F9]"
+            className="px-2 py-1 rounded bg-[#080C0F] border border-white/10 text-[10px] font-mono-tabular uppercase text-[#8B98A4] hover:text-[#E8EEF2]"
           >
             {lang === 'fr' ? 'FR ▾ EN' : 'EN ▾ FR'}
           </button>
@@ -1544,7 +1558,7 @@ export function App() {
                 setAuthModal(null);
                 setAuthError(null);
               }}
-              className="text-[#64748B] hover:text-[#F1F5F9]"
+              className="text-[#6E7B88] hover:text-[#E8EEF2]"
             >
               <XCircle className="w-5 h-5" />
             </button>
@@ -1553,7 +1567,7 @@ export function App() {
       </div>
 
       {/* Mode Switch Tabs */}
-      <div className="grid grid-cols-2 gap-1 p-1 bg-[#090D16] border border-white/10 rounded-lg text-xs">
+      <div className="grid grid-cols-2 gap-1 p-1 bg-[#080C0F] border border-white/10 rounded-lg text-xs">
         <button
           type="button"
           onClick={() => {
@@ -1561,7 +1575,7 @@ export function App() {
             setAuthError(null);
           }}
           className={`py-2 rounded-md font-semibold transition-colors ${
-            mode === 'login' ? 'bg-[#10B981] text-[#090D16]' : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+            mode === 'login' ? 'bg-[#20C997] text-[#080C0F]' : 'text-[#8B98A4] hover:text-[#E8EEF2]'
           }`}
         >
           {tr(lang, 'Connexion')}
@@ -1573,7 +1587,7 @@ export function App() {
             setAuthError(null);
           }}
           className={`py-2 rounded-md font-semibold transition-colors ${
-            mode === 'register' ? 'bg-[#10B981] text-[#090D16]' : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+            mode === 'register' ? 'bg-[#20C997] text-[#080C0F]' : 'text-[#8B98A4] hover:text-[#E8EEF2]'
           }`}
         >
           {tr(lang, 'Inscription')}
@@ -1581,14 +1595,14 @@ export function App() {
       </div>
 
       {googlePendingToken && (
-        <div className="p-3 rounded-lg bg-[#10B981]/15 border border-[#10B981]/40 text-xs text-[#34D399] flex items-start justify-between gap-2">
+        <div className="p-3 rounded-lg bg-[#20C997]/15 border border-[#20C997]/40 text-xs text-[#32D583] flex items-start justify-between gap-2">
           <div className="flex items-start gap-2">
-            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-[#10B981]" />
+            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-[#20C997]" />
             <div>
-              <div className="font-semibold text-[#F1F5F9]">
+              <div className="font-semibold text-[#E8EEF2]">
                 {lang === 'en' ? `Google Identity Verified (${authEmail})` : `Identité Google vérifiée (${authEmail})`}
               </div>
-              <div className="text-[11px] text-[#94A3B8] mt-0.5">
+              <div className="text-[11px] text-[#8B98A4] mt-0.5">
                 {mode === 'login'
                   ? lang === 'en'
                     ? 'Please enter your Bitsure password to confirm and open your session.'
@@ -1605,7 +1619,7 @@ export function App() {
               setGooglePendingToken(null);
               setAuthEmail('');
             }}
-            className="text-[10px] text-[#94A3B8] hover:text-[#F1F5F9] underline shrink-0"
+            className="text-[10px] text-[#8B98A4] hover:text-[#E8EEF2] underline shrink-0"
           >
             {tr(lang, 'Changer')}
           </button>
@@ -1613,7 +1627,7 @@ export function App() {
       )}
 
       {authError && (
-        <div className="p-3 rounded-lg bg-[#F43F5E]/15 border border-[#F43F5E]/40 text-xs text-[#FB7185] flex items-start gap-2">
+        <div className="p-3 rounded-lg bg-[#F04438]/15 border border-[#F04438]/40 text-xs text-[#F97066] flex items-start gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
           <span>{authError}</span>
         </div>
@@ -1623,47 +1637,47 @@ export function App() {
         {mode === 'register' && (
           <>
             <div>
-              <label className="block text-xs text-[#94A3B8] mb-1">{tr(lang, 'Nom ou Pseudonyme')}</label>
+              <label className="block text-xs text-[#8B98A4] mb-1">{tr(lang, 'Nom ou Pseudonyme')}</label>
               <input
                 type="text"
                 value={authName}
                 onChange={(e) => setAuthName(e.target.value)}
                 placeholder={tr(lang, 'Votre nom ou pseudo')}
-                className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+                className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2]"
                 required
               />
             </div>
             <div>
-              <label className="block text-xs text-[#94A3B8] mb-1">{tr(lang, 'Identifiant Telegram (optionnel)')}</label>
+              <label className="block text-xs text-[#8B98A4] mb-1">{tr(lang, 'Identifiant Telegram (optionnel)')}</label>
               <input
                 type="text"
                 value={authTelegram}
                 onChange={(e) => setAuthTelegram(e.target.value)}
                 placeholder={tr(lang, '@votre_pseudo')}
-                className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+                className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2]"
               />
             </div>
           </>
         )}
         <div>
-          <label className="block text-xs text-[#94A3B8] mb-1">{tr(lang, 'Adresse Email')}</label>
+          <label className="block text-xs text-[#8B98A4] mb-1">{tr(lang, 'Adresse Email')}</label>
           <input
             type="email"
             value={authEmail}
             onChange={(e) => setAuthEmail(e.target.value)}
             readOnly={Boolean(googlePendingToken)}
             placeholder={tr(lang, 'votre@email.com')}
-            className={`w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9] ${
+            className={`w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2] ${
               googlePendingToken ? 'opacity-70 cursor-not-allowed' : ''
             }`}
             required
           />
         </div>
         <div>
-          <label className="block text-xs text-[#94A3B8] mb-1">
+          <label className="block text-xs text-[#8B98A4] mb-1">
             {tr(lang, 'Mot de passe')}{' '}
-            {mode === 'register' && <span className="text-[#64748B]">{tr(lang, '(min. 8 caractères)')}</span>}{' '}
-            <span className="text-[#10B981] font-semibold">*</span>
+            {mode === 'register' && <span className="text-[#6E7B88]">{tr(lang, '(min. 8 caractères)')}</span>}{' '}
+            <span className="text-[#20C997] font-semibold">*</span>
           </label>
           <div className="relative">
             <input
@@ -1676,7 +1690,7 @@ export function App() {
               onBlur={() => setCapsLockOn(false)}
               placeholder="••••••••"
               minLength={mode === 'register' ? 8 : 1}
-              className="w-full px-3 py-2 pr-10 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+              className="w-full px-3 py-2 pr-10 bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2]"
               required
             />
             <button
@@ -1684,28 +1698,28 @@ export function App() {
               onClick={() => setShowPassword((prev) => !prev)}
               aria-label={showPassword ? tr(lang, 'Masquer le mot de passe') : tr(lang, 'Afficher le mot de passe')}
               title={showPassword ? tr(lang, 'Masquer le mot de passe') : tr(lang, 'Afficher le mot de passe')}
-              className="absolute inset-y-0 right-0 px-3 flex items-center text-[#64748B] hover:text-[#F1F5F9] transition-colors"
+              className="absolute inset-y-0 right-0 px-3 flex items-center text-[#6E7B88] hover:text-[#E8EEF2] transition-colors"
             >
               {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
           {capsLockOn && (
-            <p className="mt-1 text-[11px] text-[#94A3B8]">
+            <p className="mt-1 text-[11px] text-[#8B98A4]">
               {tr(lang, 'Le verrouillage majuscule (Caps Lock) est activé.')}
             </p>
           )}
         </div>
         {mode === 'register' && (
-          <div className="p-3.5 rounded-xl bg-[#090D16] border border-[#F59E0B]/40 space-y-2">
+          <div className="p-3.5 rounded-xl bg-[#080C0F] border border-[#D6A84F]/40 space-y-2">
             <label className="flex items-start gap-2.5 cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={authTermsAccepted}
                 onChange={(e) => setAuthTermsAccepted(e.target.checked)}
-                className="mt-0.5 w-4 h-4 rounded border-white/25 bg-[#111827] text-[#10B981] focus:ring-[#10B981]"
+                className="mt-0.5 w-4 h-4 rounded border-white/25 bg-[#0D1318] text-[#20C997] focus:ring-[#20C997]"
                 required
               />
-              <span className="text-xs text-[#F1F5F9] leading-relaxed">
+              <span className="text-xs text-[#E8EEF2] leading-relaxed">
                 {lang === 'en' ? (
                   <>
                     I have read and I accept the{' '}
@@ -1715,7 +1729,7 @@ export function App() {
                         setReturnToRegisterAfterTerms(true);
                         setViewMode('terms');
                       }}
-                      className="text-[#F59E0B] hover:text-[#FBBF24] underline font-bold"
+                      className="text-[#D6A84F] hover:text-[#E2BC6A] underline font-bold"
                     >
                       terms and conditions of use
                     </button>{' '}
@@ -1730,7 +1744,7 @@ export function App() {
                         setReturnToRegisterAfterTerms(true);
                         setViewMode('terms');
                       }}
-                      className="text-[#F59E0B] hover:text-[#FBBF24] underline font-bold"
+                      className="text-[#D6A84F] hover:text-[#E2BC6A] underline font-bold"
                     >
                       termes et conditions d&apos;utilisation
                     </button>{' '}
@@ -1740,7 +1754,7 @@ export function App() {
                 )}
               </span>
             </label>
-            <div className="text-[10px] text-[#94A3B8] pl-6">
+            <div className="text-[10px] text-[#8B98A4] pl-6">
               {lang === 'en'
                 ? 'Last mandatory step: click the highlighted link above to read the full public contract.'
                 : "Dernière étape obligatoire : cliquez sur « termes et conditions d'utilisation » ci-dessus pour lire l'intégralité du contrat public."}
@@ -1750,7 +1764,7 @@ export function App() {
         <button
           type="submit"
           disabled={authSubmitting || (mode === 'register' && !authTermsAccepted)}
-          className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-semibold rounded-lg transition-colors"
+          className="w-full py-2.5 bg-[#20C997] hover:bg-[#1AA67D] disabled:opacity-50 text-[#080C0F] font-semibold rounded-lg transition-colors"
         >
           {authSubmitting
             ? tr(lang, 'Vérification en cours...')
@@ -1766,14 +1780,14 @@ export function App() {
 
       <div className="relative flex py-1 items-center">
         <div className="flex-grow border-t border-white/10" />
-        <span className="flex-shrink mx-3 text-[11px] text-[#64748B] uppercase">{tr(lang, 'ou')}</span>
+        <span className="flex-shrink mx-3 text-[11px] text-[#6E7B88] uppercase">{tr(lang, 'ou')}</span>
         <div className="flex-grow border-t border-white/10" />
       </div>
 
       <button
         type="button"
         onClick={handleGoogleLogin}
-        className="w-full py-2.5 px-4 bg-[#1E293B] hover:bg-[#334155] border border-white/15 text-[#F1F5F9] text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
+        className="w-full py-2.5 px-4 bg-[#172129] hover:bg-[#202A32] border border-white/15 text-[#E8EEF2] text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
       >
         <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
           <path
@@ -1797,18 +1811,18 @@ export function App() {
       </button>
 
       {mode === 'register' && (
-        <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] text-[11px] text-[#94A3B8] leading-relaxed">
-          <strong className="text-[#10B981]">
+        <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] text-[11px] text-[#8B98A4] leading-relaxed">
+          <strong className="text-[#20C997]">
             {lang === 'en' ? 'Security & Approval:' : 'Sécurité & Validation :'}
           </strong>{' '}
           {lang === 'en' ? (
             <>
-              All new registrations are placed in <code className="text-[#F59E0B]">PENDING_APPROVAL</code> status until
+              All new registrations are placed in <code className="text-[#D6A84F]">PENDING_APPROVAL</code> status until
               approved by the Bitsure administrator.
             </>
           ) : (
             <>
-              Toute nouvelle inscription est placée en statut <code className="text-[#F59E0B]">PENDING_APPROVAL</code>{' '}
+              Toute nouvelle inscription est placée en statut <code className="text-[#D6A84F]">PENDING_APPROVAL</code>{' '}
               jusqu&apos;à son approbation par l&apos;administrateur Bitsure.
             </>
           )}
@@ -1891,7 +1905,7 @@ export function App() {
           }}
         />
         {authModal && (
-          <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
             {authFormModal(authModal, false)}
           </div>
         )}
@@ -1902,15 +1916,15 @@ export function App() {
   // Pre-render Diagnostic Check & Session Verification Gate
   if (apiDiagChecking || authChecking) {
     return (
-      <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex items-center justify-center p-6">
-        <div className="max-w-md w-full bg-[#111827] border border-white/10 rounded-xl p-6 space-y-4">
+      <div className="min-h-screen bg-[#080C0F] text-[#E8EEF2] flex items-center justify-center p-6">
+        <div className="max-w-md w-full bg-[#0D1318] border border-white/10 rounded-xl p-6 space-y-4">
           <div className="flex items-center gap-3">
-            <RefreshCw className="w-5 h-5 text-[#10B981] animate-spin shrink-0" />
+            <RefreshCw className="w-5 h-5 text-[#20C997] animate-spin shrink-0" />
             <div>
-              <h2 className="font-display text-sm font-bold text-[#F1F5F9]">
+              <h2 className="font-display text-sm font-bold text-[#E8EEF2]">
                 {tr(lang, 'Diagnostic de connectivité API en cours...', 'Running core API diagnostic check...')}
               </h2>
-              <p className="text-[11px] font-mono-tabular text-[#94A3B8]">
+              <p className="text-[11px] font-mono-tabular text-[#8B98A4]">
                 {tr(
                   lang,
                   'Vérification de /api/health et /api/auth/me avant ouverture du terminal',
@@ -1923,8 +1937,8 @@ export function App() {
             <div className="space-y-1.5 pt-2 border-t border-white/[0.07] text-xs font-mono-tabular">
               {apiDiag.probes.map((probe) => (
                 <div key={probe.endpoint} className="flex items-center justify-between">
-                  <span className="text-[#94A3B8]">{probe.endpoint}</span>
-                  <span className={probe.reachable ? 'text-[#10B981]' : 'text-[#F59E0B]'}>
+                  <span className="text-[#8B98A4]">{probe.endpoint}</span>
+                  <span className={probe.reachable ? 'text-[#20C997]' : 'text-[#D6A84F]'}>
                     {probe.detail}
                   </span>
                 </div>
@@ -1939,21 +1953,21 @@ export function App() {
   // Diagnostic Gate: If core API endpoints (/api/health or /api/auth/me) are unreachable or unresponsive
   if (apiDiag && !apiDiag.ok) {
     return (
-      <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex items-center justify-center p-6">
-        <div className="max-w-lg w-full bg-[#111827] border border-[#F43F5E]/40 rounded-2xl p-6 space-y-5">
+      <div className="min-h-screen bg-[#080C0F] text-[#E8EEF2] flex items-center justify-center p-6">
+        <div className="max-w-lg w-full bg-[#0D1318] border border-[#F04438]/40 rounded-lg p-6 space-y-5">
           <div className="flex items-start gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#F43F5E]/15 border border-[#F43F5E]/40 flex items-center justify-center text-[#FB7185] shrink-0">
+            <div className="w-10 h-10 rounded-xl bg-[#F04438]/15 border border-[#F04438]/40 flex items-center justify-center text-[#F97066] shrink-0">
               <AlertTriangle className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="font-display text-base font-bold text-[#F1F5F9]">
+              <h2 className="font-display text-base font-bold text-[#E8EEF2]">
                 {tr(
                   lang,
                   'Diagnostic API : Serveur principal temporairement indisponible',
                   'API Diagnostic: Core backend temporarily unreachable'
                 )}
               </h2>
-              <p className="text-xs text-[#94A3B8] mt-1 leading-relaxed">
+              <p className="text-xs text-[#8B98A4] mt-1 leading-relaxed">
                 {tr(
                   lang,
                   "Le contrôle préliminaire des points d'accès critiques (/api/health, /api/auth/me) n'a pas reçu de réponse valide.",
@@ -1963,18 +1977,18 @@ export function App() {
             </div>
           </div>
 
-          <div className="bg-[#090D16] border border-white/[0.08] rounded-xl p-3.5 space-y-2 text-xs font-mono-tabular">
+          <div className="bg-[#080C0F] border border-white/[0.08] rounded-xl p-3.5 space-y-2 text-xs font-mono-tabular">
             {apiDiag.probes.map((probe) => (
               <div key={probe.endpoint} className="flex items-center justify-between gap-2">
                 <div>
-                  <span className="text-[#F1F5F9] font-semibold">{probe.endpoint}</span>
-                  <span className="text-[#64748B] ml-2 text-[11px]">{probe.label}</span>
+                  <span className="text-[#E8EEF2] font-semibold">{probe.endpoint}</span>
+                  <span className="text-[#6E7B88] ml-2 text-[11px]">{probe.label}</span>
                 </div>
                 <span
                   className={`px-2 py-0.5 rounded text-[11px] font-bold ${
                     probe.reachable
-                      ? 'bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30'
-                      : 'bg-[#F43F5E]/15 text-[#FB7185] border border-[#F43F5E]/30'
+                      ? 'bg-[#20C997]/15 text-[#20C997] border border-[#20C997]/30'
+                      : 'bg-[#F04438]/15 text-[#F97066] border border-[#F04438]/30'
                   }`}
                 >
                   {probe.reachable ? `OK (${probe.latencyMs}ms)` : probe.detail}
@@ -1987,7 +2001,7 @@ export function App() {
             <button
               type="button"
               onClick={() => loadUserAndCoreData()}
-              className="flex-1 py-2.5 px-4 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
+              className="flex-1 py-2.5 px-4 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
             >
               <RefreshCw className="w-4 h-4" />
               <span>{tr(lang, 'Relancer le diagnostic API', 'Re-run API diagnostic')}</span>
@@ -1998,7 +2012,7 @@ export function App() {
                 clearStoredSession();
                 loadUserAndCoreData();
               }}
-              className="py-2.5 px-4 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] font-semibold text-xs rounded-lg transition-colors"
+              className="py-2.5 px-4 bg-[#172129] hover:bg-[#202A32] border border-white/10 text-[#E8EEF2] font-semibold text-xs rounded-lg transition-colors"
             >
               {tr(lang, 'Réinitialiser la session', 'Reset local session')}
             </button>
@@ -2012,19 +2026,19 @@ export function App() {
   if (!user) {
     const activeAuthMode = authModal || 'login';
     return (
-      <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex flex-col justify-between p-4 sm:p-8">
+      <div className="min-h-screen bg-[#080C0F] text-[#E8EEF2] flex flex-col justify-between p-4 sm:p-8">
         <header className="max-w-6xl w-full mx-auto flex items-center justify-between">
           <button
             type="button"
             onClick={() => setViewMode('landing')}
             className="flex items-center gap-2.5 text-left"
           >
-            <div className="w-8 h-8 rounded-lg bg-[#10B981]/15 border border-[#10B981]/40 flex items-center justify-center text-[#10B981] font-display font-bold">
+            <div className="w-8 h-8 rounded-lg bg-[#20C997]/15 border border-[#20C997]/40 flex items-center justify-center text-[#20C997] font-display font-bold">
               B
             </div>
             <div>
-              <div className="font-display font-bold text-sm tracking-tight text-[#F1F5F9]">BITSURE TEDDY</div>
-              <div className="text-[10px] font-mono-tabular text-[#64748B]">
+              <div className="font-display font-bold text-sm tracking-tight text-[#E8EEF2]">BITSURE TEDDY</div>
+              <div className="text-[10px] font-mono-tabular text-[#6E7B88]">
                 {tr(lang, 'TERMINAL QUANTITATIF PROTÉGÉ')}
               </div>
             </div>
@@ -2036,7 +2050,7 @@ export function App() {
                 setReturnToRegisterAfterTerms(activeAuthMode === 'register');
                 setViewMode('terms');
               }}
-              className="px-3 py-1.5 rounded-lg bg-[#F59E0B]/15 hover:bg-[#F59E0B]/25 border border-[#F59E0B]/40 text-xs font-semibold text-[#FBBF24] flex items-center gap-1.5"
+              className="px-3 py-1.5 rounded-lg bg-[#D6A84F]/15 hover:bg-[#D6A84F]/25 border border-[#D6A84F]/40 text-xs font-semibold text-[#E2BC6A] flex items-center gap-1.5"
             >
               <Shield className="w-3.5 h-3.5" />
               <span>{tr(lang, 'Termes & Conditions (CGU)')}</span>
@@ -2044,14 +2058,14 @@ export function App() {
             <button
               type="button"
               onClick={handleToggleLang}
-              className="px-3 py-1.5 rounded-lg bg-[#111827] border border-white/10 text-xs font-mono-tabular uppercase text-[#94A3B8] hover:text-[#F1F5F9]"
+              className="px-3 py-1.5 rounded-lg bg-[#0D1318] border border-white/10 text-xs font-mono-tabular uppercase text-[#8B98A4] hover:text-[#E8EEF2]"
             >
               {lang === 'fr' ? 'FR ▾ EN' : 'EN ▾ FR'}
             </button>
             <button
               type="button"
               onClick={() => setViewMode('landing')}
-              className="px-3 py-1.5 rounded-lg bg-[#111827] border border-white/10 text-xs text-[#94A3B8] hover:text-[#F1F5F9]"
+              className="px-3 py-1.5 rounded-lg bg-[#0D1318] border border-white/10 text-xs text-[#8B98A4] hover:text-[#E8EEF2]"
             >
               {tr(lang, 'Présentation & Tarifs')}
             </button>
@@ -2062,7 +2076,7 @@ export function App() {
           {authFormModal(activeAuthMode, true)}
         </div>
 
-        <footer className="text-center text-[11px] text-[#64748B] font-mono-tabular">
+        <footer className="text-center text-[11px] text-[#6E7B88] font-mono-tabular">
           {lang === 'en'
             ? 'Bitsure Teddy • Mandatory server authentication • Active access protection & quotas'
             : 'Bitsure Teddy • Authentification serveur obligatoire • Protection des accès & quotas actifs'}
@@ -2074,15 +2088,15 @@ export function App() {
   // Mandatory Terms & Conditions v2.2.0 Acceptance Gate for ALL Users (including legacy users created prior to v2.2.0)
   if (!user.terms_accepted) {
     return (
-      <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex flex-col justify-between p-4 sm:p-8">
+      <div className="min-h-screen bg-[#080C0F] text-[#E8EEF2] flex flex-col justify-between p-4 sm:p-8">
         <header className="max-w-4xl w-full mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-[#F59E0B]/15 border border-[#F59E0B]/40 flex items-center justify-center text-[#FBBF24] font-display font-bold">
+            <div className="w-8 h-8 rounded-lg bg-[#D6A84F]/15 border border-[#D6A84F]/40 flex items-center justify-center text-[#E2BC6A] font-display font-bold">
               B
             </div>
             <div>
-              <div className="font-display font-bold text-sm tracking-tight text-[#F1F5F9]">BITSURE TEDDY</div>
-              <div className="text-[10px] font-mono-tabular text-[#FBBF24]">
+              <div className="font-display font-bold text-sm tracking-tight text-[#E8EEF2]">BITSURE TEDDY</div>
+              <div className="text-[10px] font-mono-tabular text-[#E2BC6A]">
                 {lang === 'en' ? 'MANDATORY TERMS & PRIVACY CONSENT (v2.2.0)' : 'MISE À JOUR CONTRACTUELLE OBLIGATOIRE (v2.2.0)'}
               </div>
             </div>
@@ -2091,7 +2105,7 @@ export function App() {
             <button
               type="button"
               onClick={() => setViewMode('terms')}
-              className="px-3 py-1.5 rounded-lg bg-[#F59E0B]/15 hover:bg-[#F59E0B]/25 border border-[#F59E0B]/40 text-xs font-semibold text-[#FBBF24] flex items-center gap-1.5"
+              className="px-3 py-1.5 rounded-lg bg-[#D6A84F]/15 hover:bg-[#D6A84F]/25 border border-[#D6A84F]/40 text-xs font-semibold text-[#E2BC6A] flex items-center gap-1.5"
             >
               <Shield className="w-3.5 h-3.5" />
               <span>{tr(lang, 'Lire le contrat intégral (CGU)')}</span>
@@ -2099,14 +2113,14 @@ export function App() {
             <button
               type="button"
               onClick={handleToggleLang}
-              className="px-2.5 py-1.5 rounded-lg bg-[#111827] border border-white/10 text-xs font-mono-tabular uppercase text-[#94A3B8] hover:text-[#F1F5F9]"
+              className="px-2.5 py-1.5 rounded-lg bg-[#0D1318] border border-white/10 text-xs font-mono-tabular uppercase text-[#8B98A4] hover:text-[#E8EEF2]"
             >
               {lang === 'fr' ? 'FR ▾ EN' : 'EN ▾ FR'}
             </button>
             <button
               type="button"
               onClick={handleLogout}
-              className="px-3 py-1.5 rounded-lg bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-xs text-[#FB7185] flex items-center gap-1.5"
+              className="px-3 py-1.5 rounded-lg bg-[#F04438]/15 hover:bg-[#F04438]/25 border border-[#F04438]/40 text-xs text-[#F97066] flex items-center gap-1.5"
             >
               <LogOut className="w-3.5 h-3.5" />
               <span>{tr(lang, 'Déconnexion')}</span>
@@ -2115,16 +2129,16 @@ export function App() {
         </header>
 
         <div className="flex-1 flex items-center justify-center py-8">
-          <div className="bg-[#111827] border border-[#F59E0B]/40 rounded-2xl max-w-xl w-full p-6 sm:p-8 space-y-5 shadow-2xl">
+          <div className="bg-[#0D1318] border border-[#D6A84F]/40 rounded-lg max-w-xl w-full p-6 sm:p-8 space-y-5">
             <div className="flex items-start gap-3.5">
-              <div className="w-12 h-12 rounded-2xl bg-[#F59E0B]/15 border border-[#F59E0B]/40 flex items-center justify-center text-[#FBBF24] shrink-0">
+              <div className="w-12 h-12 rounded-lg bg-[#D6A84F]/15 border border-[#D6A84F]/40 flex items-center justify-center text-[#E2BC6A] shrink-0">
                 <Shield className="w-6 h-6" />
               </div>
               <div className="space-y-1">
-                <span className="inline-block px-2 py-0.5 rounded text-[10px] font-mono-tabular font-bold uppercase bg-[#F59E0B]/15 border border-[#F59E0B]/40 text-[#FBBF24]">
+                <span className="inline-block px-2 py-0.5 rounded text-[10px] font-mono-tabular font-bold uppercase bg-[#D6A84F]/15 border border-[#D6A84F]/40 text-[#E2BC6A]">
                   {lang === 'en' ? 'Action Required — All Users' : 'Action Requise — Tous les Utilisateurs'}
                 </span>
-                <h2 className="font-display text-lg sm:text-xl font-bold text-[#F1F5F9]">
+                <h2 className="font-display text-lg sm:text-xl font-bold text-[#E8EEF2]">
                   {lang === 'en'
                     ? 'Accept the Updated Terms & Conditions of Use (v2.2.0)'
                     : "Acceptation obligatoire des nouveaux Termes & Conditions d'Utilisation (v2.2.0)"}
@@ -2132,20 +2146,20 @@ export function App() {
               </div>
             </div>
 
-            <p className="text-xs sm:text-sm text-[#94A3B8] leading-relaxed">
+            <p className="text-xs sm:text-sm text-[#8B98A4] leading-relaxed">
               {lang === 'en' ? (
                 <>
                   Whether your account was created before or after this update, continuing to use{' '}
-                  <strong className="text-[#F1F5F9]">Bitsure Teddy</strong> requires your explicit consent to our public{' '}
-                  <strong className="text-[#FBBF24]">Terms &amp; Conditions of Use and Data Collection Charter (v2.2.0)</strong>.
+                  <strong className="text-[#E8EEF2]">Bitsure Teddy</strong> requires your explicit consent to our public{' '}
+                  <strong className="text-[#E2BC6A]">Terms &amp; Conditions of Use and Data Collection Charter (v2.2.0)</strong>.
                   This includes the collection and administrative audit of your personal account details, device and hardware
                   telemetry, IP address history, geolocation, security events, and trading activity.
                 </>
               ) : (
                 <>
                   Que votre compte ait été créé avant ou après cette mise à jour, la poursuite de l&apos;utilisation de{' '}
-                  <strong className="text-[#F1F5F9]">Bitsure Teddy</strong> requiert votre acceptation explicite de nos{' '}
-                  <strong className="text-[#FBBF24]">
+                  <strong className="text-[#E8EEF2]">Bitsure Teddy</strong> requiert votre acceptation explicite de nos{' '}
+                  <strong className="text-[#E2BC6A]">
                     Termes &amp; Conditions d&apos;Utilisation et de la Charte de Collecte des Données (v2.2.0)
                   </strong>
                   . Ce contrat couvre la collecte et la consultation par l&apos;Administrateur de vos informations
@@ -2155,33 +2169,33 @@ export function App() {
               )}
             </p>
 
-            <div className="p-3.5 rounded-xl bg-[#090D16] border border-white/[0.08] text-xs font-mono-tabular space-y-1.5">
+            <div className="p-3.5 rounded-xl bg-[#080C0F] border border-white/[0.08] text-xs font-mono-tabular space-y-1.5">
               <div className="flex justify-between">
-                <span className="text-[#64748B]">{lang === 'en' ? 'Connected Account:' : 'Compte connecté :'}</span>
-                <span className="text-[#F1F5F9] font-semibold">{user.display_name} ({user.email})</span>
+                <span className="text-[#6E7B88]">{lang === 'en' ? 'Connected Account:' : 'Compte connecté :'}</span>
+                <span className="text-[#E8EEF2] font-semibold">{user.display_name} ({user.email})</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#64748B]">{lang === 'en' ? 'User ID:' : 'ID Utilisateur :'}</span>
-                <span className="text-[#94A3B8]">#{user.user_id}</span>
+                <span className="text-[#6E7B88]">{lang === 'en' ? 'User ID:' : 'ID Utilisateur :'}</span>
+                <span className="text-[#8B98A4]">#{user.user_id}</span>
               </div>
             </div>
 
-            <div className="p-4 rounded-xl bg-[#090D16] border border-[#F59E0B]/40 space-y-2.5">
+            <div className="p-4 rounded-xl bg-[#080C0F] border border-[#D6A84F]/40 space-y-2.5">
               <label className="flex items-start gap-2.5 cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={authTermsAccepted}
                   onChange={(e) => setAuthTermsAccepted(e.target.checked)}
-                  className="mt-0.5 w-4 h-4 rounded border-white/25 bg-[#111827] text-[#10B981] focus:ring-[#10B981]"
+                  className="mt-0.5 w-4 h-4 rounded border-white/25 bg-[#0D1318] text-[#20C997] focus:ring-[#20C997]"
                 />
-                <span className="text-xs text-[#F1F5F9] leading-relaxed">
+                <span className="text-xs text-[#E8EEF2] leading-relaxed">
                   {lang === 'en' ? (
                     <>
                       I have read and I accept the{' '}
                       <button
                         type="button"
                         onClick={() => setViewMode('terms')}
-                        className="text-[#F59E0B] hover:text-[#FBBF24] underline font-bold"
+                        className="text-[#D6A84F] hover:text-[#E2BC6A] underline font-bold"
                       >
                         terms and conditions of use
                       </button>{' '}
@@ -2193,7 +2207,7 @@ export function App() {
                       <button
                         type="button"
                         onClick={() => setViewMode('terms')}
-                        className="text-[#F59E0B] hover:text-[#FBBF24] underline font-bold"
+                        className="text-[#D6A84F] hover:text-[#E2BC6A] underline font-bold"
                       >
                         termes et conditions d&apos;utilisation
                       </button>{' '}
@@ -2203,7 +2217,7 @@ export function App() {
                   )}
                 </span>
               </label>
-              <div className="text-[11px] text-[#94A3B8] pl-6">
+              <div className="text-[11px] text-[#8B98A4] pl-6">
                 {lang === 'en'
                   ? 'Click the highlighted link above to open and read the full public Terms & Conditions before confirming.'
                   : 'Cliquez sur « termes et conditions d’utilisation » ci-dessus pour consulter le contrat complet avant de valider.'}
@@ -2240,7 +2254,7 @@ export function App() {
                     setAuthSubmitting(false);
                   }
                 }}
-                className="flex-1 py-2.5 px-4 bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-bold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                className="flex-1 py-2.5 px-4 bg-[#20C997] hover:bg-[#1AA67D] disabled:opacity-50 text-[#080C0F] font-bold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>
@@ -2252,7 +2266,7 @@ export function App() {
               <button
                 type="button"
                 onClick={() => setViewMode('terms')}
-                className="py-2.5 px-4 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] font-semibold text-xs rounded-lg transition-colors"
+                className="py-2.5 px-4 bg-[#172129] hover:bg-[#202A32] border border-white/10 text-[#E8EEF2] font-semibold text-xs rounded-lg transition-colors"
               >
                 {tr(lang, 'Lire les CGU complètes', 'Read full Terms')}
               </button>
@@ -2271,29 +2285,29 @@ export function App() {
     const isSuspended = status === 'SUSPENDED';
 
     return (
-      <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex flex-col justify-between p-4 sm:p-8">
+      <div className="min-h-screen bg-[#080C0F] text-[#E8EEF2] flex flex-col justify-between p-4 sm:p-8">
         <header className="max-w-4xl w-full mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-[#10B981]/15 border border-[#10B981]/40 flex items-center justify-center text-[#10B981] font-display font-bold">
+            <div className="w-8 h-8 rounded-lg bg-[#20C997]/15 border border-[#20C997]/40 flex items-center justify-center text-[#20C997] font-display font-bold">
               B
             </div>
             <div>
-              <div className="font-display font-bold text-sm tracking-tight text-[#F1F5F9]">BITSURE TEDDY</div>
-              <div className="text-[10px] font-mono-tabular text-[#64748B]">{tr(lang, "CONTRÔLE D'ACCÈS")}</div>
+              <div className="font-display font-bold text-sm tracking-tight text-[#E8EEF2]">BITSURE TEDDY</div>
+              <div className="text-[10px] font-mono-tabular text-[#6E7B88]">{tr(lang, "CONTRÔLE D'ACCÈS")}</div>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={handleToggleLang}
-              className="px-2.5 py-1.5 rounded-lg bg-[#111827] border border-white/10 text-xs font-mono-tabular uppercase text-[#94A3B8] hover:text-[#F1F5F9]"
+              className="px-2.5 py-1.5 rounded-lg bg-[#0D1318] border border-white/10 text-xs font-mono-tabular uppercase text-[#8B98A4] hover:text-[#E8EEF2]"
             >
               {lang === 'fr' ? 'FR ▾ EN' : 'EN ▾ FR'}
             </button>
             <button
               type="button"
               onClick={() => loadUserAndCoreData()}
-              className="px-3 py-1.5 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-xs text-[#F1F5F9] flex items-center gap-1.5"
+              className="px-3 py-1.5 rounded-lg bg-[#172129] hover:bg-[#202A32] border border-white/10 text-xs text-[#E8EEF2] flex items-center gap-1.5"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>{tr(lang, 'Vérifier mon statut')}</span>
@@ -2301,7 +2315,7 @@ export function App() {
             <button
               type="button"
               onClick={handleLogout}
-              className="px-3 py-1.5 rounded-lg bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-xs text-[#FB7185] flex items-center gap-1.5"
+              className="px-3 py-1.5 rounded-lg bg-[#F04438]/15 hover:bg-[#F04438]/25 border border-[#F04438]/40 text-xs text-[#F97066] flex items-center gap-1.5"
             >
               <LogOut className="w-3.5 h-3.5" />
               <span>{tr(lang, 'Déconnexion')}</span>
@@ -2310,12 +2324,12 @@ export function App() {
         </header>
 
         <div className="flex-1 flex items-center justify-center py-8">
-          <div className="bg-[#111827] border border-white/15 rounded-2xl max-w-lg w-full p-6 sm:p-8 space-y-5 text-center">
+          <div className="bg-[#0D1318] border border-white/15 rounded-lg max-w-lg w-full p-6 sm:p-8 space-y-5 text-center">
             <div
-              className={`w-14 h-14 rounded-2xl mx-auto flex items-center justify-center border ${
+              className={`w-14 h-14 rounded-lg mx-auto flex items-center justify-center border ${
                 isRejected || isSuspended
-                  ? 'bg-[#F43F5E]/15 border-[#F43F5E]/40 text-[#FB7185]'
-                  : 'bg-[#F59E0B]/15 border-[#F59E0B]/40 text-[#F59E0B]'
+                  ? 'bg-[#F04438]/15 border-[#F04438]/40 text-[#F97066]'
+                  : 'bg-[#D6A84F]/15 border-[#D6A84F]/40 text-[#D6A84F]'
               }`}
             >
               {isRejected || isSuspended ? <ShieldAlert className="w-7 h-7" /> : <Clock className="w-7 h-7" />}
@@ -2325,20 +2339,20 @@ export function App() {
               <span
                 className={`inline-block px-2.5 py-0.5 rounded text-[11px] font-mono-tabular font-bold uppercase border ${
                   isRejected || isSuspended
-                    ? 'bg-[#F43F5E]/15 border-[#F43F5E]/40 text-[#FB7185]'
-                    : 'bg-[#F59E0B]/15 border-[#F59E0B]/40 text-[#F59E0B]'
+                    ? 'bg-[#F04438]/15 border-[#F04438]/40 text-[#F97066]'
+                    : 'bg-[#D6A84F]/15 border-[#D6A84F]/40 text-[#D6A84F]'
                 }`}
               >
                 {lang === 'en' ? 'Status:' : 'Statut :'} {status}
               </span>
-              <h2 className="font-display text-xl font-bold text-[#F1F5F9]">
+              <h2 className="font-display text-xl font-bold text-[#E8EEF2]">
                 {isRejected
                   ? tr(lang, "Demande d'accès refusée")
                   : isSuspended
                   ? tr(lang, 'Compte suspendu')
                   : tr(lang, "Compte en attente d'approbation")}
               </h2>
-              <p className="text-xs sm:text-sm text-[#94A3B8] leading-relaxed">
+              <p className="text-xs sm:text-sm text-[#8B98A4] leading-relaxed">
                 {isRejected
                   ? lang === 'en'
                     ? 'Your access request to Bitsure Teddy was declined by the administrator. You cannot access analysis or trading features.'
@@ -2353,18 +2367,18 @@ export function App() {
               </p>
             </div>
 
-            <div className="p-4 rounded-xl bg-[#090D16] border border-white/[0.07] text-left text-xs font-mono-tabular space-y-1.5">
+            <div className="p-4 rounded-xl bg-[#080C0F] border border-white/[0.07] text-left text-xs font-mono-tabular space-y-1.5">
               <div className="flex justify-between">
-                <span className="text-[#64748B]">{tr(lang, 'Compte :')}</span>
-                <span className="text-[#F1F5F9]">{user.email}</span>
+                <span className="text-[#6E7B88]">{tr(lang, 'Compte :')}</span>
+                <span className="text-[#E8EEF2]">{user.email}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#64748B]">{tr(lang, 'Nom :')}</span>
-                <span className="text-[#F1F5F9]">{user.display_name}</span>
+                <span className="text-[#6E7B88]">{tr(lang, 'Nom :')}</span>
+                <span className="text-[#E8EEF2]">{user.display_name}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[#64748B]">{tr(lang, 'ID Utilisateur :')}</span>
-                <span className="text-[#94A3B8]">#{user.user_id}</span>
+                <span className="text-[#6E7B88]">{tr(lang, 'ID Utilisateur :')}</span>
+                <span className="text-[#8B98A4]">#{user.user_id}</span>
               </div>
             </div>
 
@@ -2372,7 +2386,7 @@ export function App() {
               <button
                 type="button"
                 onClick={() => loadUserAndCoreData()}
-                className="flex-1 py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                className="flex-1 py-2.5 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
               >
                 <RefreshCw className="w-4 h-4" />
                 <span>{tr(lang, 'Actualiser mon statut')}</span>
@@ -2380,7 +2394,7 @@ export function App() {
               <button
                 type="button"
                 onClick={handleLogout}
-                className="flex-1 py-2.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                className="flex-1 py-2.5 bg-[#172129] hover:bg-[#202A32] border border-white/10 text-[#E8EEF2] font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
               >
                 <LogOut className="w-4 h-4" />
                 <span>{tr(lang, 'Se déconnecter')}</span>
@@ -2398,28 +2412,59 @@ export function App() {
   const tfAlign = ind.tf_alignment || {};
 
   const isAdminUser = Boolean(user?.is_admin || user?.role === 'admin');
+  // Métriques d'une position Paper (mêmes formules que le tableau desktop) : réutilisées par la vue cartes mobile.
+  const computePaperMetrics = (pos: PaperPosition) => {
+    const entryVal = Number(pos.entry ?? pos.entry_price ?? 0);
+    const liveSymPrice = livePrices[pos.symbol]?.price;
+    const currVal = Number(liveSymPrice ?? pos.current_price ?? entryVal);
+    const slVal = Number(pos.sl ?? 0);
+    const tpVal = Number(pos.tp ?? 0);
+    const qtyVal = Number(pos.qty ?? 0);
+    const levVal = Math.max(1, Number(pos.leverage ?? 1));
+    const marginVal = Number(pos.margin_used ?? (entryVal * qtyVal) / levVal);
+    const rawDiff = pos.side === 'BUY' ? currVal - entryVal : entryVal - currVal;
+    const upnl =
+      liveSymPrice && entryVal > 0 && qtyVal > 0 ? rawDiff * qtyVal : Number(pos.unrealized_pnl ?? pos.pnl_usdt ?? 0);
+    const upnlPct = marginVal > 0 ? (upnl / marginVal) * 100 : Number(pos.unrealized_pnl_pct ?? pos.pnl_pct ?? 0);
+    return { entryVal, currVal, slVal, tpVal, marginVal, upnl, upnlPct };
+  };
+
   const navItems = [
-    { id: 'intelligence', label: tr(lang, 'Market Intelligence'), icon: Activity },
-    { id: 'paper', label: tr(lang, 'Paper Trading'), icon: Layers, count: openPaper.length },
-    { id: 'alerts', label: tr(lang, 'Alertes & Watchlist'), icon: Bell, count: alerts.length },
+    { id: 'intelligence', label: tr(lang, 'Market Intelligence'), icon: Activity, group: 'overview' },
+    { id: 'paper', label: tr(lang, 'Paper Trading'), icon: Layers, count: openPaper.length, group: 'trading' },
+    { id: 'alerts', label: tr(lang, 'Alertes & Watchlist'), icon: Bell, count: alerts.length, group: 'monitoring' },
     {
       id: 'safety',
+      group: 'trading',
       label: tr(lang, 'Auto-Trade & Safety'),
       icon: ShieldCheck,
       warn: tradingCfg?.safety_lock || tradingCfg?.safety_warn,
       apiConnected: Boolean(tradingCfg?.credentials_valid),
     },
-    { id: 'strategy_lab', label: tr(lang, 'Strategy Lab (Backtest)'), icon: FlaskConical },
-    { id: 'history', label: tr(lang, 'Historique & Journal'), icon: BookOpen },
-    { id: 'account', label: tr(lang, 'Compte, Plans & PIN'), icon: CreditCard },
-    { id: 'terms', label: tr(lang, 'Termes & Conditions (CGU)'), icon: Shield },
+    { id: 'strategy_lab', label: tr(lang, 'Strategy Lab (Backtest)'), icon: FlaskConical, group: 'research' },
+    { id: 'history', label: tr(lang, 'Historique & Journal'), icon: BookOpen, group: 'monitoring' },
+    { id: 'account', label: tr(lang, 'Compte, Plans & PIN'), icon: CreditCard, group: 'system' },
+    { id: 'terms', label: tr(lang, 'Termes & Conditions (CGU)'), icon: Shield, group: 'system' },
     ...(isAdminUser
       ? [
-          { id: 'users_intelligence', label: tr(lang, 'Utilisateurs 360° (Admin)'), icon: Users },
-          { id: 'admin', label: tr(lang, 'Admin & Log Doctor'), icon: Terminal },
+          { id: 'users_intelligence', label: tr(lang, 'Utilisateurs 360° (Admin)'), icon: Users, group: 'admin' },
+          { id: 'admin', label: tr(lang, 'Admin & Log Doctor'), icon: Terminal, group: 'admin' },
         ]
       : []),
   ];
+
+  // Sidebar desktop : regroupement par domaine (même liste d'onglets, aucune route supprimée)
+  const navGroupDefs: Array<{ id: string; label: string }> = [
+    { id: 'overview', label: tr(lang, 'Vue d’ensemble', 'Overview') },
+    { id: 'research', label: tr(lang, 'Recherche', 'Research') },
+    { id: 'trading', label: 'Trading' },
+    { id: 'monitoring', label: tr(lang, 'Suivi', 'Monitoring') },
+    { id: 'system', label: tr(lang, 'Système', 'System') },
+    { id: 'admin', label: 'Admin' },
+  ];
+  const navGroups = navGroupDefs
+    .map((g) => ({ ...g, items: navItems.filter((it: any) => it.group === g.id) }))
+    .filter((g) => g.items.length > 0);
 
   // Grouped Mobile Hub structure (4 primary tabs on mobile + sub-switcher strip)
   const mobileHubGroups: Array<{
@@ -2488,11 +2533,83 @@ export function App() {
   ];
   const currentMobileHub =
     mobileHubGroups.find((g) => g.tabs.some((t) => t.id === activeTab)) || mobileHubGroups[0];
+  lastTabByHubRef.current[currentMobileHub.hubId] = activeTab;
+
+  // En-tête de page contextuel : où suis-je / que fait cet outil. Onglets sans entrée = en-tête propre.
+  const pageMeta: Partial<Record<ActiveTab, { title: string; description: string }>> = {
+    intelligence: {
+      title: tr(lang, 'Market Intelligence'),
+      description: tr(
+        lang,
+        'Analyse du symbole sélectionné : Teddy Score, alignement multi-timeframes, niveaux SL/TP et scan des marchés documentés.',
+        'Analysis of the selected symbol: Teddy Score, multi-timeframe alignment, SL/TP levels and a scan of the documented markets.'
+      ),
+    },
+    paper: {
+      title: 'Paper Trading',
+      description: tr(
+        lang,
+        'Portefeuille virtuel : ouvrez et suivez des positions simulées, sans risque réel.',
+        'Virtual portfolio: open and track simulated positions with no real risk.'
+      ),
+    },
+    alerts: {
+      title: tr(lang, 'Alertes & Watchlist'),
+      description: tr(
+        lang,
+        'Créez des alertes de prix et suivez vos alertes actives.',
+        'Create price alerts and track your active alerts.'
+      ),
+    },
+    safety: {
+      title: tr(lang, 'Auto-Trade & Safety'),
+      description: tr(
+        lang,
+        'Configuration de l’AutoTrade, clés Binance, état de sécurité, ordre live manuel, positions et ordres ouverts.',
+        'AutoTrade configuration, Binance keys, safety state, manual live order, open positions and orders.'
+      ),
+    },
+    strategy_lab: {
+      title: 'Strategy Lab',
+      description: tr(
+        lang,
+        'Configurez, testez et comparez des stratégies sur données historiques ; l’Optimization Lab se trouve dans l’onglet du même nom.',
+        'Configure, test and compare strategies on historical data; the Optimization Lab is in the tab of the same name.'
+      ),
+    },
+    history: {
+      title: tr(lang, 'Historique & Journal'),
+      description: tr(
+        lang,
+        'Historique des signaux validés et journal des décisions du moteur.',
+        'History of validated signals and the engine decision journal.'
+      ),
+    },
+    account: {
+      title: tr(lang, 'Compte, Plans & PIN'),
+      description: tr(
+        lang,
+        'Plan, code promo, paiement Binance Pay, code PIN de sécurité et support.',
+        'Plan, promo code, Binance Pay, security PIN and support.'
+      ),
+    },
+    admin: {
+      title: tr(lang, 'Admin & Log Doctor'),
+      description: tr(
+        lang,
+        'Utilisateurs et quotas, audit de sécurité, diffusion, diagnostic des logs et maintenance.',
+        'Users and quotas, security audit, broadcast, log diagnostics and maintenance.'
+      ),
+    },
+  };
+  const currentPageMeta = pageMeta[activeTab];
+  const currentNavIcon: any = (navItems as any[]).find((it) => it.id === activeTab)?.icon;
+  const CurrentNavIcon = currentNavIcon as React.ComponentType<{ className?: string }> | undefined;
 
   return (
-    <div className="min-h-screen bg-[#090D16] text-[#F1F5F9] flex flex-col md:flex-row">
+    <div className="min-h-screen bg-[#080C0F] text-[#E8EEF2] flex flex-col md:flex-row">
       {/* Left Single Navigation Sidebar (Hidden on mobile, sticky fixed-height sidebar on desktop) */}
-      <aside className="hidden md:flex w-64 shrink-0 border-r border-white/[0.07] bg-[#0B101B] flex-col justify-between md:sticky md:top-0 md:h-screen md:overflow-y-auto">
+      <aside className="hidden md:flex w-64 shrink-0 border-r border-white/[0.07] bg-[#0D1318] flex-col justify-between md:sticky md:top-0 md:h-screen md:overflow-y-auto">
         <div>
           {/* Brand Logo */}
           <div className="h-16 px-5 border-b border-white/[0.07] flex items-center justify-between">
@@ -2502,34 +2619,39 @@ export function App() {
               }}
               className="flex items-center gap-2.5 text-left group"
             >
-              <div className="w-8 h-8 rounded-lg bg-[#10B981]/15 border border-[#10B981]/40 flex items-center justify-center text-[#10B981] font-display font-bold">
+              <div className="w-8 h-8 rounded-lg bg-[#20C997]/15 border border-[#20C997]/40 flex items-center justify-center text-[#20C997] font-display font-bold">
                 B
               </div>
               <div>
-                <div className="font-display font-bold text-sm tracking-tight text-[#F1F5F9] group-hover:text-[#10B981] transition-colors">
+                <div className="font-display font-bold text-sm tracking-tight text-[#E8EEF2] group-hover:text-[#20C997] transition-colors">
                   BITSURE TEDDY
                 </div>
-                <div className="text-[10px] font-mono-tabular text-[#64748B]">QUANT ENGINE v2.0</div>
+                <div className="text-[10px] font-mono-tabular text-[#6E7B88]">QUANT ENGINE v2.0</div>
               </div>
             </button>
           </div>
 
           {/* Primary Navigation Items */}
-          <nav className="p-3 space-y-1">
-            {navItems.map((item) => {
+          <nav className="px-2 pb-2" aria-label={tr(lang, 'Navigation principale', 'Main navigation')}>
+            {navGroups.map((group) => (
+              <div key={group.id}>
+                <div className="bs-nav-group">{group.label}</div>
+                <div className="space-y-0.5">
+            {group.items.map((item: any) => {
               const Icon = item.icon;
               const active = activeTab === item.id;
               return (
                 <button
                   key={item.id}
+                  aria-current={active ? 'page' : undefined}
                   onClick={() => {
                     setActiveTab(item.id as ActiveTab);
                     setMobileMenuOpen(false);
                   }}
-                  className={`w-full px-3 py-2.5 rounded-lg text-xs font-medium flex items-center justify-between transition-colors ${
+                  className={`w-full px-3 py-2 rounded-md text-xs font-medium flex items-center justify-between transition-colors border-l-2 ${
                     active
-                      ? 'bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30'
-                      : 'text-[#94A3B8] hover:text-[#F1F5F9] hover:bg-white/[0.04] border border-transparent'
+                      ? 'bg-[#172129] text-[#E8EEF2] border-[#20C997]'
+                      : 'text-[#8B98A4] hover:text-[#E8EEF2] hover:bg-white/[0.04] border-transparent'
                   }`}
                 >
                   <div className="flex items-center gap-2">
@@ -2546,34 +2668,37 @@ export function App() {
                         }
                         className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono-tabular font-bold border ${
                           item.apiConnected
-                            ? 'bg-[#10B981]/15 text-[#10B981] border-[#10B981]/40'
-                            : 'bg-[#F43F5E]/15 text-[#FB7185] border-[#F43F5E]/40'
+                            ? 'bg-[#20C997]/15 text-[#20C997] border-[#20C997]/40'
+                            : 'bg-[#F04438]/15 text-[#F97066] border-[#F04438]/40'
                         }`}
                       >
                         <span
                           className={`w-1.5 h-1.5 rounded-full ${
-                            item.apiConnected ? 'bg-[#10B981] animate-pulse' : 'bg-[#F43F5E]'
+                            item.apiConnected ? 'bg-[#20C997] animate-pulse' : 'bg-[#F04438]'
                           }`}
                         />
                         {item.apiConnected ? 'API OK' : 'API OFF'}
                       </span>
                     )}
                     {item.count !== undefined && item.count > 0 && (
-                      <span className="font-mono-tabular text-[11px] text-[#94A3B8]">{item.count}</span>
+                      <span className="font-mono-tabular text-[11px] text-[#8B98A4]">{item.count}</span>
                     )}
-                    {item.warn && <span className="w-2 h-2 rounded-full bg-[#F59E0B]" title="Avertissement ou Safety Lock actif" />}
+                    {item.warn && <span className="w-2 h-2 rounded-full bg-[#D6A84F]" title="Avertissement ou Safety Lock actif" />}
                   </div>
                 </button>
               );
             })}
+                </div>
+              </div>
+            ))}
           </nav>
 
           {/* Watchlist Quick Selector */}
           <div className="px-4 pt-4 pb-2">
-            <div className="flex items-center justify-between text-[11px] font-mono-tabular uppercase tracking-wider text-[#64748B] mb-2">
+            <div className="flex items-center justify-between text-[11px] font-mono-tabular uppercase tracking-wider text-[#6E7B88] mb-2">
               <span>{tr(lang, 'Marchés Documentés')}</span>
-              <span className="inline-flex items-center gap-1 text-[9px] text-[#10B981]">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-ping" />
+              <span className="inline-flex items-center gap-1 text-[9px] text-[#20C997]">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#20C997] animate-ping" />
                 LIVE
               </span>
             </div>
@@ -2593,8 +2718,8 @@ export function App() {
                     }}
                     className={`w-full px-2.5 py-1.5 rounded text-xs flex items-center justify-between transition-colors ${
                       isSelected
-                        ? 'bg-[#1E293B] text-[#F1F5F9] font-medium'
-                        : 'text-[#94A3B8] hover:bg-white/[0.03] hover:text-[#F1F5F9]'
+                        ? 'bg-[#172129] text-[#E8EEF2] font-medium'
+                        : 'text-[#8B98A4] hover:bg-white/[0.03] hover:text-[#E8EEF2]'
                     }`}
                   >
                     <span className="font-mono-tabular">{s.id}</span>
@@ -2602,14 +2727,14 @@ export function App() {
                       <span
                         className={`font-mono-tabular text-[11px] font-semibold transition-colors ${
                           flash === 'up'
-                            ? 'text-[#10B981]'
+                            ? 'text-[#20C997]'
                             : flash === 'down'
-                            ? 'text-[#F43F5E]'
+                            ? 'text-[#F04438]'
                             : tick.direction === 'up'
-                            ? 'text-[#34D399]'
+                            ? 'text-[#32D583]'
                             : tick.direction === 'down'
-                            ? 'text-[#FB7185]'
-                            : 'text-[#F1F5F9]'
+                            ? 'text-[#F97066]'
+                            : 'text-[#E8EEF2]'
                         }`}
                       >
                         {tick.price.toLocaleString('en-US', {
@@ -2618,7 +2743,7 @@ export function App() {
                         })}
                       </span>
                     ) : (
-                      <ChevronRight className="w-3.5 h-3.5 text-[#64748B]" />
+                      <ChevronRight className="w-3.5 h-3.5 text-[#6E7B88]" />
                     )}
                   </button>
                 );
@@ -2628,16 +2753,16 @@ export function App() {
         </div>
 
         {/* Bottom User Profile */}
-        <div className="p-3.5 border-t border-white/[0.07] bg-[#090D16]/60 space-y-3">
+        <div className="p-3.5 border-t border-white/[0.07] bg-[#080C0F]/60 space-y-3">
           {user && (
             <div className="space-y-1">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-[#F1F5F9] truncate">{user.display_name}</span>
-                <span className="text-[10px] font-mono-tabular uppercase px-1.5 py-0.5 rounded bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30">
+                <span className="text-xs font-semibold text-[#E8EEF2] truncate">{user.display_name}</span>
+                <span className="text-[10px] font-mono-tabular uppercase px-1.5 py-0.5 rounded bg-[#20C997]/15 text-[#20C997] border border-[#20C997]/30">
                   {user.role}
                 </span>
               </div>
-              <div className="text-[11px] text-[#64748B] font-mono-tabular flex items-center justify-between">
+              <div className="text-[11px] text-[#6E7B88] font-mono-tabular flex items-center justify-between">
                 <span>{user.telegram_handle}</span>
                 <span>
                   Quota:{' '}
@@ -2655,13 +2780,13 @@ export function App() {
                 setViewMode('landing');
                 setMobileMenuOpen(false);
               }}
-              className="flex-1 py-1.5 text-xs text-[#94A3B8] hover:text-[#F1F5F9] border border-white/10 rounded hover:bg-white/[0.04] transition-colors"
+              className="flex-1 py-1.5 text-xs text-[#8B98A4] hover:text-[#E8EEF2] border border-white/10 rounded hover:bg-white/[0.04] transition-colors"
             >
               {tr(lang, 'Présentation')}
             </button>
             <button
               onClick={handleLogout}
-              className="px-3 py-1.5 text-xs text-[#FB7185] hover:bg-[#F43F5E]/15 border border-[#F43F5E]/30 rounded transition-colors flex items-center gap-1"
+              className="px-3 py-1.5 text-xs text-[#F97066] hover:bg-[#F04438]/15 border border-[#F04438]/30 rounded transition-colors flex items-center gap-1"
               title={tr(lang, 'Se déconnecter')}
             >
               <LogOut className="w-3.5 h-3.5" />
@@ -2674,13 +2799,13 @@ export function App() {
       {/* Main Workspace Area */}
       <div className="flex-1 flex flex-col min-w-0 pb-20 md:pb-0">
         {/* Top Utility & Market Bar */}
-        <header className="min-h-14 py-2 px-3 sm:px-6 border-b border-white/[0.07] bg-[#0B101B]/95 flex flex-wrap items-center justify-between gap-2">
+        <header className="min-h-14 py-2 px-3 sm:px-6 border-b border-white/[0.07] bg-[#0D1318]/95 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 sm:gap-3 flex-wrap">
             {/* Compact Brand Badge on Mobile */}
             <button
               type="button"
               onClick={() => setViewMode('landing')}
-              className="md:hidden w-8 h-8 rounded-lg bg-[#10B981]/15 border border-[#10B981]/40 flex items-center justify-center text-[#10B981] font-display font-bold text-xs shrink-0"
+              className="md:hidden w-8 h-8 rounded-lg bg-[#20C997]/15 border border-[#20C997]/40 flex items-center justify-center text-[#20C997] font-display font-bold text-xs shrink-0"
               title="Bitsure Teddy"
             >
               B
@@ -2692,7 +2817,7 @@ export function App() {
                 setSelectedSymbol(e.target.value);
                 runAnalysis(e.target.value, selectedTimeframe, selectedStyle);
               }}
-              className="px-2 sm:px-3 py-1.5 bg-[#111827] border border-white/15 rounded-lg text-xs font-mono-tabular font-semibold text-[#F1F5F9]"
+              className="px-2 sm:px-3 py-1.5 bg-[#0D1318] border border-white/15 rounded-lg text-xs font-mono-tabular font-semibold text-[#E8EEF2]"
             >
               {SYMBOLS.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -2701,7 +2826,7 @@ export function App() {
               ))}
             </select>
 
-            <div className="flex items-center bg-[#111827] border border-white/10 rounded-lg p-0.5 overflow-x-auto max-w-full">
+            <div className="flex items-center bg-[#0D1318] border border-white/10 rounded-lg p-0.5 overflow-x-auto max-w-full">
               {TIMEFRAMES.map((tf) => (
                 <button
                   key={tf}
@@ -2712,8 +2837,8 @@ export function App() {
                   }}
                   className={`px-2 sm:px-2.5 py-1 rounded-md text-xs font-mono-tabular transition-colors ${
                     selectedTimeframe === tf
-                      ? 'bg-[#10B981] text-[#090D16] font-semibold'
-                      : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                      ? 'bg-[#20C997] text-[#080C0F] font-semibold'
+                      : 'text-[#8B98A4] hover:text-[#E8EEF2]'
                   }`}
                 >
                   {tf.toUpperCase()}
@@ -2728,7 +2853,7 @@ export function App() {
                 runAnalysis(selectedSymbol, selectedTimeframe, e.target.value);
                 runMultiScan(selectedTimeframe, e.target.value, false);
               }}
-              className="hidden sm:block px-2.5 sm:px-3 py-1.5 bg-[#111827] border border-white/10 rounded-lg text-xs text-[#F1F5F9]"
+              className="hidden sm:block px-2.5 sm:px-3 py-1.5 bg-[#0D1318] border border-white/10 rounded-lg text-xs text-[#E8EEF2]"
             >
               {STYLES.map((st) => (
                 <option key={st.id} value={st.id}>
@@ -2743,18 +2868,18 @@ export function App() {
                 runMultiScan(selectedTimeframe, selectedStyle, false);
               }}
               disabled={loadingAnalysis}
-              className="px-2 sm:px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] flex items-center gap-1.5 transition-colors"
+              className="px-2 sm:px-3 py-1.5 bg-[#172129] hover:bg-[#202A32] border border-white/10 rounded-lg text-xs text-[#E8EEF2] flex items-center gap-1.5 transition-colors"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${loadingAnalysis ? 'animate-spin text-[#10B981]' : ''}`} />
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingAnalysis ? 'animate-spin text-[#20C997]' : ''}`} />
               <span className="hidden sm:inline">{tr(lang, 'Actualiser')}</span>
             </button>
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3 text-xs">
             {/* Live Binance Ticker Strip */}
-            <div className="hidden xl:flex items-center gap-2 bg-[#111827] border border-white/[0.08] px-3 py-1 rounded-lg font-mono-tabular">
+            <div className="hidden xl:flex items-center gap-2 bg-[#0D1318] border border-white/[0.08] px-3 py-1 rounded-lg font-mono-tabular">
               <span
-                className="inline-flex items-center gap-1.5 pr-2 border-r border-white/10 text-[10px] font-bold text-[#10B981]"
+                className="inline-flex items-center gap-1.5 pr-2 border-r border-white/10 text-[10px] font-bold text-[#20C997]"
                 title={
                   wsConnected
                     ? lang === 'en'
@@ -2765,7 +2890,7 @@ export function App() {
                     : 'Synchronisation temps réel active'
                 }
               >
-                <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse" />
+                <span className="w-2 h-2 rounded-full bg-[#20C997] animate-pulse" />
                 {lang === 'en' ? 'LIVE' : 'DIRECT'}
               </span>
               {SYMBOLS.map((symObj) => {
@@ -2781,20 +2906,20 @@ export function App() {
                     }}
                     className={`px-2 py-0.5 rounded flex items-center gap-1.5 transition-colors ${
                       fl === 'up'
-                        ? 'bg-[#10B981]/20 text-[#10B981]'
+                        ? 'bg-[#20C997]/20 text-[#20C997]'
                         : fl === 'down'
-                        ? 'bg-[#F43F5E]/20 text-[#F43F5E]'
+                        ? 'bg-[#F04438]/20 text-[#F04438]'
                         : 'hover:bg-white/[0.04]'
                     }`}
                   >
-                    <span className="text-[#94A3B8] font-semibold">{symObj.id}</span>
+                    <span className="text-[#8B98A4] font-semibold">{symObj.id}</span>
                     <span
                       className={`font-bold ${
                         t?.direction === 'up'
-                          ? 'text-[#10B981]'
+                          ? 'text-[#20C997]'
                           : t?.direction === 'down'
-                          ? 'text-[#F43F5E]'
-                          : 'text-[#F1F5F9]'
+                          ? 'text-[#F04438]'
+                          : 'text-[#E8EEF2]'
                       }`}
                     >
                       {t?.price
@@ -2807,7 +2932,7 @@ export function App() {
                     {t?.change24h !== undefined && (
                       <span
                         className={`text-[10px] ${
-                          t.change24h >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                          t.change24h >= 0 ? 'text-[#20C997]' : 'text-[#F04438]'
                         }`}
                       >
                         {t.change24h >= 0 ? '+' : ''}
@@ -2820,10 +2945,10 @@ export function App() {
             </div>
 
             {paperStats && (
-              <div className="hidden lg:flex items-center gap-4 font-mono-tabular bg-[#111827] border border-white/[0.07] px-3.5 py-1.5 rounded-lg">
-                <span className="text-[#94A3B8]">
+              <div className="hidden lg:flex items-center gap-4 font-mono-tabular bg-[#0D1318] border border-white/[0.07] px-3.5 py-1.5 rounded-lg">
+                <span className="text-[#8B98A4]">
                   {lang === 'en' ? 'Paper Equity:' : 'Équité Paper :'}{' '}
-                  <strong className="text-[#F1F5F9]">
+                  <strong className="text-[#E8EEF2]">
                     {Number(paperStats.equity ?? 0).toLocaleString('en-US', {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,
@@ -2831,7 +2956,7 @@ export function App() {
                     USDT
                   </strong>
                 </span>
-                <span className={(paperStats.total_pnl ?? 0) >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                <span className={(paperStats.total_pnl ?? 0) >= 0 ? 'text-[#20C997]' : 'text-[#F04438]'}>
                   PnL : {(paperStats.total_pnl ?? 0) >= 0 ? '+' : ''}
                   {Number(paperStats.total_pnl ?? 0).toFixed(2)} USDT
                 </span>
@@ -2844,8 +2969,8 @@ export function App() {
                 onClick={() => setActiveTab('users_intelligence')}
                 className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
                   activeTab === 'users_intelligence'
-                    ? 'bg-[#10B981] text-[#090D16] border-[#10B981]'
-                    : 'bg-[#10B981]/15 hover:bg-[#10B981]/25 text-[#10B981] border-[#10B981]/40'
+                    ? 'bg-[#20C997] text-[#080C0F] border-[#20C997]'
+                    : 'bg-[#20C997]/15 hover:bg-[#20C997]/25 text-[#20C997] border-[#20C997]/40'
                 }`}
                 title="Dossier Utilisateurs 360° (IP, Appareils, Localisation, CGU)"
               >
@@ -2859,8 +2984,8 @@ export function App() {
               onClick={() => setActiveTab('terms')}
               className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
                 activeTab === 'terms'
-                  ? 'bg-[#F59E0B] text-[#090D16] border-[#F59E0B]'
-                  : 'bg-[#111827] hover:bg-white/[0.05] text-[#FBBF24] border-[#F59E0B]/40'
+                  ? 'bg-[#D6A84F] text-[#080C0F] border-[#D6A84F]'
+                  : 'bg-[#0D1318] hover:bg-white/[0.05] text-[#E2BC6A] border-[#D6A84F]/40'
               }`}
               title="Termes & Conditions d'Utilisation (CGU)"
             >
@@ -2875,16 +3000,16 @@ export function App() {
                 runMultiScan(selectedTimeframe, selectedStyle, false);
               }}
               title={lang === 'en' ? 'Switch language (FR / EN)' : 'Changer de langue (FR / EN)'}
-              className="px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded-lg font-mono-tabular uppercase text-[#F1F5F9] hover:border-[#10B981]/50 flex items-center gap-1"
+              className="px-2.5 py-1.5 bg-[#0D1318] border border-white/10 rounded-lg font-mono-tabular uppercase text-[#E8EEF2] hover:border-[#20C997]/50 flex items-center gap-1"
             >
-              <span className={lang === 'fr' ? 'text-[#10B981] font-bold' : 'text-[#64748B]'}>FR</span>
-              <span className="text-[#64748B]">/</span>
-              <span className={lang === 'en' ? 'text-[#10B981] font-bold' : 'text-[#64748B]'}>EN</span>
+              <span className={lang === 'fr' ? 'text-[#20C997] font-bold' : 'text-[#6E7B88]'}>FR</span>
+              <span className="text-[#6E7B88]">/</span>
+              <span className={lang === 'en' ? 'text-[#20C997] font-bold' : 'text-[#6E7B88]'}>EN</span>
             </button>
 
             <button
               onClick={handleLogout}
-              className="md:hidden p-1.5 bg-[#F43F5E]/15 border border-[#F43F5E]/30 rounded-lg text-[#FB7185]"
+              className="md:hidden p-1.5 bg-[#F04438]/15 border border-[#F04438]/30 rounded-lg text-[#F97066]"
               title={tr(lang, 'Se déconnecter')}
             >
               <LogOut className="w-3.5 h-3.5" />
@@ -2892,14 +3017,52 @@ export function App() {
           </div>
         </header>
 
+        {/* Ticker compact (écrans < xl) : prix live réels, tap = ouvrir l'analyse du symbole */}
+        <div className="xl:hidden border-b border-[#202A32] bg-[#0D1318] overflow-x-auto" aria-label={tr(lang, 'Marchés en direct', 'Live markets')}>
+          <div className="flex items-stretch gap-1 px-3 py-1.5 min-w-max">
+            {SYMBOLS.map((symObj) => {
+              const t = livePrices[symObj.id];
+              const hist = priceHistoryRef.current[symObj.id] || [];
+              const up = (t?.change24h ?? 0) >= 0;
+              return (
+                <button
+                  key={symObj.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedSymbol(symObj.id);
+                    setActiveTab('intelligence');
+                    runAnalysis(symObj.id, selectedTimeframe, selectedStyle);
+                  }}
+                  aria-label={`${symObj.id} ${t?.price ?? ''}`}
+                  className={`min-h-11 px-2.5 rounded-md flex items-center gap-2 font-mono-tabular text-xs border ${
+                    selectedSymbol === symObj.id ? 'bg-[#172129] border-[#202A32]' : 'border-transparent hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <span className="text-[#8B98A4] font-semibold">{symObj.id.replace('USDT', '')}</span>
+                  <span className="text-[#E8EEF2] font-semibold">
+                    {t?.price ? t.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}
+                  </span>
+                  {t?.change24h !== undefined && (
+                    <span className={up ? 'text-[#32D583]' : 'text-[#F97066]'}>
+                      {up ? '+' : ''}
+                      {t.change24h.toFixed(2)}%
+                    </span>
+                  )}
+                  <Sparkline values={hist} tone={hist.length > 1 && hist[hist.length - 1] < hist[0] ? 'negative' : 'positive'} label={`${symObj.id} ${tr(lang, 'session', 'session')}`} />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Mobile Consolidated Sub-Tab Pill Bar (Shown on mobile to switch cleanly within the active Hub) */}
         {currentMobileHub && currentMobileHub.tabs.length > 1 && (
           <div className="md:hidden px-3 pt-2.5">
             <div className="flex items-center justify-between mb-1.5 px-1">
-              <span className="text-[10px] font-mono-tabular uppercase tracking-wider text-[#64748B]">
+              <span className="text-[10px] font-mono-tabular uppercase tracking-wider text-[#6E7B88]">
                 {lang === 'en' ? `Section: ${currentMobileHub.label}` : `Pôle : ${currentMobileHub.label}`}
               </span>
-              <span className="text-[10px] font-mono-tabular text-[#10B981]">
+              <span className="text-[10px] font-mono-tabular text-[#20C997]">
                 {currentMobileHub.tabs.findIndex((t) => t.id === activeTab) + 1}/{currentMobileHub.tabs.length}
               </span>
             </div>
@@ -2911,11 +3074,12 @@ export function App() {
                   <button
                     key={subTab.id}
                     type="button"
+                    aria-current={isSubActive ? 'page' : undefined}
                     onClick={() => setActiveTab(subTab.id)}
-                    className={`py-2 px-3 min-h-9 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                    className={`py-2 px-3 min-h-11 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors border border-transparent ${
                       isSubActive
-                        ? 'bg-[#10B981] text-[#090D16] shadow-sm'
-                        : 'text-[#94A3B8] hover:text-[#F1F5F9]'
+                        ? 'bg-[#172129] text-[#E8EEF2] border border-[#20C997]'
+                        : 'text-[#8B98A4] hover:text-[#E8EEF2]'
                     }`}
                   >
                     <SubIcon className="w-3.5 h-3.5 shrink-0" />
@@ -2935,8 +3099,8 @@ export function App() {
             className="fixed z-[100] top-[max(0.5rem,env(safe-area-inset-top))] inset-x-2 sm:inset-x-auto sm:right-4 sm:top-4 sm:w-[26rem] max-w-full space-y-2 pointer-events-none"
           >
             {Object.keys(pendingActions).length > 0 && (
-              <div className="pointer-events-auto rounded-lg bg-[#090D16] shadow-lg shadow-black/40">
-                <div className="px-4 py-2.5 rounded-lg border text-xs flex items-center gap-2 bg-[#3B82F6]/15 border-[#3B82F6]/40 text-[#60A5FA]">
+              <div className="pointer-events-auto rounded-lg bg-[#080C0F]">
+                <div className="px-4 py-2.5 rounded-lg border text-xs flex items-center gap-2 bg-[#4EA1FF]/15 border-[#4EA1FF]/40 text-[#6BB1FF]">
                   <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
                   <span>
                     {Object.values(pendingActions)[0]}
@@ -2946,18 +3110,31 @@ export function App() {
               </div>
             )}
             {toast && (
-              <div className="pointer-events-auto rounded-lg bg-[#090D16] shadow-lg shadow-black/40">
+              <div role={toast.type === 'error' ? 'alert' : undefined} className="pointer-events-auto rounded-lg bg-[#080C0F]">
                 <div
                   className={`px-4 py-2.5 rounded-lg border text-xs flex items-center justify-between gap-3 ${
                     toast.type === 'success'
-                      ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#34D399]'
+                      ? 'bg-[#20C997]/15 border-[#20C997]/40 text-[#32D583]'
                       : toast.type === 'error'
-                      ? 'bg-[#F43F5E]/15 border-[#F43F5E]/40 text-[#FB7185]'
-                      : 'bg-[#3B82F6]/15 border-[#3B82F6]/40 text-[#60A5FA]'
+                      ? 'bg-[#F04438]/15 border-[#F04438]/40 text-[#F97066]'
+                      : 'bg-[#4EA1FF]/15 border-[#4EA1FF]/40 text-[#6BB1FF]'
                   }`}
                 >
-                  <span className="break-words min-w-0">{toast.text}</span>
-                  <button onClick={() => setToast(null)} className="opacity-70 hover:opacity-100 shrink-0">
+                  <span className="break-words min-w-0">
+                    <strong className="font-mono-tabular uppercase text-[10px] tracking-wider mr-1.5">
+                      {toast.type === 'success'
+                        ? tr(lang, 'Succès', 'Success')
+                        : toast.type === 'error'
+                        ? tr(lang, 'Échec', 'Failed')
+                        : 'Info'}
+                    </strong>
+                    {toast.text}
+                  </span>
+                  <button
+                    onClick={() => setToast(null)}
+                    aria-label={tr(lang, 'Fermer la notification', 'Dismiss notification')}
+                    className="opacity-70 hover:opacity-100 shrink-0 min-w-6 min-h-6"
+                  >
                     ✕
                   </button>
                 </div>
@@ -2968,11 +3145,58 @@ export function App() {
 
         {/* Main Scrollable Content */}
         <main className="p-3 sm:p-6 space-y-6 max-w-[1600px] w-full mx-auto">
+          {currentPageMeta && (
+            <PageHeader
+              icon={CurrentNavIcon ? <CurrentNavIcon className="w-5 h-5 text-[#8B98A4] shrink-0" /> : undefined}
+              title={currentPageMeta.title}
+              description={currentPageMeta.description}
+              status={
+                activeTab === 'safety' && tradingCfg ? (
+                  <StatusBadge tone={tradingCfg.credentials_valid ? 'positive' : 'negative'} dot>
+                    {tradingCfg.credentials_valid ? 'API OK' : 'API OFF'}
+                  </StatusBadge>
+                ) : undefined
+              }
+            />
+          )}
           {/* =========================================================
               TAB 1: MARKET INTELLIGENCE & TEDDY SCORE WORKSPACE
              ========================================================= */}
           {activeTab === 'intelligence' && (
             <>
+              {/* État du système : uniquement des états réels (flux WS, config AutoTrade, positions Paper, alertes) */}
+              <div className="flex flex-wrap items-center gap-2 -mt-2" aria-label={tr(lang, 'État du système', 'System status')}>
+                <StatusBadge tone={wsConnected ? 'positive' : 'warning'} dot>
+                  {tr(lang, 'Flux prix', 'Price feed')} : {wsConnected ? (lang === 'en' ? 'CONNECTED' : 'CONNECTÉ') : (lang === 'en' ? 'DISCONNECTED' : 'DÉCONNECTÉ')}
+                </StatusBadge>
+                {tradingCfg && (
+                  <button type="button" onClick={() => setActiveTab('safety')} className="rounded focus-visible:outline-offset-2">
+                    <StatusBadge
+                      tone={tradingCfg.safety_lock ? 'negative' : tradingCfg.enabled ? 'positive' : 'neutral'}
+                      dot
+                    >
+                      AutoTrade : {tradingCfg.safety_lock ? 'SAFE MODE' : tradingCfg.enabled ? 'RUNNING' : 'PAUSED'}
+                      {tradingCfg.testnet ? ' · TESTNET' : ''}
+                    </StatusBadge>
+                  </button>
+                )}
+                {tradingCfg && tradingCfg.engine_online === false && (
+                  <StatusBadge tone="warning" dot>
+                    {tr(lang, 'Moteur hors ligne', 'Engine offline')}
+                  </StatusBadge>
+                )}
+                <button type="button" onClick={() => setActiveTab('paper')} className="rounded">
+                  <StatusBadge tone={openPaper.length > 0 ? 'info' : 'neutral'}>
+                    Paper : {openPaper.length} {tr(lang, 'position(s)', 'position(s)')}
+                  </StatusBadge>
+                </button>
+                <button type="button" onClick={() => setActiveTab('alerts')} className="rounded">
+                  <StatusBadge tone={alerts.length > 0 ? 'info' : 'neutral'}>
+                    {tr(lang, 'Alertes', 'Alerts')} : {alerts.length}
+                  </StatusBadge>
+                </button>
+              </div>
+
               {/* Top 4 KPI Cards (Max 3 data points per card, 24px gap) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                 {/* KPI 1: Live Price & Market Status */}
@@ -2983,23 +3207,23 @@ export function App() {
                   const displayPrice = liveTick?.price || analysis?.current_price || 0;
                   return (
                     <div
-                      className={`bg-[#111827] border rounded-xl p-5 space-y-2 transition-colors duration-300 ${
+                      className={`bg-[#0D1318] border rounded-xl p-5 space-y-2 transition-colors duration-300 ${
                         flash === 'up'
-                          ? 'border-[#10B981]/60 bg-[#10B981]/[0.05]'
+                          ? 'border-[#20C997]/60 bg-[#20C997]/[0.05]'
                           : flash === 'down'
-                          ? 'border-[#F43F5E]/60 bg-[#F43F5E]/[0.05]'
+                          ? 'border-[#F04438]/60 bg-[#F04438]/[0.05]'
                           : 'border-white/[0.07]'
                       }`}
                     >
-                      <div className="flex items-center justify-between text-xs text-[#94A3B8]">
+                      <div className="flex items-center justify-between text-xs text-[#8B98A4]">
                         <span className="flex items-center gap-1.5">
                           <span>{lang === 'en' ? `Live Price (${symKey})` : `Cours Temps Réel (${symKey})`}</span>
                           <span
-                            className="w-2 h-2 rounded-full bg-[#10B981] animate-ping"
+                            className="w-2 h-2 rounded-full bg-[#20C997] animate-ping"
                             title={lang === 'en' ? 'Live feed' : 'Flux en direct'}
                           />
                         </span>
-                        <span className="font-mono-tabular text-[#10B981]">
+                        <span className="font-mono-tabular text-[#20C997]">
                           {analysis?.market_status?.is_open ? tr(lang, '● LIVE 24/7') : tr(lang, '○ FERMÉ')}
                         </span>
                       </div>
@@ -3007,14 +3231,14 @@ export function App() {
                         <div
                           className={`font-mono-tabular text-2xl font-bold transition-colors ${
                             flash === 'up'
-                              ? 'text-[#10B981]'
+                              ? 'text-[#20C997]'
                               : flash === 'down'
-                              ? 'text-[#F43F5E]'
+                              ? 'text-[#F04438]'
                               : liveTick?.direction === 'up'
-                              ? 'text-[#34D399]'
+                              ? 'text-[#32D583]'
                               : liveTick?.direction === 'down'
-                              ? 'text-[#FB7185]'
-                              : 'text-[#F1F5F9]'
+                              ? 'text-[#F97066]'
+                              : 'text-[#E8EEF2]'
                           }`}
                         >
                           {displayPrice
@@ -3023,14 +3247,14 @@ export function App() {
                                 maximumFractionDigits: 2,
                               })
                             : '—'}{' '}
-                          <span className="text-xs font-normal text-[#64748B]">USD</span>
+                          <span className="text-xs font-normal text-[#6E7B88]">USD</span>
                         </div>
                         {liveTick?.change24h !== undefined && (
                           <span
                             className={`font-mono-tabular text-xs font-semibold px-1.5 py-0.5 rounded ${
                               liveTick.change24h >= 0
-                                ? 'bg-[#10B981]/15 text-[#10B981]'
-                                : 'bg-[#F43F5E]/15 text-[#F43F5E]'
+                                ? 'bg-[#20C997]/15 text-[#20C997]'
+                                : 'bg-[#F04438]/15 text-[#F04438]'
                             }`}
                           >
                             {liveTick.change24h >= 0 ? '+' : ''}
@@ -3038,12 +3262,12 @@ export function App() {
                           </span>
                         )}
                       </div>
-                      <div className="text-xs text-[#64748B] font-mono-tabular flex items-center justify-between">
+                      <div className="text-xs text-[#6E7B88] font-mono-tabular flex items-center justify-between">
                         <span>
                           ATR(14) : {ind.atr ? ind.atr.toFixed(2) : '—'} • {(analysis?.asset_class || 'crypto').toUpperCase()}
                         </span>
                         {liveTick?.bid && liveTick?.ask && (
-                          <span className="text-[10px] text-[#94A3B8]">
+                          <span className="text-[10px] text-[#8B98A4]">
                             B:{liveTick.bid.toFixed(1)} / A:{liveTick.ask.toFixed(1)}
                           </span>
                         )}
@@ -3053,10 +3277,10 @@ export function App() {
                 })()}
 
                 {/* KPI 2: Signal & Teddy Score */}
-                <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-2">
-                  <div className="flex items-center justify-between text-xs text-[#94A3B8]">
-                    <span>{tr(lang, 'Signal & Teddy Score')}</span>
-                    <span className="font-mono-tabular text-[#94A3B8]">
+                <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-2">
+                  <div className="flex items-center justify-between text-xs text-[#8B98A4]">
+                    <span className="inline-flex items-center gap-1">{tr(lang, 'Signal & Teddy Score')} <InfoTip term="teddy_score" lang={lang} /></span>
+                    <span className="font-mono-tabular text-[#8B98A4]">
                       {lang === 'en' ? 'Confidence:' : 'Confiance :'} {analysis?.confidence || '—'}
                     </span>
                   </div>
@@ -3064,31 +3288,31 @@ export function App() {
                     <span
                       className={`font-display text-2xl font-bold ${
                         analysis?.signal === 'BUY'
-                          ? 'text-[#10B981]'
+                          ? 'text-[#20C997]'
                           : analysis?.signal === 'SELL'
-                          ? 'text-[#F43F5E]'
-                          : 'text-[#F59E0B]'
+                          ? 'text-[#F04438]'
+                          : 'text-[#D6A84F]'
                       }`}
                     >
                       {analysis?.signal || 'WAIT'}
                     </span>
-                    <span className="font-mono-tabular text-xl font-semibold text-[#F1F5F9]">
-                      {analysis?.teddy_score ?? 0} <span className="text-xs text-[#64748B]">/ 100</span>
+                    <span className="font-mono-tabular text-xl font-semibold text-[#E8EEF2]">
+                      {analysis?.teddy_score ?? 0} <span className="text-xs text-[#6E7B88]">/ 100</span>
                     </span>
                   </div>
-                  <div className="w-full h-1.5 bg-[#090D16] rounded-full overflow-hidden">
+                  <div className="w-full h-1.5 bg-[#080C0F] rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-[#10B981] transition-all"
+                      className="h-full bg-[#20C997] transition-all"
                       style={{ width: `${Math.min(100, Math.max(8, analysis?.teddy_score || 0))}%` }}
                     />
                   </div>
                 </div>
 
                 {/* KPI 3: Multi-Timeframe Hierarchy */}
-                <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-2">
-                  <div className="flex items-center justify-between text-xs text-[#94A3B8]">
+                <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-2">
+                  <div className="flex items-center justify-between text-xs text-[#8B98A4]">
                     <span>{tr(lang, 'Alignement Multi-Timeframes')}</span>
-                    <span className="font-mono-tabular text-[#F59E0B]">
+                    <span className="font-mono-tabular text-[#D6A84F]">
                       {tfAlign.status || 'NEUTRAL'} ({tfAlign.modifier >= 0 ? `+${tfAlign.modifier || 0}` : tfAlign.modifier} pts)
                     </span>
                   </div>
@@ -3096,15 +3320,15 @@ export function App() {
                     {(['1h', '4h', '1d'] as const).map((k) => {
                       const val = tfTrends[k] || 'NEUTRE';
                       return (
-                        <div key={k} className="bg-[#090D16] border border-white/[0.06] rounded px-2.5 py-1.5 text-center">
-                          <div className="text-[10px] text-[#64748B] uppercase">{k}</div>
+                        <div key={k} className="bg-[#080C0F] border border-white/[0.06] rounded px-2.5 py-1.5 text-center">
+                          <div className="text-[10px] text-[#6E7B88] uppercase">{k}</div>
                           <div
                             className={`font-semibold text-[11px] ${
                               val === 'HAUSSIER' || val === 'BULLISH'
-                                ? 'text-[#10B981]'
+                                ? 'text-[#20C997]'
                                 : val === 'BAISSIER' || val === 'BEARISH'
-                                ? 'text-[#F43F5E]'
-                                : 'text-[#94A3B8]'
+                                ? 'text-[#F04438]'
+                                : 'text-[#8B98A4]'
                             }`}
                           >
                             {tr(lang, val)}
@@ -3116,18 +3340,18 @@ export function App() {
                 </div>
 
                 {/* KPI 4: Risk Sizing Recommendation */}
-                <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-2">
-                  <div className="flex items-center justify-between text-xs text-[#94A3B8]">
+                <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-2">
+                  <div className="flex items-center justify-between text-xs text-[#8B98A4]">
                     <span>{tr(lang, 'Taille Position Recommandée')}</span>
-                    <span className="font-mono-tabular text-[#10B981]">
+                    <span className="font-mono-tabular text-[#20C997]">
                       {lang === 'en' ? 'Risk' : 'Risque'} {analysis?.sizing_recommendation?.risk_pct || 1}%
                     </span>
                   </div>
-                  <div className="font-mono-tabular text-2xl font-bold text-[#F1F5F9]">
+                  <div className="font-mono-tabular text-2xl font-bold text-[#E8EEF2]">
                     {analysis?.sizing_recommendation?.position_size ?? 0}{' '}
-                    <span className="text-xs font-normal text-[#64748B]">{tr(lang, 'unités')}</span>
+                    <span className="text-xs font-normal text-[#6E7B88]">{tr(lang, 'unités')}</span>
                   </div>
-                  <div className="text-xs text-[#64748B] font-mono-tabular">
+                  <div className="text-xs text-[#6E7B88] font-mono-tabular">
                     {lang === 'en' ? 'Max risk:' : 'Risque max :'} {analysis?.sizing_recommendation?.risk_amount_usd ?? 100}{' '}
                     USDT • {lang === 'en' ? 'Margin:' : 'Marge :'}{' '}
                     {analysis?.sizing_recommendation?.margin_required_usd ?? 0} USDT
@@ -3153,52 +3377,52 @@ export function App() {
 
                   {/* Technical Indicators Breakdown Strip */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
-                      <div className="text-xs text-[#64748B]">{tr(lang, 'RSI (14) & Stochastique')}</div>
-                      <div className="font-mono-tabular text-base font-semibold text-[#F1F5F9] mt-1">
+                    <div className="bg-[#0D1318] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#6E7B88] flex items-center gap-1">{tr(lang, 'RSI (14) & Stochastique')} <InfoTip term="rsi" lang={lang} /></div>
+                      <div className="font-mono-tabular text-base font-semibold text-[#E8EEF2] mt-1">
                         {ind.rsi ? ind.rsi.toFixed(2) : '—'}
                       </div>
-                      <div className="text-[11px] text-[#94A3B8] mt-0.5">
+                      <div className="text-[11px] text-[#8B98A4] mt-0.5">
                         {ind.rsi > 70
                           ? tr(lang, 'Zone de surachat (>70)')
                           : ind.rsi < 30
                           ? tr(lang, 'Zone de survente (<30)')
                           : tr(lang, 'Zone neutre équilibrée')}
                       </div>
-                      <div className="text-[11px] text-[#94A3B8] mt-0.5 font-mono-tabular">
+                      <div className="text-[11px] text-[#8B98A4] mt-0.5 font-mono-tabular">
                         Stoch %K: {ind.stoch_k != null ? Number(ind.stoch_k).toFixed(1) : '—'} / %D: {ind.stoch_d != null ? Number(ind.stoch_d).toFixed(1) : '—'}
                       </div>
                     </div>
 
-                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
-                      <div className="text-xs text-[#64748B]">MACD (12, 26, 9)</div>
-                      <div className="font-mono-tabular text-base font-semibold text-[#F1F5F9] mt-1">
+                    <div className="bg-[#0D1318] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#6E7B88]">MACD (12, 26, 9)</div>
+                      <div className="font-mono-tabular text-base font-semibold text-[#E8EEF2] mt-1">
                         {ind.macd ? ind.macd.toFixed(2) : '—'}
                       </div>
-                      <div className="text-[11px] text-[#94A3B8] mt-0.5 font-mono-tabular">
+                      <div className="text-[11px] text-[#8B98A4] mt-0.5 font-mono-tabular">
                         {tr(lang, 'Signal')}: {ind.macd_signal != null ? Number(ind.macd_signal).toFixed(2) : '—'} • Hist: {ind.macd_hist ? ind.macd_hist.toFixed(2) : '—'}
                       </div>
                     </div>
 
-                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
-                      <div className="text-xs text-[#64748B]">{tr(lang, 'ADX (14) • Force Tendance')}</div>
-                      <div className="font-mono-tabular text-base font-semibold text-[#F1F5F9] mt-1">
+                    <div className="bg-[#0D1318] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#6E7B88] flex items-center gap-1">{tr(lang, 'ADX (14) • Force Tendance')} <InfoTip term="adx" lang={lang} /></div>
+                      <div className="font-mono-tabular text-base font-semibold text-[#E8EEF2] mt-1">
                         {ind.adx ? ind.adx.toFixed(2) : '—'}{' '}
-                        <span className="text-xs text-[#10B981]">
+                        <span className="text-xs text-[#20C997]">
                           {ind.adx_rising ? tr(lang, '↑ En hausse') : tr(lang, '↓ En repli')}
                         </span>
                       </div>
-                      <div className="text-[11px] text-[#94A3B8] mt-0.5 font-mono-tabular">
+                      <div className="text-[11px] text-[#8B98A4] mt-0.5 font-mono-tabular">
                         +DI: {ind.plus_di ? ind.plus_di.toFixed(1) : '—'} / -DI: {ind.minus_di ? ind.minus_di.toFixed(1) : '—'}
                       </div>
                     </div>
 
-                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
-                      <div className="text-xs text-[#64748B]">{tr(lang, 'Support / Résistance (50p)')}</div>
-                      <div className="font-mono-tabular text-sm font-semibold text-[#10B981] mt-1">
+                    <div className="bg-[#0D1318] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#6E7B88]">{tr(lang, 'Support / Résistance (50p)')}</div>
+                      <div className="font-mono-tabular text-sm font-semibold text-[#20C997] mt-1">
                         S: {ind.support ? ind.support.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}
                       </div>
-                      <div className="font-mono-tabular text-sm font-semibold text-[#F59E0B]">
+                      <div className="font-mono-tabular text-sm font-semibold text-[#D6A84F]">
                         R: {ind.resistance ? ind.resistance.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}
                       </div>
                     </div>
@@ -3206,13 +3430,13 @@ export function App() {
 
                   {/* Autres indicateurs du bot : SMA 20/50, Bollinger, Volume, Fibonacci, Divergence RSI */}
                   <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-4">
-                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
-                      <div className="text-xs text-[#64748B]">{tr(lang, 'Moyennes mobiles SMA 20 / 50')}</div>
-                      <div className="font-mono-tabular text-sm font-semibold text-[#F1F5F9] mt-1">
+                    <div className="bg-[#0D1318] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#6E7B88]">{tr(lang, 'Moyennes mobiles SMA 20 / 50')}</div>
+                      <div className="font-mono-tabular text-sm font-semibold text-[#E8EEF2] mt-1">
                         {ind.sma20 != null ? Number(ind.sma20).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'} /{' '}
                         {ind.sma50 != null ? Number(ind.sma50).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}
                       </div>
-                      <div className="text-[11px] text-[#94A3B8] mt-0.5">
+                      <div className="text-[11px] text-[#8B98A4] mt-0.5">
                         {ind.price > ind.sma20 && ind.sma20 > ind.sma50
                           ? tr(lang, 'Tendance haussière (prix > SMA20 > SMA50)')
                           : ind.price < ind.sma20 && ind.sma20 < ind.sma50
@@ -3221,44 +3445,44 @@ export function App() {
                       </div>
                     </div>
 
-                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
-                      <div className="text-xs text-[#64748B]">{tr(lang, 'Bandes de Bollinger (20, 2σ)')}</div>
-                      <div className="font-mono-tabular text-sm font-semibold text-[#F59E0B] mt-1">
+                    <div className="bg-[#0D1318] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#6E7B88]">{tr(lang, 'Bandes de Bollinger (20, 2σ)')}</div>
+                      <div className="font-mono-tabular text-sm font-semibold text-[#D6A84F] mt-1">
                         {tr(lang, 'Haute')}: {ind.bb_upper != null ? Number(ind.bb_upper).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}
                       </div>
-                      <div className="font-mono-tabular text-sm font-semibold text-[#10B981]">
+                      <div className="font-mono-tabular text-sm font-semibold text-[#20C997]">
                         {tr(lang, 'Basse')}: {ind.bb_lower != null ? Number(ind.bb_lower).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}
                       </div>
                     </div>
 
-                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
-                      <div className="text-xs text-[#64748B]">{tr(lang, 'Volume vs moyenne 20')}</div>
-                      <div className="font-mono-tabular text-base font-semibold text-[#F1F5F9] mt-1">
+                    <div className="bg-[#0D1318] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#6E7B88]">{tr(lang, 'Volume vs moyenne 20')}</div>
+                      <div className="font-mono-tabular text-base font-semibold text-[#E8EEF2] mt-1">
                         {ind.volume && ind.volume_ma20 ? `${(ind.volume / ind.volume_ma20).toFixed(2)}x` : '—'}
                       </div>
-                      <div className="text-[11px] text-[#94A3B8] mt-0.5 font-mono-tabular">
+                      <div className="text-[11px] text-[#8B98A4] mt-0.5 font-mono-tabular">
                         {tr(lang, 'Moyenne 20')}: {ind.volume_ma20 != null ? Number(ind.volume_ma20).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—'}
                       </div>
                     </div>
 
-                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
-                      <div className="text-xs text-[#64748B]">{tr(lang, 'Fibonacci (50 bougies)')}</div>
-                      <div className="font-mono-tabular text-[11px] text-[#F1F5F9] mt-1 space-y-0.5">
+                    <div className="bg-[#0D1318] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#6E7B88]">{tr(lang, 'Fibonacci (50 bougies)')}</div>
+                      <div className="font-mono-tabular text-[11px] text-[#E8EEF2] mt-1 space-y-0.5">
                         <div>38.2% : {ind.fib?.['0.382'] != null ? Number(ind.fib['0.382']).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}</div>
                         <div>50.0% : {ind.fib?.['0.500'] != null ? Number(ind.fib['0.500']).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}</div>
                         <div>61.8% : {ind.fib?.['0.618'] != null ? Number(ind.fib['0.618']).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}</div>
                       </div>
                     </div>
 
-                    <div className="bg-[#111827] border border-white/[0.07] rounded-lg p-3.5">
-                      <div className="text-xs text-[#64748B]">{tr(lang, 'Divergence RSI / Prix')}</div>
+                    <div className="bg-[#0D1318] border border-white/[0.07] rounded-lg p-3.5">
+                      <div className="text-xs text-[#6E7B88]">{tr(lang, 'Divergence RSI / Prix')}</div>
                       <div
                         className={`font-mono-tabular text-sm font-semibold mt-1 ${
                           ind.rsi_divergence === 'bullish'
-                            ? 'text-[#10B981]'
+                            ? 'text-[#20C997]'
                             : ind.rsi_divergence === 'bearish'
-                            ? 'text-[#F43F5E]'
-                            : 'text-[#94A3B8]'
+                            ? 'text-[#F04438]'
+                            : 'text-[#8B98A4]'
                         }`}
                       >
                         {ind.rsi_divergence === 'bullish'
@@ -3274,43 +3498,43 @@ export function App() {
                 {/* Right Column: Signal Explainability & Direct Paper Trade Box */}
                 <div className="lg:col-span-4 space-y-6">
                   {/* Explainability Box */}
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
                     <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
-                      <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
+                      <h3 className="font-display font-semibold text-sm text-[#E8EEF2]">
                         {tr(lang, 'Diagnostic du Moteur Teddy')}
                       </h3>
-                      <span className="font-mono-tabular text-xs text-[#94A3B8]">
+                      <span className="font-mono-tabular text-xs text-[#8B98A4]">
                         {lang === 'en' ? 'Status:' : 'Statut :'} {analysis?.validation_status || '—'}
                       </span>
                     </div>
 
-                    <div className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] text-xs text-[#F1F5F9] leading-relaxed">
+                    <div className="p-3.5 rounded-lg bg-[#080C0F] border border-white/[0.06] text-xs text-[#E8EEF2] leading-relaxed">
                       {analysis?.reason || tr(lang, 'Analyse en cours...')}
                     </div>
 
                     {/* Levels SL / TP1 / TP2 / RR */}
                     <div className="grid grid-cols-2 gap-2.5 text-xs font-mono-tabular">
-                      <div className="p-2.5 rounded bg-[#090D16] border border-white/[0.05]">
-                        <div className="text-[#64748B] text-[10px]">STOP LOSS (ATR)</div>
-                        <div className="text-[#F43F5E] font-semibold mt-0.5">
+                      <div className="p-2.5 rounded bg-[#080C0F] border border-white/[0.05]">
+                        <div className="text-[#6E7B88] text-[10px] flex items-center gap-1">STOP LOSS (ATR) <InfoTip term="atr" lang={lang} /></div>
+                        <div className="text-[#F04438] font-semibold mt-0.5">
                           {analysis?.sl ? analysis.sl.toLocaleString('en-US', { maximumFractionDigits: 2 }) : tr(lang, 'Non actif (WAIT)')}
                         </div>
                       </div>
-                      <div className="p-2.5 rounded bg-[#090D16] border border-white/[0.05]">
-                        <div className="text-[#64748B] text-[10px]">TAKE PROFIT 1</div>
-                        <div className="text-[#10B981] font-semibold mt-0.5">
+                      <div className="p-2.5 rounded bg-[#080C0F] border border-white/[0.05]">
+                        <div className="text-[#6E7B88] text-[10px]">TAKE PROFIT 1</div>
+                        <div className="text-[#20C997] font-semibold mt-0.5">
                           {analysis?.tp1 ? analysis.tp1.toLocaleString('en-US', { maximumFractionDigits: 2 }) : tr(lang, 'Non actif (WAIT)')}
                         </div>
                       </div>
-                      <div className="p-2.5 rounded bg-[#090D16] border border-white/[0.05]">
-                        <div className="text-[#64748B] text-[10px]">TAKE PROFIT 2</div>
-                        <div className="text-[#34D399] font-semibold mt-0.5">
+                      <div className="p-2.5 rounded bg-[#080C0F] border border-white/[0.05]">
+                        <div className="text-[#6E7B88] text-[10px]">TAKE PROFIT 2</div>
+                        <div className="text-[#32D583] font-semibold mt-0.5">
                           {analysis?.tp2 ? analysis.tp2.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'}
                         </div>
                       </div>
-                      <div className="p-2.5 rounded bg-[#090D16] border border-white/[0.05]">
-                        <div className="text-[#64748B] text-[10px]">RATIO R:R</div>
-                        <div className="text-[#F59E0B] font-semibold mt-0.5">
+                      <div className="p-2.5 rounded bg-[#080C0F] border border-white/[0.05]">
+                        <div className="text-[#6E7B88] text-[10px]">RATIO R:R</div>
+                        <div className="text-[#D6A84F] font-semibold mt-0.5">
                           {analysis?.rr_ratio ? `1 : ${analysis.rr_ratio.toFixed(2)}` : '—'}
                         </div>
                       </div>
@@ -3318,12 +3542,12 @@ export function App() {
                   </div>
 
                   {/* Quick Paper Order Ticket */}
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
                     <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
-                      <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
+                      <h3 className="font-display font-semibold text-sm text-[#E8EEF2]">
                         {tr(lang, 'Exécution Rapide Paper Trading')}
                       </h3>
-                      <span className="font-mono-tabular text-xs text-[#10B981]">
+                      <span className="font-mono-tabular text-xs text-[#20C997]">
                         Cap: {Number(paperStats?.capital ?? 10000).toFixed(0)} USDT
                       </span>
                     </div>
@@ -3335,8 +3559,8 @@ export function App() {
                           onClick={() => setOrderSide('BUY')}
                           className={`py-2 rounded-lg font-semibold border transition-colors ${
                             orderSide === 'BUY'
-                              ? 'bg-[#10B981] text-[#090D16] border-[#10B981]'
-                              : 'bg-[#090D16] text-[#94A3B8] border-white/10'
+                              ? 'bg-[#20C997] text-[#080C0F] border-[#20C997]'
+                              : 'bg-[#080C0F] text-[#8B98A4] border-white/10'
                           }`}
                         >
                           LONG / BUY
@@ -3346,8 +3570,8 @@ export function App() {
                           onClick={() => setOrderSide('SELL')}
                           className={`py-2 rounded-lg font-semibold border transition-colors ${
                             orderSide === 'SELL'
-                              ? 'bg-[#F43F5E] text-white border-[#F43F5E]'
-                              : 'bg-[#090D16] text-[#94A3B8] border-white/10'
+                              ? 'bg-[#F04438] text-white border-[#F04438]'
+                              : 'bg-[#080C0F] text-[#8B98A4] border-white/10'
                           }`}
                         >
                           SHORT / SELL
@@ -3356,7 +3580,7 @@ export function App() {
 
                       <div className="grid grid-cols-2 gap-2.5">
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">
+                          <label className="block text-[11px] text-[#8B98A4] mb-1">
                             {lang === 'en' ? 'Quantity' : 'Quantité'} ({selectedSymbol})
                           </label>
                           <input
@@ -3364,19 +3588,19 @@ export function App() {
                             step="any"
                             value={orderQty}
                             onChange={(e) => setOrderQty(e.target.value)}
-                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                            className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                             required
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Levier (1x–20x)')}</label>
+                          <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Levier (1x–20x)')}</label>
                           <input
                             type="number"
                             min="1"
                             max="20"
                             value={orderLeverage}
                             onChange={(e) => setOrderLeverage(e.target.value)}
-                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                            className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                             required
                           />
                         </div>
@@ -3384,24 +3608,24 @@ export function App() {
 
                       <div className="grid grid-cols-2 gap-2.5">
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">Stop Loss (SL)</label>
+                          <label className="block text-[11px] text-[#8B98A4] mb-1">Stop Loss (SL)</label>
                           <input
                             type="number"
                             step="any"
                             value={orderSL}
                             onChange={(e) => setOrderSL(e.target.value)}
-                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F43F5E]"
+                            className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#F04438]"
                             required
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">Take Profit (TP)</label>
+                          <label className="block text-[11px] text-[#8B98A4] mb-1">Take Profit (TP)</label>
                           <input
                             type="number"
                             step="any"
                             value={orderTP}
                             onChange={(e) => setOrderTP(e.target.value)}
-                            className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#10B981]"
+                            className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#20C997]"
                             required
                           />
                         </div>
@@ -3410,7 +3634,7 @@ export function App() {
                       <button
                         type="submit"
                         disabled={isPending('paper-open')}
-                        className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="w-full py-2.5 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {isPending('paper-open')
                           ? lang === 'en'
@@ -3426,20 +3650,20 @@ export function App() {
               </div>
 
               {/* Multi-Symbol Scanner Section */}
-              <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-4 sm:p-5 space-y-4">
+              <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-4 sm:p-5 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="flex items-center gap-2.5">
-                      <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                      <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                         {tr(lang, 'Scanner Multi-Marchés (BTCUSDT • ETHUSDT • XAUUSDT)')}
                       </h3>
                       {lastScannedAt && (
-                        <span className="text-[11px] font-mono-tabular text-[#10B981] bg-[#10B981]/10 border border-[#10B981]/30 px-2 py-0.5 rounded">
+                        <span className="text-[11px] font-mono-tabular text-[#20C997] bg-[#20C997]/10 border border-[#20C997]/30 px-2 py-0.5 rounded">
                           {lang === 'en' ? 'Updated at' : 'Mis à jour à'} {new Date(lastScannedAt).toLocaleTimeString()}
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-[#64748B] mt-0.5">
+                    <p className="text-xs text-[#6E7B88] mt-0.5">
                       {lang === 'en'
                         ? `Simultaneous real-time analysis on closed candles (${selectedTimeframe.toUpperCase()} • Style ${selectedStyle}). Click a card to load its detailed chart.`
                         : `Analyse simultanée en temps réel sur bougies clôturées (${selectedTimeframe.toUpperCase()} • Style ${selectedStyle}). Cliquez sur une carte pour charger son graphique détaillé.`}
@@ -3448,7 +3672,7 @@ export function App() {
                   <button
                     onClick={() => runMultiScan(selectedTimeframe, selectedStyle, true)}
                     disabled={loadingScan}
-                    className="w-full sm:w-auto justify-center px-4 py-2 bg-[#10B981] hover:bg-[#059669] text-[#090D16] rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors shadow-lg shadow-[#10B981]/15"
+                    className="w-full sm:w-auto justify-center px-4 py-2 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${loadingScan ? 'animate-spin' : ''}`} />
                     <span>
@@ -3464,7 +3688,7 @@ export function App() {
                 {loadingScan && multiScans.length === 0 ? (
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
                     {[1, 2, 3].map((n) => (
-                      <div key={n} className="p-4 rounded-lg bg-[#090D16] border border-white/[0.07] animate-pulse space-y-3">
+                      <div key={n} className="p-4 rounded-lg bg-[#080C0F] border border-white/[0.07] animate-pulse space-y-3">
                         <div className="h-4 bg-white/10 rounded w-1/2" />
                         <div className="h-6 bg-white/10 rounded w-2/3" />
                         <div className="h-3 bg-white/10 rounded w-full" />
@@ -3487,26 +3711,26 @@ export function App() {
                             setAnalysis(sc);
                             runAnalysis(sc.symbol, selectedTimeframe, selectedStyle);
                           }}
-                          className={`p-4 rounded-lg bg-[#090D16] border cursor-pointer transition-all space-y-2.5 ${
+                          className={`p-4 rounded-lg bg-[#080C0F] border cursor-pointer transition-all space-y-2.5 ${
                             selectedSymbol === sc.symbol
-                              ? 'border-[#10B981]/60 ring-1 ring-[#10B981]/30'
-                              : 'border-white/[0.07] hover:border-[#10B981]/40'
+                              ? 'border-[#20C997]/60 ring-1 ring-[#20C997]/30'
+                              : 'border-white/[0.07] hover:border-[#20C997]/40'
                           }`}
                         >
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
-                              <span className="font-mono-tabular font-bold text-sm text-[#F1F5F9]">{sc.symbol}</span>
-                              <span className="text-[10px] font-mono-tabular px-1.5 py-0.5 rounded bg-white/[0.05] text-[#94A3B8]">
+                              <span className="font-mono-tabular font-bold text-sm text-[#E8EEF2]">{sc.symbol}</span>
+                              <span className="text-[10px] font-mono-tabular px-1.5 py-0.5 rounded bg-white/[0.05] text-[#8B98A4]">
                                 {sc.timeframe.toUpperCase()}
                               </span>
                             </div>
                             <span
                               className={`font-mono-tabular text-xs font-bold px-2 py-0.5 rounded ${
                                 sc.signal === 'BUY'
-                                  ? 'bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30'
+                                  ? 'bg-[#20C997]/15 text-[#20C997] border border-[#20C997]/30'
                                   : sc.signal === 'SELL'
-                                  ? 'bg-[#F43F5E]/15 text-[#F43F5E] border border-[#F43F5E]/30'
-                                  : 'bg-[#F59E0B]/15 text-[#F59E0B] border border-[#F59E0B]/30'
+                                  ? 'bg-[#F04438]/15 text-[#F04438] border border-[#F04438]/30'
+                                  : 'bg-[#D6A84F]/15 text-[#D6A84F] border border-[#D6A84F]/30'
                               }`}
                             >
                               {sc.signal} • {sc.teddy_score}/100
@@ -3517,23 +3741,23 @@ export function App() {
                             <div
                               className={`font-mono-tabular text-lg font-bold transition-colors ${
                                 scFlash === 'up'
-                                  ? 'text-[#10B981]'
+                                  ? 'text-[#20C997]'
                                   : scFlash === 'down'
-                                  ? 'text-[#F43F5E]'
+                                  ? 'text-[#F04438]'
                                   : scTick?.direction === 'up'
-                                  ? 'text-[#34D399]'
+                                  ? 'text-[#32D583]'
                                   : scTick?.direction === 'down'
-                                  ? 'text-[#FB7185]'
-                                  : 'text-[#F1F5F9]'
+                                  ? 'text-[#F97066]'
+                                  : 'text-[#E8EEF2]'
                               }`}
                             >
                               {Number(scLivePrice).toLocaleString('en-US', {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2,
                               })}{' '}
-                              <span className="text-xs font-normal text-[#64748B]">USD</span>
+                              <span className="text-xs font-normal text-[#6E7B88]">USD</span>
                             </div>
-                            <div className="text-[11px] font-mono-tabular text-[#64748B]">
+                            <div className="text-[11px] font-mono-tabular text-[#6E7B88]">
                               RSI: {scInd.rsi ? Number(scInd.rsi).toFixed(1) : '—'} • ADX:{' '}
                               {scInd.adx ? Number(scInd.adx).toFixed(1) : '—'}
                             </div>
@@ -3543,15 +3767,15 @@ export function App() {
                             {(['1h', '4h', '1d'] as const).map((tfKey) => {
                               const trVal = scTrends[tfKey] || 'NEUTRE';
                               return (
-                                <div key={tfKey} className="bg-[#111827] px-2 py-1 rounded text-center">
-                                  <span className="text-[#64748B] uppercase mr-1">{tfKey}:</span>
+                                <div key={tfKey} className="bg-[#0D1318] px-2 py-1 rounded text-center">
+                                  <span className="text-[#6E7B88] uppercase mr-1">{tfKey}:</span>
                                   <span
                                     className={
                                       trVal === 'HAUSSIER' || trVal === 'BULLISH'
-                                        ? 'text-[#10B981] font-semibold'
+                                        ? 'text-[#20C997] font-semibold'
                                         : trVal === 'BAISSIER' || trVal === 'BEARISH'
-                                        ? 'text-[#F43F5E] font-semibold'
-                                        : 'text-[#94A3B8]'
+                                        ? 'text-[#F04438] font-semibold'
+                                        : 'text-[#8B98A4]'
                                     }
                                   >
                                     {tr(lang, trVal)}
@@ -3563,13 +3787,13 @@ export function App() {
 
                           {(sc.sl || sc.tp1) && (
                             <div className="flex items-center justify-between text-[11px] font-mono-tabular pt-1 border-t border-white/[0.05]">
-                              <span className="text-[#F43F5E]">SL: {sc.sl ? Number(sc.sl).toLocaleString() : '—'}</span>
-                              <span className="text-[#10B981]">TP1: {sc.tp1 ? Number(sc.tp1).toLocaleString() : '—'}</span>
-                              <span className="text-[#F59E0B]">R:R {sc.rr_ratio ? `1:${Number(sc.rr_ratio).toFixed(2)}` : '—'}</span>
+                              <span className="text-[#F04438]">SL: {sc.sl ? Number(sc.sl).toLocaleString() : '—'}</span>
+                              <span className="text-[#20C997]">TP1: {sc.tp1 ? Number(sc.tp1).toLocaleString() : '—'}</span>
+                              <span className="text-[#D6A84F]">R:R {sc.rr_ratio ? `1:${Number(sc.rr_ratio).toFixed(2)}` : '—'}</span>
                             </div>
                           )}
 
-                          <div className="text-xs text-[#94A3B8] line-clamp-2">{sc.reason}</div>
+                          <div className="text-xs text-[#8B98A4] line-clamp-2">{sc.reason}</div>
                         </div>
                       );
                     })}
@@ -3586,10 +3810,7 @@ export function App() {
             <div className="space-y-6">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
-                  <h2 className="font-display text-2xl font-bold text-[#F1F5F9]">
-                    {tr(lang, 'Portefeuille Paper Trading Réaliste')}
-                  </h2>
-                  <p className="text-xs text-[#94A3B8]">
+                  <p className="text-xs text-[#8B98A4]">
                     {tr(
                       lang,
                       "Simulation fidèle avec frais d'ouverture/clôture (0.04%), slippage (0.02%) et surveillance automatique des seuils SL/TP."
@@ -3599,7 +3820,7 @@ export function App() {
                 <button
                   onClick={handleResetPaperAccount}
                   disabled={isPending('paper-reset')}
-                  className="px-3.5 py-2 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-3.5 py-2 bg-[#172129] hover:bg-[#202A32] border border-white/10 rounded-lg text-xs text-[#E8EEF2] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {tr(lang, 'Réinitialiser le capital (10 000 USDT)')}
                 </button>
@@ -3607,34 +3828,34 @@ export function App() {
 
               {paperStats && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5">
-                    <div className="text-xs text-[#94A3B8]">{tr(lang, 'Capital Disponible')}</div>
-                    <div className="font-mono-tabular text-2xl font-bold text-[#F1F5F9] mt-1">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5">
+                    <div className="text-xs text-[#8B98A4]">{tr(lang, 'Capital Disponible')}</div>
+                    <div className="font-mono-tabular text-2xl font-bold text-[#E8EEF2] mt-1">
                       {Number(paperStats.capital ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
                     </div>
                   </div>
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5">
-                    <div className="text-xs text-[#94A3B8]">{tr(lang, 'Équité Totale (Marge + Latent)')}</div>
-                    <div className="font-mono-tabular text-2xl font-bold text-[#10B981] mt-1">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5">
+                    <div className="text-xs text-[#8B98A4]">{tr(lang, 'Équité Totale (Marge + Latent)')}</div>
+                    <div className="font-mono-tabular text-2xl font-bold text-[#20C997] mt-1">
                       {Number(paperStats.equity ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
                     </div>
                   </div>
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5">
-                    <div className="text-xs text-[#94A3B8]">{tr(lang, 'PnL Réalisé Cumulé')}</div>
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5">
+                    <div className="text-xs text-[#8B98A4]">{tr(lang, 'PnL Réalisé Cumulé')}</div>
                     <div
                       className={`font-mono-tabular text-2xl font-bold mt-1 ${
-                        (paperStats.total_pnl ?? 0) >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                        (paperStats.total_pnl ?? 0) >= 0 ? 'text-[#20C997]' : 'text-[#F04438]'
                       }`}
                     >
                       {(paperStats.total_pnl ?? 0) >= 0 ? '+' : ''}
                       {Number(paperStats.total_pnl ?? 0).toFixed(2)} USDT
                     </div>
                   </div>
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5">
-                    <div className="text-xs text-[#94A3B8]">{tr(lang, 'Taux de Réussite (Win Rate)')}</div>
-                    <div className="font-mono-tabular text-2xl font-bold text-[#F59E0B] mt-1">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5">
+                    <div className="text-xs text-[#8B98A4]">{tr(lang, 'Taux de Réussite (Win Rate)')}</div>
+                    <div className="font-mono-tabular text-2xl font-bold text-[#D6A84F] mt-1">
                       {Number(paperStats.win_rate ?? 0).toFixed(1)}%{' '}
-                      <span className="text-xs font-normal text-[#64748B]">
+                      <span className="text-xs font-normal text-[#6E7B88]">
                         ({paperStats.wins ?? 0}W / {paperStats.losses ?? 0}L)
                       </span>
                     </div>
@@ -3643,16 +3864,67 @@ export function App() {
               )}
 
               {/* Open Positions Table */}
-              <div className="bg-[#111827] border border-white/[0.07] rounded-xl overflow-hidden">
+              <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
-                  <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
+                  <h3 className="font-display font-semibold text-sm text-[#E8EEF2]">
                     {lang === 'en' ? 'Open Positions' : 'Positions Ouvertes'} ({openPaper.length})
                   </h3>
                 </div>
-                <div className="overflow-x-auto">
+                {/* Mobile : une carte par position (même données, mêmes actions que le tableau) */}
+                <div className="md:hidden divide-y divide-[#202A32]">
+                  {openPaper.length === 0 ? (
+                    <div className="p-4 text-xs text-[#6E7B88]">
+                      {tr(
+                        lang,
+                        "Aucune position Paper ouverte. Utilisez le ticket d'ordre depuis l'onglet Market Intelligence."
+                      )}
+                    </div>
+                  ) : (
+                    openPaper.map((pos) => {
+                      const m = computePaperMetrics(pos);
+                      return (
+                        <div key={pos.id} className="p-4 space-y-2 font-mono-tabular text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-sm text-[#E8EEF2]">{pos.symbol}</span>
+                            <StatusBadge tone={pos.side === 'BUY' ? 'positive' : 'negative'}>
+                              {pos.side === 'BUY' ? 'LONG' : 'SHORT'} {pos.leverage}x
+                            </StatusBadge>
+                          </div>
+                          <div className={`text-lg font-bold ${m.upnl >= 0 ? 'text-[#32D583]' : 'text-[#F97066]'}`}>
+                            {m.upnl >= 0 ? '+' : ''}
+                            {m.upnl.toFixed(2)} USDT <span className="text-xs">({m.upnlPct.toFixed(2)}%)</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[#8B98A4]">
+                            <span>{tr(lang, 'Entrée')}</span>
+                            <span className="text-right text-[#E8EEF2]">{m.entryVal.toLocaleString()}</span>
+                            <span>{tr(lang, 'Cours Actuel')}</span>
+                            <span className="text-right text-[#E8EEF2]">
+                              {m.currVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                            <span>SL / TP</span>
+                            <span className="text-right">
+                              <span className="text-[#F97066]">{m.slVal ? m.slVal.toLocaleString() : '—'}</span> /{' '}
+                              <span className="text-[#32D583]">{m.tpVal ? m.tpVal.toLocaleString() : '—'}</span>
+                            </span>
+                            <span>{tr(lang, 'Marge')}</span>
+                            <span className="text-right text-[#E8EEF2]">{m.marginVal.toFixed(2)} USDT</span>
+                          </div>
+                          <button
+                            onClick={() => handleClosePaperPosition(pos.id)}
+                            disabled={isPending(`paper-close-${pos.id}`)}
+                            className="w-full min-h-11 bg-[#F04438]/15 hover:bg-[#F04438]/25 border border-[#F04438]/40 text-[#F97066] rounded-md text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {isPending(`paper-close-${pos.id}`) ? tr(lang, 'Traitement…') : tr(lang, 'Clôturer')}
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+                <div className="hidden md:block overflow-x-auto">
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
-                      <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
+                      <tr className="border-b border-white/[0.07] text-[#6E7B88] font-mono-tabular uppercase">
                         <th className="py-3 px-4">{tr(lang, 'Actif')}</th>
                         <th className="py-3 px-4">{tr(lang, 'Sens & Levier')}</th>
                         <th className="py-3 px-4 text-right">{tr(lang, 'Entrée')}</th>
@@ -3666,7 +3938,7 @@ export function App() {
                     <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
                       {openPaper.length === 0 ? (
                         <tr>
-                          <td colSpan={8} className="py-8 text-center text-[#64748B] font-sans">
+                          <td colSpan={8} className="py-8 text-center text-[#6E7B88] font-sans">
                             {tr(
                               lang,
                               "Aucune position Paper ouverte. Utilisez le ticket d'ordre depuis l'onglet Market Intelligence."
@@ -3694,27 +3966,27 @@ export function App() {
                               : Number(pos.unrealized_pnl_pct ?? pos.pnl_pct ?? 0);
                           return (
                             <tr key={pos.id} className="hover:bg-white/[0.02]">
-                              <td className="py-3.5 px-4 font-semibold text-[#F1F5F9]">{pos.symbol}</td>
+                              <td className="py-3.5 px-4 font-semibold text-[#E8EEF2]">{pos.symbol}</td>
                               <td className="py-3.5 px-4">
-                                <span className={pos.side === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                                <span className={pos.side === 'BUY' ? 'text-[#20C997]' : 'text-[#F04438]'}>
                                   {pos.side} {pos.leverage}x
                                 </span>
                               </td>
                               <td className="py-3.5 px-4 text-right">{entryVal.toLocaleString()}</td>
-                              <td className="py-3.5 px-4 text-right font-semibold text-[#F1F5F9]">
+                              <td className="py-3.5 px-4 text-right font-semibold text-[#E8EEF2]">
                                 {currVal.toLocaleString('en-US', {
                                   minimumFractionDigits: 2,
                                   maximumFractionDigits: 2,
                                 })}
                               </td>
                               <td className="py-3.5 px-4 text-right">
-                                <span className="text-[#F43F5E]">{slVal ? slVal.toLocaleString() : '—'}</span> /{' '}
-                                <span className="text-[#10B981]">{tpVal ? tpVal.toLocaleString() : '—'}</span>
+                                <span className="text-[#F04438]">{slVal ? slVal.toLocaleString() : '—'}</span> /{' '}
+                                <span className="text-[#20C997]">{tpVal ? tpVal.toLocaleString() : '—'}</span>
                               </td>
                               <td className="py-3.5 px-4 text-right">{marginVal.toFixed(2)} USDT</td>
                               <td
                                 className={`py-3.5 px-4 text-right font-semibold ${
-                                  computedUpnl >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                                  computedUpnl >= 0 ? 'text-[#20C997]' : 'text-[#F04438]'
                                 }`}
                               >
                                 {computedUpnl >= 0 ? '+' : ''}
@@ -3724,7 +3996,7 @@ export function App() {
                                 <button
                                   onClick={() => handleClosePaperPosition(pos.id)}
                                   disabled={isPending(`paper-close-${pos.id}`)}
-                                  className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
+                                  className="px-2.5 py-1 bg-[#F04438]/15 hover:bg-[#F04438]/25 border border-[#F04438]/40 text-[#F97066] rounded text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   {isPending(`paper-close-${pos.id}`) ? tr(lang, 'Traitement…') : tr(lang, 'Clôturer')}
                                 </button>
@@ -3739,16 +4011,52 @@ export function App() {
               </div>
 
               {/* Closed Positions History */}
-              <div className="bg-[#111827] border border-white/[0.07] rounded-xl overflow-hidden">
+              <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-white/[0.07]">
-                  <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
+                  <h3 className="font-display font-semibold text-sm text-[#E8EEF2]">
                     {lang === 'en' ? 'Closed Positions History' : 'Historique des Positions Clôturées'} ({closedPaper.length})
                   </h3>
                 </div>
-                <div className="overflow-x-auto">
+                <div className="md:hidden divide-y divide-white/[0.05]">
+                  {closedPaper.length === 0 ? (
+                    <div className="p-4 text-xs text-[#8B98A4]">
+                      {lang === 'en' ? 'No closed positions yet.' : 'Aucune position clôturée pour le moment.'}
+                    </div>
+                  ) : (
+                    closedPaper.slice(0, 20).map((pos) => {
+                      const entryVal = Number(pos.entry ?? pos.entry_price ?? 0);
+                      const exitVal = Number(pos.exit_price ?? 0);
+                      const pnlVal = Number(pos.pnl ?? pos.pnl_usdt ?? 0);
+                      const pnlPctVal = Number(pos.pnl_pct ?? 0);
+                      return (
+                        <div key={pos.id} className="p-4 space-y-2 font-mono-tabular text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-sm text-[#E8EEF2]">{pos.symbol}</span>
+                            <StatusBadge tone={pos.side === 'BUY' ? 'positive' : 'negative'}>
+                              {pos.side === 'BUY' ? 'LONG' : 'SHORT'} {pos.leverage}x
+                            </StatusBadge>
+                          </div>
+                          <div className={`text-base font-bold ${pnlVal >= 0 ? 'text-[#32D583]' : 'text-[#F97066]'}`}>
+                            {pnlVal >= 0 ? '+' : ''}
+                            {pnlVal.toFixed(2)} USDT <span className="text-xs">({pnlPctVal.toFixed(2)}%)</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[#8B98A4]">
+                            <span>{tr(lang, 'Entrée')}</span>
+                            <span className="text-right text-[#E8EEF2]">{entryVal.toLocaleString()}</span>
+                            <span>{tr(lang, 'Sortie')}</span>
+                            <span className="text-right text-[#E8EEF2]">{exitVal ? exitVal.toLocaleString() : '—'}</span>
+                            <span>{tr(lang, 'Raison')}</span>
+                            <span className="text-right">{pos.close_reason ?? pos.exit_reason ?? '—'}</span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+                <div className="hidden md:block overflow-x-auto">
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
-                      <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
+                      <tr className="border-b border-white/[0.07] text-[#6E7B88] font-mono-tabular uppercase">
                         <th className="py-3 px-4">{tr(lang, 'Actif')}</th>
                         <th className="py-3 px-4">{tr(lang, 'Sens')}</th>
                         <th className="py-3 px-4 text-right">{tr(lang, 'Entrée')}</th>
@@ -3765,18 +4073,18 @@ export function App() {
                         const pnlPctVal = Number(pos.pnl_pct ?? 0);
                         return (
                           <tr key={pos.id} className="hover:bg-white/[0.02]">
-                            <td className="py-3 px-4 font-semibold text-[#F1F5F9]">{pos.symbol}</td>
+                            <td className="py-3 px-4 font-semibold text-[#E8EEF2]">{pos.symbol}</td>
                             <td className="py-3 px-4">
-                              <span className={pos.side === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                              <span className={pos.side === 'BUY' ? 'text-[#20C997]' : 'text-[#F04438]'}>
                                 {pos.side} {pos.leverage}x
                               </span>
                             </td>
                             <td className="py-3.5 px-4 text-right">{entryVal.toLocaleString()}</td>
                             <td className="py-3 px-4 text-right">{exitVal ? exitVal.toLocaleString() : '—'}</td>
-                            <td className="py-3 px-4 text-[#94A3B8]">{pos.close_reason ?? pos.exit_reason ?? '—'}</td>
+                            <td className="py-3 px-4 text-[#8B98A4]">{pos.close_reason ?? pos.exit_reason ?? '—'}</td>
                             <td
                               className={`py-3 px-4 text-right font-semibold ${
-                                pnlVal >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                                pnlVal >= 0 ? 'text-[#20C997]' : 'text-[#F04438]'
                               }`}
                             >
                               {pnlVal >= 0 ? '+' : ''}
@@ -3797,22 +4105,22 @@ export function App() {
              ========================================================= */}
           {activeTab === 'alerts' && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              <div className="lg:col-span-5 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
-                <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+              <div className="lg:col-span-5 bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                   {tr(lang, 'Créer une Alerte de Prix')}
                 </h3>
-                <p className="text-xs text-[#94A3B8]">
+                <p className="text-xs text-[#8B98A4]">
                   {lang === 'en'
                     ? `Current quota: ${alerts.length} / ${alertLimit} active alerts (${user?.role.toUpperCase()}).`
                     : `Quota actuel : ${alerts.length} / ${alertLimit} alertes actives (${user?.role.toUpperCase()}).`}
                 </p>
                 <form onSubmit={handleAddAlert} className="space-y-3.5 text-xs">
                   <div>
-                    <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Symbole')}</label>
+                    <label className="block text-[#8B98A4] mb-1">{tr(lang, 'Symbole')}</label>
                     <select
                       value={newAlertSymbol}
                       onChange={(e) => setNewAlertSymbol(e.target.value)}
-                      className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                      className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg font-mono-tabular text-[#E8EEF2]"
                     >
                       {SYMBOLS.map((s) => (
                         <option key={s.id} value={s.id}>
@@ -3822,11 +4130,11 @@ export function App() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Condition de franchissement')}</label>
+                    <label className="block text-[#8B98A4] mb-1">{tr(lang, 'Condition de franchissement')}</label>
                     <select
                       value={newAlertCond}
                       onChange={(e) => setNewAlertCond(e.target.value as 'above' | 'below')}
-                      className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+                      className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2]"
                     >
                       <option value="above">
                         {lang === 'en' ? 'Crosses Above (ABOVE ≥)' : 'Franchissement à la hausse (ABOVE ≥)'}
@@ -3837,37 +4145,37 @@ export function App() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Prix Cible (USD / USDT)')}</label>
+                    <label className="block text-[#8B98A4] mb-1">{tr(lang, 'Prix Cible (USD / USDT)')}</label>
                     <input
                       type="number"
                       step="any"
                       value={newAlertPrice}
                       onChange={(e) => setNewAlertPrice(e.target.value)}
                       placeholder="85000"
-                      className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                      className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg font-mono-tabular text-[#E8EEF2]"
                       required
                     />
                   </div>
                   <button
                     type="submit"
                     disabled={isPending('alert-add')}
-                    className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="w-full py-2.5 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     {isPending('alert-add') ? tr(lang, 'Traitement…') : tr(lang, "Activer l'Alerte Prix")}
                   </button>
                 </form>
               </div>
 
-              <div className="lg:col-span-7 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+              <div className="lg:col-span-7 bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                  <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                     {lang === 'en' ? 'Active Alerts' : 'Alertes Actives'} ({alerts.length})
                   </h3>
                   {alerts.length > 0 && (
                     <button
                       onClick={handleClearAlerts}
                       disabled={isPending('alert-clear')}
-                      className="text-xs text-[#F43F5E] hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="text-xs text-[#F04438] hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {isPending('alert-clear') ? tr(lang, 'Traitement…') : tr(lang, 'Tout effacer')}
                     </button>
@@ -3876,31 +4184,31 @@ export function App() {
 
                 <div className="divide-y divide-white/[0.06]">
                   {alerts.length === 0 ? (
-                    <div className="py-10 text-center text-xs text-[#64748B]">
+                    <div className="py-10 text-center text-xs text-[#6E7B88]">
                       {tr(lang, 'Aucune alerte active pour le moment.')}
                     </div>
                   ) : (
                     alerts.map((a) => (
                       <div key={a.id} className="py-3 flex items-center justify-between text-xs">
                         <div className="flex items-center gap-3">
-                          <span className="font-mono-tabular font-bold text-sm text-[#F1F5F9]">{a.symbol}</span>
+                          <span className="font-mono-tabular font-bold text-sm text-[#E8EEF2]">{a.symbol}</span>
                           <span
                             className={`font-mono-tabular px-2 py-0.5 rounded ${
                               a.condition === 'above'
-                                ? 'bg-[#10B981]/15 text-[#10B981]'
-                                : 'bg-[#F43F5E]/15 text-[#F43F5E]'
+                                ? 'bg-[#20C997]/15 text-[#20C997]'
+                                : 'bg-[#F04438]/15 text-[#F04438]'
                             }`}
                           >
                             {a.condition === 'above' ? tr(lang, '≥ HAUSSE') : tr(lang, '≤ BAISSE')}
                           </span>
-                          <span className="font-mono-tabular text-sm font-semibold text-[#F1F5F9]">
+                          <span className="font-mono-tabular text-sm font-semibold text-[#E8EEF2]">
                             {Number(a.price ?? 0).toLocaleString()} USD
                           </span>
                         </div>
                         <button
                           onClick={() => handleDeleteAlert(a.id)}
                           disabled={isPending(`alert-delete-${a.id}`)}
-                          className="p-1.5 text-[#64748B] hover:text-[#F43F5E] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="p-1.5 text-[#6E7B88] hover:text-[#F04438] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -3916,16 +4224,16 @@ export function App() {
               TAB 4: AUTO-TRADE & SAFETY CENTER
              ========================================================= */}
           {activeTab === 'safety' && !tradingCfg && (
-            <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <RefreshCw className={`w-5 h-5 text-[#10B981] ${loadingLiveAccount ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-5 h-5 text-[#20C997] ${loadingLiveAccount ? 'animate-spin' : ''}`} />
                 <div>
-                  <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
+                  <h3 className="font-display font-semibold text-sm text-[#E8EEF2]">
                     {lang === 'en'
                       ? 'Loading Auto-Trade & Safety Center configuration...'
                       : 'Chargement de la configuration Auto-Trade & Safety Center...'}
                   </h3>
-                  <p className="text-xs text-[#94A3B8]">
+                  <p className="text-xs text-[#8B98A4]">
                     {lang === 'en'
                       ? 'Synchronizing risk guardrails, API keys, and live positions with the server.'
                       : 'Synchronisation des garde-fous de risque, des clés API et des positions avec le serveur.'}
@@ -3935,7 +4243,7 @@ export function App() {
               <button
                 type="button"
                 onClick={() => loadLiveAccountAndOrders()}
-                className="px-4 py-2 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold text-xs rounded-lg transition-colors"
+                className="px-4 py-2 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold text-xs rounded-lg transition-colors"
               >
                 {tr(lang, 'Réessayer maintenant')}
               </button>
@@ -3947,41 +4255,41 @@ export function App() {
               <div
                 className={`p-5 rounded-xl border flex flex-wrap items-center justify-between gap-4 ${
                   tradingCfg.safety_lock
-                    ? 'bg-[#F43F5E]/10 border-[#F43F5E]/40'
+                    ? 'bg-[#F04438]/10 border-[#F04438]/40'
                     : tradingCfg.safety_warn
-                    ? 'bg-[#F59E0B]/10 border-[#F59E0B]/40'
-                    : 'bg-[#10B981]/10 border-[#10B981]/30'
+                    ? 'bg-[#D6A84F]/10 border-[#D6A84F]/40'
+                    : 'bg-[#20C997]/10 border-[#20C997]/30'
                 }`}
               >
                 <div className="space-y-1.5">
                   <div className="flex flex-wrap items-center gap-2.5 font-display font-bold text-base">
                     {tradingCfg.safety_lock ? (
                       <>
-                        <ShieldAlert className="w-5 h-5 text-[#F43F5E]" />
-                        <span className="text-[#FB7185]">{tr(lang, 'SAFETY LOCK ACTIF (Auto-Trade Suspendu)')}</span>
+                        <ShieldAlert className="w-5 h-5 text-[#F04438]" />
+                        <span className="text-[#F97066]">{tr(lang, 'SAFETY LOCK ACTIF (Auto-Trade Suspendu)')}</span>
                       </>
                     ) : tradingCfg.safety_warn ? (
                       <>
-                        <AlertTriangle className="w-5 h-5 text-[#F59E0B]" />
-                        <span className="text-[#FBBF24]">{tr(lang, 'SAFETY WARN (Avertissement Temporaire Actif)')}</span>
+                        <AlertTriangle className="w-5 h-5 text-[#D6A84F]" />
+                        <span className="text-[#E2BC6A]">{tr(lang, 'SAFETY WARN (Avertissement Temporaire Actif)')}</span>
                       </>
                     ) : (
                       <>
-                        <ShieldCheck className="w-5 h-5 text-[#10B981]" />
-                        <span className="text-[#34D399]">{tr(lang, 'SAFETY CENTER OPÉRATIONNEL')}</span>
+                        <ShieldCheck className="w-5 h-5 text-[#20C997]" />
+                        <span className="text-[#32D583]">{tr(lang, 'SAFETY CENTER OPÉRATIONNEL')}</span>
                       </>
                     )}
 
                     <span
                       className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-xs font-mono-tabular border ${
                         tradingCfg.credentials_valid
-                          ? 'bg-[#10B981]/20 text-[#34D399] border-[#10B981]/40'
-                          : 'bg-[#F43F5E]/20 text-[#FB7185] border-[#F43F5E]/40'
+                          ? 'bg-[#20C997]/20 text-[#32D583] border-[#20C997]/40'
+                          : 'bg-[#F04438]/20 text-[#F97066] border-[#F04438]/40'
                       }`}
                     >
                       <span
                         className={`w-2 h-2 rounded-full ${
-                          tradingCfg.credentials_valid ? 'bg-[#10B981] animate-pulse' : 'bg-[#F43F5E]'
+                          tradingCfg.credentials_valid ? 'bg-[#20C997] animate-pulse' : 'bg-[#F04438]'
                         }`}
                       />
                       {tradingCfg.credentials_valid
@@ -3996,7 +4304,7 @@ export function App() {
                     </span>
                   </div>
 
-                  <div className="text-xs text-[#94A3B8]">
+                  <div className="text-xs text-[#8B98A4]">
                     {tradingCfg.safety_lock_reason ||
                       tradingCfg.safety_warn_reason ||
                       tradingCfg.api_status_message ||
@@ -4006,7 +4314,7 @@ export function App() {
                       )}
                   </div>
                   {(tradingCfg.safety_lock_at || tradingCfg.safety_warn_at) && (
-                    <div className="text-[11px] font-mono-tabular text-[#64748B]">
+                    <div className="text-[11px] font-mono-tabular text-[#6E7B88]">
                       {tradingCfg.safety_lock_at && (
                         <span>
                           {lang === 'en'
@@ -4032,14 +4340,14 @@ export function App() {
                       placeholder={tr(lang, 'PIN (6 chiffres)')}
                       value={safetyPinInput}
                       onChange={(e) => setSafetyPinInput(e.target.value)}
-                      className="w-32 px-2.5 py-2 bg-[#090D16] border border-white/15 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                      className="w-32 px-2.5 py-2 bg-[#080C0F] border border-white/15 rounded-lg font-mono-tabular text-[#E8EEF2]"
                     />
                   )}
                   {(tradingCfg.safety_lock || tradingCfg.safety_warn) && (
                     <button
                       onClick={() => handleSafetyAction('clearsafe')}
                       disabled={isPending('safety-clearsafe')}
-                      className="px-3.5 py-2 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="px-3.5 py-2 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {tr(lang, 'Acquitter / Déverrouiller (/clearsafe)')}
                     </button>
@@ -4054,7 +4362,7 @@ export function App() {
                             : 'Verrouillage d’urgence manuel par l’opérateur'
                         )
                       }
-                      className="px-3.5 py-2 bg-[#F43F5E]/20 hover:bg-[#F43F5E]/30 border border-[#F43F5E]/40 text-[#FB7185] font-semibold rounded-lg transition-colors"
+                      className="px-3.5 py-2 bg-[#F04438]/20 hover:bg-[#F04438]/30 border border-[#F04438]/40 text-[#F97066] font-semibold rounded-lg transition-colors"
                     >
                       {tr(lang, 'Verrouiller Safe Mode')}
                     </button>
@@ -4062,7 +4370,7 @@ export function App() {
                   <button
                     onClick={() => handleSafetyAction('emergency_stop')}
                     disabled={isPending('safety-emergency_stop')}
-                    className="px-3.5 py-2 bg-[#F43F5E] hover:bg-[#E11D48] text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-3.5 py-2 bg-[#F04438] hover:bg-[#D92D20] text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     title={
                       lang === 'en'
                         ? 'Close all open positions and disable AutoTrade (/emergency)'
@@ -4080,37 +4388,58 @@ export function App() {
                         })
                         .catch((err: any) => showToast(err.message || 'Erreur lors de la réconciliation.', 'error'))
                     }
-                    className="px-3.5 py-2 bg-[#111827] hover:bg-[#1E293B] border border-white/15 text-[#F1F5F9] rounded-lg transition-colors"
+                    className="px-3.5 py-2 bg-[#0D1318] hover:bg-[#172129] border border-white/15 text-[#E8EEF2] rounded-lg transition-colors"
                   >
                     {tr(lang, 'Réconcilier DB ↔ Binance')}
                   </button>
                 </div>
               </div>
 
+              {/* Accès rapide aux sections de l'onglet (aucune fonction masquée) */}
+              <div className="sticky top-0 z-20 -mx-3 sm:mx-0 px-3 sm:px-0 py-1.5 bg-[#080C0F]">
+                <div className="flex gap-1.5 overflow-x-auto" role="navigation" aria-label={tr(lang, 'Sections Auto-Trade', 'Auto-Trade sections')}>
+                  {[
+                    { id: 'at-config', label: tr(lang, 'Configuration', 'Configuration') },
+                    { id: 'at-binance', label: tr(lang, 'Binance & compte', 'Binance & account') },
+                    { id: 'at-live-order', label: tr(lang, 'Ordre live', 'Live order') },
+                    { id: 'at-positions', label: tr(lang, 'Positions & ordres', 'Positions & orders') },
+                  ].map((sec) => (
+                    <button
+                      key={sec.id}
+                      type="button"
+                      onClick={() => document.getElementById(sec.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                      className="shrink-0 min-h-9 px-3 rounded-md border border-[#202A32] bg-[#0D1318] text-xs font-semibold text-[#8B98A4] hover:text-[#E8EEF2] hover:bg-[#172129]"
+                    >
+                      {sec.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {/* Row 1: Complete Bot Auto-Trade Parameters + API Keys & Real-Time Account */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Left (7 cols): Full Bot Configuration (/config, /autotrade, /periodic_analysis) */}
-                <div className="lg:col-span-7 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-5">
+                <div id="at-config" className="scroll-mt-24 lg:col-span-7 bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-5">
                   <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] pb-3.5">
                     <div>
-                      <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                      <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                         {tr(lang, 'Configuration Complète Auto-Trade & Stratégie (Miroir Bot Telegram)')}
                       </h3>
-                      <p className="text-xs text-[#64748B]">
+                      <p className="text-xs text-[#6E7B88]">
                         {tr(
                           lang,
                           'Synchronisé en temps réel avec `/config`, `/autotrade` et `/periodic_analysis`.'
                         )}
                       </p>
                       {tradingCfg.enabled && tradingCfg.engine_online === false && (
-                        <p className="mt-1.5 text-xs text-[#FBBF24] bg-[#F59E0B]/10 border border-[#F59E0B]/30 rounded-lg px-2.5 py-1.5">
+                        <p className="mt-1.5 text-xs text-[#E2BC6A] bg-[#D6A84F]/10 border border-[#D6A84F]/30 rounded-lg px-2.5 py-1.5">
                           {lang === 'en'
                             ? '⚠️ Auto-Trade is ON but the trading engine is offline: no order will be placed. Start the bot service (main.py), or set AUTOTRADE_EMBEDDED=1 on the web service and redeploy.'
                             : '⚠️ Auto-Trade est activé mais le moteur de trading est hors ligne : aucun ordre ne sera passé. Démarrez le service bot (main.py), ou définissez AUTOTRADE_EMBEDDED=1 sur le service web puis redéployez.'}
                         </p>
                       )}
                       {tradingCfg.enabled && tradingCfg.engine_online === true && (
-                        <p className="mt-1.5 text-xs text-[#10B981]">
+                        <p className="mt-1.5 text-xs text-[#20C997]">
                           {lang === 'en' ? '● Trading engine online' : '● Moteur de trading en ligne'}
                         </p>
                       )}
@@ -4125,8 +4454,8 @@ export function App() {
                         }
                         className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                           tradingCfg.enabled
-                            ? 'bg-[#10B981] text-[#090D16]'
-                            : 'bg-[#1E293B] text-[#94A3B8] border border-white/10 hover:text-[#F1F5F9]'
+                            ? 'bg-[#20C997] text-[#080C0F]'
+                            : 'bg-[#172129] text-[#8B98A4] border border-white/10 hover:text-[#E8EEF2]'
                         }`}
                       >
                         Auto-Trade : {tradingCfg.enabled ? 'ON ✅' : 'OFF ❌'}
@@ -4135,8 +4464,8 @@ export function App() {
                         onClick={() => handleUpdateTradingConfig({ testnet: !tradingCfg.testnet })}
                         className={`px-3 py-1.5 rounded-lg text-xs font-mono-tabular font-semibold border transition-colors ${
                           tradingCfg.testnet
-                            ? 'bg-[#3B82F6]/15 text-[#60A5FA] border-[#3B82F6]/40'
-                            : 'bg-[#F59E0B]/15 text-[#FBBF24] border-[#F59E0B]/40'
+                            ? 'bg-[#4EA1FF]/15 text-[#6BB1FF] border-[#4EA1FF]/40'
+                            : 'bg-[#D6A84F]/15 text-[#E2BC6A] border-[#D6A84F]/40'
                         }`}
                       >
                         {tradingCfg.testnet
@@ -4150,18 +4479,18 @@ export function App() {
 
                   {/* Section 1: Market, Style & Periodic Analysis (/setmarket, /settradingstyle, /setanalysistf, /setanalysisinterval) */}
                   <div className="space-y-3">
-                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#10B981]">
+                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#20C997]">
                       {tr(lang, '1. Marché, Style & Analyse Périodique')}
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
                       <div>
-                        <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Marché (/setmarket)')}</label>
+                        <label className="block text-[#8B98A4] mb-1">{tr(lang, 'Marché (/setmarket)')}</label>
                         <select
                           value={tradingCfg.market_type}
                           onChange={(e) =>
                             handleUpdateTradingConfig({ market_type: e.target.value as 'futures' | 'spot' })
                           }
-                          className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+                          className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2]"
                         >
                           <option value="futures">FUTURES (USDT-M)</option>
                           <option value="spot">SPOT</option>
@@ -4169,7 +4498,7 @@ export function App() {
                       </div>
 
                       <div>
-                        <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Style (/settradingstyle)')}</label>
+                        <label className="block text-[#8B98A4] mb-1">{tr(lang, 'Style (/settradingstyle)')}</label>
                         <select
                           value={tradingCfg.trading_style}
                           onChange={(e) => {
@@ -4179,7 +4508,7 @@ export function App() {
                             if (st === 'scalping_15m') patch.analysis_timeframe = '15m';
                             handleUpdateTradingConfig(patch);
                           }}
-                          className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+                          className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2]"
                         >
                           {STYLES.map((st) => (
                             <option key={st.id} value={st.id}>
@@ -4190,11 +4519,11 @@ export function App() {
                       </div>
 
                       <div>
-                        <label className="block text-[#94A3B8] mb-1">Timeframe (/setanalysistf)</label>
+                        <label className="block text-[#8B98A4] mb-1">Timeframe (/setanalysistf)</label>
                         <select
                           value={tradingCfg.analysis_timeframe}
                           onChange={(e) => handleUpdateTradingConfig({ analysis_timeframe: e.target.value })}
-                          className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg font-mono-tabular text-[#E8EEF2]"
                         >
                           {TIMEFRAMES.map((tf) => (
                             <option key={tf} value={tf}>
@@ -4205,7 +4534,7 @@ export function App() {
                       </div>
 
                       <div>
-                        <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Intervalle Scan (/setanalysisinterval)')}</label>
+                        <label className="block text-[#8B98A4] mb-1">{tr(lang, 'Intervalle Scan (/setanalysisinterval)')}</label>
                         <div className="flex gap-1.5">
                           {[5, 10].map((mins) => (
                             <button
@@ -4214,8 +4543,8 @@ export function App() {
                               onClick={() => handleUpdateTradingConfig({ analysis_interval_minutes: mins })}
                               className={`flex-1 py-2 rounded-lg font-mono-tabular font-semibold border transition-colors ${
                                 tradingCfg.analysis_interval_minutes === mins
-                                  ? 'bg-[#10B981]/20 border-[#10B981] text-[#10B981]'
-                                  : 'bg-[#090D16] border-white/10 text-[#94A3B8] hover:text-[#F1F5F9]'
+                                  ? 'bg-[#20C997]/20 border-[#20C997] text-[#20C997]'
+                                  : 'bg-[#080C0F] border-white/10 text-[#8B98A4] hover:text-[#E8EEF2]'
                               }`}
                             >
                               {mins} min
@@ -4225,7 +4554,7 @@ export function App() {
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-[#090D16] border border-white/[0.06] text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] text-xs">
                       <label className="flex items-center gap-2.5 cursor-pointer">
                         <input
                           type="checkbox"
@@ -4234,7 +4563,7 @@ export function App() {
                             handleUpdateTradingConfig({ periodic_analysis_enabled: e.target.checked })
                           }
                         />
-                        <span className="font-medium text-[#F1F5F9]">
+                        <span className="font-medium text-[#E8EEF2]">
                           {lang === 'en'
                             ? `Automatic Periodic Analysis (/periodic_analysis) — every ${tradingCfg.analysis_interval_minutes} min on ${tradingCfg.analysis_timeframe.toUpperCase()}`
                             : `Analyse Périodique Automatique (/periodic_analysis) — toutes les ${tradingCfg.analysis_interval_minutes} min en ${tradingCfg.analysis_timeframe.toUpperCase()}`}
@@ -4248,7 +4577,7 @@ export function App() {
                           runMultiScan(tradingCfg.analysis_timeframe, tradingCfg.trading_style, true);
                           setActiveTab('intelligence');
                         }}
-                        className="px-3 py-1.5 bg-[#10B981]/15 hover:bg-[#10B981]/25 border border-[#10B981]/40 text-[#10B981] rounded-md font-semibold flex items-center gap-1.5"
+                        className="px-3 py-1.5 bg-[#20C997]/15 hover:bg-[#20C997]/25 border border-[#20C997]/40 text-[#20C997] rounded-md font-semibold flex items-center gap-1.5"
                       >
                         <Play className="w-3.5 h-3.5" />
                         <span>{tr(lang, 'Scanner Maintenant (/periodic_analysis now)')}</span>
@@ -4258,16 +4587,16 @@ export function App() {
 
                   {/* Section 2: Leverage, Risk, Max Positions, Min Score, Daily Max Loss, Cooldown */}
                   <div className="space-y-3 pt-2 border-t border-white/[0.06]">
-                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#10B981]">
+                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#20C997]">
                       {tr(lang, "2. Paramètres de Risque, Levier & Filtres d'Exécution")}
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
                       {/* Leverage */}
-                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                      <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[#94A3B8]">{tr(lang, 'Levier (/setleverage 1–125)')}</span>
-                          <span className="font-mono-tabular font-bold text-[#10B981]">x{tradingCfg.leverage}</span>
+                          <span className="text-[#8B98A4]">{tr(lang, 'Levier (/setleverage 1–125)')}</span>
+                          <span className="font-mono-tabular font-bold text-[#20C997]">x{tradingCfg.leverage}</span>
                         </div>
                         <div className="flex flex-wrap gap-1">
                           {[1, 2, 5, 10, 20, 50].map((lev) => (
@@ -4277,8 +4606,8 @@ export function App() {
                               onClick={() => handleUpdateTradingConfig({ leverage: lev })}
                               className={`px-2 py-1 rounded font-mono-tabular text-[11px] border ${
                                 tradingCfg.leverage === lev
-                                  ? 'bg-[#10B981] text-[#090D16] border-[#10B981] font-bold'
-                                  : 'bg-[#111827] text-[#94A3B8] border-white/10 hover:text-[#F1F5F9]'
+                                  ? 'bg-[#20C997] text-[#080C0F] border-[#20C997] font-bold'
+                                  : 'bg-[#0D1318] text-[#8B98A4] border-white/10 hover:text-[#E8EEF2]'
                               }`}
                             >
                               x{lev}
@@ -4295,15 +4624,15 @@ export function App() {
                               leverage: Math.min(125, Math.max(1, Number(e.target.value) || 1)),
                             })
                           }
-                          className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-2.5 py-1.5 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                         />
                       </div>
 
                       {/* Risk per trade */}
-                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                      <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[#94A3B8]">{tr(lang, 'Risque / Trade (/setrisk)')}</span>
-                          <span className="font-mono-tabular font-bold text-[#10B981]">
+                          <span className="text-[#8B98A4]">{tr(lang, 'Risque / Trade (/setrisk)')}</span>
+                          <span className="font-mono-tabular font-bold text-[#20C997]">
                             {tradingCfg.risk_per_trade}%
                           </span>
                         </div>
@@ -4315,8 +4644,8 @@ export function App() {
                               onClick={() => handleUpdateTradingConfig({ risk_per_trade: r })}
                               className={`px-2 py-1 rounded font-mono-tabular text-[11px] border ${
                                 tradingCfg.risk_per_trade === r
-                                  ? 'bg-[#10B981] text-[#090D16] border-[#10B981] font-bold'
-                                  : 'bg-[#111827] text-[#94A3B8] border-white/10 hover:text-[#F1F5F9]'
+                                  ? 'bg-[#20C997] text-[#080C0F] border-[#20C997] font-bold'
+                                  : 'bg-[#0D1318] text-[#8B98A4] border-white/10 hover:text-[#E8EEF2]'
                               }`}
                             >
                               {r}%
@@ -4334,15 +4663,15 @@ export function App() {
                               risk_per_trade: Math.min(20, Math.max(0.25, Number(e.target.value) || 1)),
                             })
                           }
-                          className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-2.5 py-1.5 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                         />
                       </div>
 
                       {/* Max Positions */}
-                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                      <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[#94A3B8]">Max Positions (/setmaxpos)</span>
-                          <span className="font-mono-tabular font-bold text-[#10B981]">
+                          <span className="text-[#8B98A4]">Max Positions (/setmaxpos)</span>
+                          <span className="font-mono-tabular font-bold text-[#20C997]">
                             {tradingCfg.max_positions}
                           </span>
                         </div>
@@ -4354,8 +4683,8 @@ export function App() {
                               onClick={() => handleUpdateTradingConfig({ max_positions: mp })}
                               className={`px-2.5 py-1 rounded font-mono-tabular text-[11px] border ${
                                 tradingCfg.max_positions === mp
-                                  ? 'bg-[#10B981] text-[#090D16] border-[#10B981] font-bold'
-                                  : 'bg-[#111827] text-[#94A3B8] border-white/10 hover:text-[#F1F5F9]'
+                                  ? 'bg-[#20C997] text-[#080C0F] border-[#20C997] font-bold'
+                                  : 'bg-[#0D1318] text-[#8B98A4] border-white/10 hover:text-[#E8EEF2]'
                               }`}
                             >
                               {mp}
@@ -4372,15 +4701,15 @@ export function App() {
                               max_positions: Math.min(10, Math.max(1, Number(e.target.value) || 1)),
                             })
                           }
-                          className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-2.5 py-1.5 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                         />
                       </div>
 
                       {/* Min Score */}
-                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                      <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[#94A3B8]">{tr(lang, 'Score Min (/setminscore)')}</span>
-                          <span className="font-mono-tabular font-bold text-[#10B981]">
+                          <span className="text-[#8B98A4]">{tr(lang, 'Score Min (/setminscore)')}</span>
+                          <span className="font-mono-tabular font-bold text-[#20C997]">
                             {tradingCfg.min_score}/100
                           </span>
                         </div>
@@ -4392,8 +4721,8 @@ export function App() {
                               onClick={() => handleUpdateTradingConfig({ min_score: sc })}
                               className={`px-2 py-1 rounded font-mono-tabular text-[11px] border ${
                                 tradingCfg.min_score === sc
-                                  ? 'bg-[#10B981] text-[#090D16] border-[#10B981] font-bold'
-                                  : 'bg-[#111827] text-[#94A3B8] border-white/10 hover:text-[#F1F5F9]'
+                                  ? 'bg-[#20C997] text-[#080C0F] border-[#20C997] font-bold'
+                                  : 'bg-[#0D1318] text-[#8B98A4] border-white/10 hover:text-[#E8EEF2]'
                               }`}
                             >
                               {sc}
@@ -4410,19 +4739,19 @@ export function App() {
                               min_score: Math.min(100, Math.max(0, Number(e.target.value) || 68)),
                             })
                           }
-                          className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-2.5 py-1.5 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                         />
                       </div>
 
                       {/* Daily Max Loss */}
-                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                      <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[#94A3B8]">{tr(lang, 'Perte Max/Jour (/setdailymaxloss)')}</span>
-                          <span className="font-mono-tabular font-bold text-[#F43F5E]">
+                          <span className="text-[#8B98A4]">{tr(lang, 'Perte Max/Jour (/setdailymaxloss)')}</span>
+                          <span className="font-mono-tabular font-bold text-[#F04438]">
                             {tradingCfg.max_daily_loss}%
                           </span>
                         </div>
-                        <div className="text-[11px] font-mono-tabular text-[#64748B]">
+                        <div className="text-[11px] font-mono-tabular text-[#6E7B88]">
                           {lang === 'en' ? 'Daily total:' : 'Cumul jour :'} {(tradingCfg.daily_loss_tracked || 0).toFixed(2)} USDT
                         </div>
                         <div className="flex gap-1.5">
@@ -4437,13 +4766,13 @@ export function App() {
                                 max_daily_loss: Math.min(100, Math.max(0.5, Number(e.target.value) || 5)),
                               })
                             }
-                            className="flex-1 px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                            className="flex-1 px-2.5 py-1.5 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                           />
                           <button
                             type="button"
                             onClick={() => handleSafetyAction('reset_daily_loss')}
                             disabled={isPending('safety-reset_daily_loss')}
-                            className="px-2.5 py-1.5 bg-[#1E293B] hover:bg-[#334155] rounded text-[11px] text-[#F1F5F9] disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="px-2.5 py-1.5 bg-[#172129] hover:bg-[#202A32] rounded text-[11px] text-[#E8EEF2] disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             Reset
                           </button>
@@ -4451,10 +4780,10 @@ export function App() {
                       </div>
 
                       {/* Cooldown */}
-                      <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                      <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[#94A3B8]">Cooldown (/setcooldown)</span>
-                          <span className="font-mono-tabular font-bold text-[#F59E0B]">
+                          <span className="text-[#8B98A4]">Cooldown (/setcooldown)</span>
+                          <span className="font-mono-tabular font-bold text-[#D6A84F]">
                             {tradingCfg.cooldown_seconds || 0}s
                           </span>
                         </div>
@@ -4466,8 +4795,8 @@ export function App() {
                               onClick={() => handleUpdateTradingConfig({ cooldown_seconds: cd })}
                               className={`px-2 py-1 rounded font-mono-tabular text-[11px] border ${
                                 (tradingCfg.cooldown_seconds || 0) === cd
-                                  ? 'bg-[#10B981] text-[#090D16] border-[#10B981] font-bold'
-                                  : 'bg-[#111827] text-[#94A3B8] border-white/10 hover:text-[#F1F5F9]'
+                                  ? 'bg-[#20C997] text-[#080C0F] border-[#20C997] font-bold'
+                                  : 'bg-[#0D1318] text-[#8B98A4] border-white/10 hover:text-[#E8EEF2]'
                               }`}
                             >
                               {cd === 0 ? '0s' : cd < 3600 ? `${cd / 60}m` : '1h'}
@@ -4484,7 +4813,7 @@ export function App() {
                               cooldown_seconds: Math.min(86400, Math.max(0, Number(e.target.value) || 0)),
                             })
                           }
-                          className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-2.5 py-1.5 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                         />
                       </div>
                     </div>
@@ -4492,15 +4821,15 @@ export function App() {
 
                   {/* Section 3: Trailing Stop ATR & DCA Parameters (/settrailing, /setdca) */}
                   <div className="space-y-3 pt-2 border-t border-white/[0.06]">
-                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#10B981]">
+                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#20C997]">
                       {tr(lang, '3. Trailing Stop Dynamique (ATR) & DCA (/settrailing • /setdca)')}
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                       {/* Trailing Stop */}
-                      <div className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2.5">
+                      <div className="p-3.5 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2.5">
                         <div className="flex items-center justify-between">
-                          <label className="flex items-center gap-2 cursor-pointer font-semibold text-[#F1F5F9]">
+                          <label className="flex items-center gap-2 cursor-pointer font-semibold text-[#E8EEF2]">
                             <input
                               type="checkbox"
                               checked={tradingCfg.trailing_stop}
@@ -4508,7 +4837,7 @@ export function App() {
                             />
                             <span>Trailing Stop ATR (/settrailing)</span>
                           </label>
-                          <span className="font-mono-tabular text-[#10B981]">
+                          <span className="font-mono-tabular text-[#20C997]">
                             {tradingCfg.trailing_stop ? 'ON' : 'OFF'} ({tradingCfg.trailing_stop_pct ?? 1.0}%)
                           </span>
                         </div>
@@ -4522,8 +4851,8 @@ export function App() {
                               }
                               className={`px-2 py-1 rounded font-mono-tabular text-[11px] border ${
                                 tradingCfg.trailing_stop_pct === pct
-                                  ? 'bg-[#10B981] text-[#090D16] border-[#10B981] font-bold'
-                                  : 'bg-[#111827] text-[#94A3B8] border-white/10 hover:text-[#F1F5F9]'
+                                  ? 'bg-[#20C997] text-[#080C0F] border-[#20C997] font-bold'
+                                  : 'bg-[#0D1318] text-[#8B98A4] border-white/10 hover:text-[#E8EEF2]'
                               }`}
                             >
                               {pct}%
@@ -4531,7 +4860,7 @@ export function App() {
                           ))}
                         </div>
                         <div className="flex items-center gap-2">
-                          <span className="text-[#94A3B8] text-[11px]">{tr(lang, 'Facteur / Distance (0.1–20%) :')}</span>
+                          <span className="text-[#8B98A4] text-[11px]">{tr(lang, 'Facteur / Distance (0.1–20%) :')}</span>
                           <input
                             type="number"
                             step="0.1"
@@ -4543,15 +4872,15 @@ export function App() {
                                 trailing_stop_pct: Math.min(20, Math.max(0.1, Number(e.target.value) || 1.0)),
                               })
                             }
-                            className="w-24 px-2 py-1 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                            className="w-24 px-2 py-1 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                           />
                         </div>
                       </div>
 
                       {/* DCA */}
-                      <div className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2.5">
+                      <div className="p-3.5 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2.5">
                         <div className="flex items-center justify-between">
-                          <label className="flex items-center gap-2 cursor-pointer font-semibold text-[#F1F5F9]">
+                          <label className="flex items-center gap-2 cursor-pointer font-semibold text-[#E8EEF2]">
                             <input
                               type="checkbox"
                               checked={tradingCfg.dca_enabled}
@@ -4559,14 +4888,14 @@ export function App() {
                             />
                             <span>{tr(lang, 'Configuration DCA (/setdca)')}</span>
                           </label>
-                          <span className="font-mono-tabular text-[#F59E0B]">
+                          <span className="font-mono-tabular text-[#D6A84F]">
                             {tradingCfg.dca_enabled ? 'ON' : 'OFF'} ({tradingCfg.dca_steps ?? 3}{' '}
                             {lang === 'en' ? 'st.' : 'ét.'}, {tradingCfg.dca_step_pct ?? 2.0}%)
                           </span>
                         </div>
                         <div className="grid grid-cols-2 gap-2">
                           <div>
-                            <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Étapes (1–10)')}</label>
+                            <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Étapes (1–10)')}</label>
                             <input
                               type="number"
                               min="1"
@@ -4577,11 +4906,11 @@ export function App() {
                                   dca_steps: Math.min(10, Math.max(1, Number(e.target.value) || 3)),
                                 })
                               }
-                              className="w-full px-2 py-1 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                              className="w-full px-2 py-1 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                             />
                           </div>
                           <div>
-                            <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Écart % (0.1–20%)')}</label>
+                            <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Écart % (0.1–20%)')}</label>
                             <input
                               type="number"
                               step="0.5"
@@ -4593,7 +4922,7 @@ export function App() {
                                   dca_step_pct: Math.min(20, Math.max(0.1, Number(e.target.value) || 2.0)),
                                 })
                               }
-                              className="w-full px-2 py-1 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                              className="w-full px-2 py-1 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                             />
                           </div>
                         </div>
@@ -4603,19 +4932,19 @@ export function App() {
 
                   {/* Section 4: Whitelist & Blacklist (/whitelist, /blacklist) */}
                   <div className="space-y-3 pt-2 border-t border-white/[0.06]">
-                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#10B981]">
+                    <div className="text-xs font-mono-tabular uppercase tracking-wider text-[#20C997]">
                       {tr(lang, '4. Filtrage des Symboles Documentés (/whitelist • /blacklist)')}
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                       {/* Whitelist */}
-                      <div className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                      <div className="p-3.5 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="font-semibold text-[#F1F5F9]">✅ Whitelist AutoTrade</span>
+                          <span className="font-semibold text-[#E8EEF2]">✅ Whitelist AutoTrade</span>
                           {(tradingCfg.symbol_whitelist || []).length > 0 && (
                             <button
                               type="button"
                               onClick={() => handleUpdateTradingConfig({ symbol_whitelist: [] })}
-                              className="text-[11px] text-[#F43F5E] hover:underline"
+                              className="text-[11px] text-[#F04438] hover:underline"
                             >
                               {tr(lang, 'Vider (clear)')}
                             </button>
@@ -4635,8 +4964,8 @@ export function App() {
                                 }}
                                 className={`px-2.5 py-1 rounded font-mono-tabular text-[11px] border transition-colors ${
                                   active
-                                    ? 'bg-[#10B981]/20 border-[#10B981] text-[#10B981] font-semibold'
-                                    : 'bg-[#111827] border-white/10 text-[#94A3B8] hover:text-[#F1F5F9]'
+                                    ? 'bg-[#20C997]/20 border-[#20C997] text-[#20C997] font-semibold'
+                                    : 'bg-[#0D1318] border-white/10 text-[#8B98A4] hover:text-[#E8EEF2]'
                                 }`}
                               >
                                 {active ? '✓ ' : '+ '}
@@ -4645,7 +4974,7 @@ export function App() {
                             );
                           })}
                         </div>
-                        <div className="text-[11px] text-[#64748B]">
+                        <div className="text-[11px] text-[#6E7B88]">
                           {(tradingCfg.symbol_whitelist || []).length === 0
                             ? tr(lang, 'Aucune restriction (tous les symboles documentés sont autorisés).')
                             : `${lang === 'en' ? 'Allowed assets:' : 'Actifs autorisés :'} ${(tradingCfg.symbol_whitelist || []).join(', ')}`}
@@ -4653,14 +4982,14 @@ export function App() {
                       </div>
 
                       {/* Blacklist */}
-                      <div className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-2">
+                      <div className="p-3.5 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="font-semibold text-[#F1F5F9]">🚫 Blacklist AutoTrade</span>
+                          <span className="font-semibold text-[#E8EEF2]">🚫 Blacklist AutoTrade</span>
                           {(tradingCfg.symbol_blacklist || []).length > 0 && (
                             <button
                               type="button"
                               onClick={() => handleUpdateTradingConfig({ symbol_blacklist: [] })}
-                              className="text-[11px] text-[#F43F5E] hover:underline"
+                              className="text-[11px] text-[#F04438] hover:underline"
                             >
                               {tr(lang, 'Vider (clear)')}
                             </button>
@@ -4680,8 +5009,8 @@ export function App() {
                                 }}
                                 className={`px-2.5 py-1 rounded font-mono-tabular text-[11px] border transition-colors ${
                                   active
-                                    ? 'bg-[#F43F5E]/20 border-[#F43F5E] text-[#FB7185] font-semibold'
-                                    : 'bg-[#111827] border-white/10 text-[#94A3B8] hover:text-[#F1F5F9]'
+                                    ? 'bg-[#F04438]/20 border-[#F04438] text-[#F97066] font-semibold'
+                                    : 'bg-[#0D1318] border-white/10 text-[#8B98A4] hover:text-[#E8EEF2]'
                                 }`}
                               >
                                 {active ? '✕ ' : '+ '}
@@ -4690,7 +5019,7 @@ export function App() {
                             );
                           })}
                         </div>
-                        <div className="text-[11px] text-[#64748B]">
+                        <div className="text-[11px] text-[#6E7B88]">
                           {(tradingCfg.symbol_blacklist || []).length === 0
                             ? tr(lang, 'Aucun actif bloqué.')
                             : `${lang === 'en' ? 'Excluded assets:' : 'Actifs exclus :'} ${(tradingCfg.symbol_blacklist || []).join(', ')}`}
@@ -4703,19 +5032,19 @@ export function App() {
                 {/* Right (5 cols): API Credentials (/setapikeys) + Real-Time Account (/account) */}
                 <div className="lg:col-span-5 space-y-6">
                   {/* Binance API Credentials Card */}
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                  <div id="at-binance" className="scroll-mt-24 bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
                     <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
                       <div className="flex items-center gap-2">
-                        <Key className="w-4 h-4 text-[#10B981]" />
-                        <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                        <Key className="w-4 h-4 text-[#20C997]" />
+                        <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                           {tr(lang, 'Clés API Binance (/setapikeys)')}
                         </h3>
                       </div>
                       <span
                         className={`px-2 py-0.5 rounded text-[11px] font-mono-tabular font-semibold border ${
                           tradingCfg.credentials_valid
-                            ? 'bg-[#10B981]/15 text-[#10B981] border-[#10B981]/40'
-                            : 'bg-[#F43F5E]/15 text-[#FB7185] border-[#F43F5E]/40'
+                            ? 'bg-[#20C997]/15 text-[#20C997] border-[#20C997]/40'
+                            : 'bg-[#F04438]/15 text-[#F97066] border-[#F04438]/40'
                         }`}
                       >
                         {tradingCfg.credentials_valid
@@ -4724,10 +5053,10 @@ export function App() {
                       </span>
                     </div>
 
-                    <div className="flex items-center justify-between p-3 rounded-lg bg-[#090D16] border border-white/[0.06] text-xs">
+                    <div className="flex items-center justify-between p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] text-xs">
                       <div>
-                        <div className="text-[#94A3B8]">{tr(lang, 'Clé active :')}</div>
-                        <div className="font-mono-tabular font-semibold text-[#F1F5F9]">
+                        <div className="text-[#8B98A4]">{tr(lang, 'Clé active :')}</div>
+                        <div className="font-mono-tabular font-semibold text-[#E8EEF2]">
                           {tradingCfg.api_key_masked || tr(lang, 'Aucune clé chargée')} •{' '}
                           {tradingCfg.testnet ? 'TESTNET' : 'LIVE'} ({tradingCfg.market_type.toUpperCase()})
                         </div>
@@ -4736,33 +5065,33 @@ export function App() {
                         type="button"
                         onClick={handleTestBinanceConnection}
                         disabled={testingApiConn || isPending('binance-test')}
-                        className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-xs text-[#F1F5F9] flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="px-3 py-1.5 bg-[#172129] hover:bg-[#202A32] border border-white/10 rounded-lg text-xs text-[#E8EEF2] flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        <RefreshCw className={`w-3.5 h-3.5 ${testingApiConn ? 'animate-spin text-[#10B981]' : ''}`} />
+                        <RefreshCw className={`w-3.5 h-3.5 ${testingApiConn ? 'animate-spin text-[#20C997]' : ''}`} />
                         <span>{testingApiConn ? tr(lang, 'Test en cours…') : tr(lang, 'Tester Connexion')}</span>
                       </button>
                     </div>
 
                     <form onSubmit={handleSaveBinanceKeys} className="space-y-3 text-xs">
                       <div>
-                        <label className="block text-[#94A3B8] mb-1">Binance API Key</label>
+                        <label className="block text-[#8B98A4] mb-1">Binance API Key</label>
                         <input
                           type="text"
                           value={binanceKey}
                           onChange={(e) => setBinanceKey(e.target.value)}
                           placeholder={tr(lang, 'Entrez votre clé API Binance...')}
-                          className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg font-mono-tabular text-[#E8EEF2]"
                           required
                         />
                       </div>
                       <div>
-                        <label className="block text-[#94A3B8] mb-1">Binance API Secret</label>
+                        <label className="block text-[#8B98A4] mb-1">Binance API Secret</label>
                         <input
                           type="password"
                           value={binanceSecret}
                           onChange={(e) => setBinanceSecret(e.target.value)}
                           placeholder="••••••••••••••••••••••••••••••••"
-                          className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg font-mono-tabular text-[#E8EEF2]"
                           required
                         />
                       </div>
@@ -4777,7 +5106,7 @@ export function App() {
                       <button
                         type="submit"
                         disabled={isPending('binance-save')}
-                        className="w-full py-2.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="w-full py-2.5 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {isPending('binance-save') ? tr(lang, 'Vérification en cours…') : tr(lang, 'Enregistrer & Vérifier les Clés API')}
                       </button>
@@ -4785,11 +5114,11 @@ export function App() {
                   </div>
 
                   {/* Real-Time Binance Account Balance & Margin Card (/account, /balance) */}
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
                     <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
                       <div className="flex items-center gap-2">
-                        <Wallet className="w-4 h-4 text-[#10B981]" />
-                        <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                        <Wallet className="w-4 h-4 text-[#20C997]" />
+                        <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                           {tr(lang, 'Solde & Marge Compte Binance (/account)')}
                         </h3>
                       </div>
@@ -4797,7 +5126,7 @@ export function App() {
                         type="button"
                         onClick={loadLiveAccountAndOrders}
                         disabled={loadingLiveAccount}
-                        className="text-xs text-[#10B981] hover:underline flex items-center gap-1"
+                        className="text-xs text-[#20C997] hover:underline flex items-center gap-1"
                       >
                         <RefreshCw className={`w-3.5 h-3.5 ${loadingLiveAccount ? 'animate-spin' : ''}`} />
                         <span>{tr(lang, 'Rafraîchir')}</span>
@@ -4807,9 +5136,9 @@ export function App() {
                     {liveAccount ? (
                       <div className="space-y-3 text-xs">
                         <div className="grid grid-cols-2 gap-3 font-mono-tabular">
-                          <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06]">
-                            <div className="text-[10px] text-[#64748B] uppercase">{tr(lang, 'Solde Total Wallet')}</div>
-                            <div className="text-base font-bold text-[#F1F5F9] mt-0.5">
+                          <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06]">
+                            <div className="text-[10px] text-[#6E7B88] uppercase">{tr(lang, 'Solde Total Wallet')}</div>
+                            <div className="text-base font-bold text-[#E8EEF2] mt-0.5">
                               {Number(liveAccount.total_wallet_balance || 0).toLocaleString('en-US', {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2,
@@ -4817,9 +5146,9 @@ export function App() {
                               USDT
                             </div>
                           </div>
-                          <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06]">
-                            <div className="text-[10px] text-[#64748B] uppercase">{tr(lang, 'Disponible')}</div>
-                            <div className="text-base font-bold text-[#10B981] mt-0.5">
+                          <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06]">
+                            <div className="text-[10px] text-[#6E7B88] uppercase">{tr(lang, 'Disponible')}</div>
+                            <div className="text-base font-bold text-[#20C997] mt-0.5">
                               {Number(liveAccount.available_balance || 0).toLocaleString('en-US', {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2,
@@ -4827,20 +5156,20 @@ export function App() {
                               USDT
                             </div>
                           </div>
-                          <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06]">
-                            <div className="text-[10px] text-[#64748B] uppercase">{tr(lang, 'PnL Non Réalisé')}</div>
+                          <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06]">
+                            <div className="text-[10px] text-[#6E7B88] uppercase">{tr(lang, 'PnL Non Réalisé')}</div>
                             <div
                               className={`text-base font-bold mt-0.5 ${
-                                Number(liveAccount.unrealized_pnl || 0) >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'
+                                Number(liveAccount.unrealized_pnl || 0) >= 0 ? 'text-[#20C997]' : 'text-[#F04438]'
                               }`}
                             >
                               {Number(liveAccount.unrealized_pnl || 0) >= 0 ? '+' : ''}
                               {Number(liveAccount.unrealized_pnl || 0).toFixed(2)} USDT
                             </div>
                           </div>
-                          <div className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06]">
-                            <div className="text-[10px] text-[#64748B] uppercase">{tr(lang, 'Marge Utilisée')}</div>
-                            <div className="text-base font-bold text-[#F59E0B] mt-0.5">
+                          <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06]">
+                            <div className="text-[10px] text-[#6E7B88] uppercase">{tr(lang, 'Marge Utilisée')}</div>
+                            <div className="text-base font-bold text-[#D6A84F] mt-0.5">
                               {liveAccount.market_type === 'futures' ? `${liveAccount.margin_used_pct || 0}%` : 'SPOT'}
                             </div>
                           </div>
@@ -4848,12 +5177,12 @@ export function App() {
 
                         {Array.isArray(liveAccount.assets) && liveAccount.assets.length > 0 && (
                           <div className="space-y-1.5 pt-1">
-                            <div className="text-[11px] text-[#94A3B8] font-semibold">{tr(lang, 'Actifs détectés :')}</div>
+                            <div className="text-[11px] text-[#8B98A4] font-semibold">{tr(lang, 'Actifs détectés :')}</div>
                             <div className="max-h-32 overflow-y-auto divide-y divide-white/[0.05] font-mono-tabular">
                               {liveAccount.assets.slice(0, 6).map((a: any) => (
                                 <div key={a.asset} className="py-1.5 flex items-center justify-between text-[11px]">
-                                  <span className="font-bold text-[#F1F5F9]">{a.asset}</span>
-                                  <span className="text-[#94A3B8]">
+                                  <span className="font-bold text-[#E8EEF2]">{a.asset}</span>
+                                  <span className="text-[#8B98A4]">
                                     {liveAccount.market_type === 'futures'
                                       ? `${Number(a.wallet || 0).toFixed(4)} (${lang === 'en' ? 'Avail' : 'Dispo'}: ${Number(a.available || 0).toFixed(2)})`
                                       : `${Number(a.total || 0).toFixed(4)} (~${Number(a.usdt_value || 0).toFixed(2)} USDT)`}
@@ -4865,7 +5194,7 @@ export function App() {
                         )}
                       </div>
                     ) : (
-                      <div className="p-4 rounded-lg bg-[#090D16] border border-white/[0.06] text-xs text-[#94A3B8]">
+                      <div className="p-4 rounded-lg bg-[#080C0F] border border-white/[0.06] text-xs text-[#8B98A4]">
                         {tr(
                           lang,
                           'Connectez des clés API Binance valides pour afficher le solde temps réel, la marge disponible et les positions sur le serveur Binance.'
@@ -4879,13 +5208,13 @@ export function App() {
               {/* Row 2: Manual Live Order Ticket (/live, /live_long, /live_short) + Open Positions & Orders (/positions, /close) */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Manual Live Order Ticket (5 cols) */}
-                <div className="lg:col-span-5 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                <div id="at-live-order" className="scroll-mt-24 lg:col-span-5 bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
                   <div className="flex items-center justify-between border-b border-white/[0.07] pb-3">
                     <div>
-                      <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                      <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                         {tr(lang, "Ticket d'Ordre Live Manuel (/live_long • /live_short)")}
                       </h3>
-                      <p className="text-xs text-[#64748B]">
+                      <p className="text-xs text-[#6E7B88]">
                         {lang === 'en'
                           ? `Pre-order validation + explicit confirmation before sending to Binance (${tradingCfg.market_type.toUpperCase()}).`
                           : `Validation de pré-ordre + confirmation explicite avant envoi sur Binance (${tradingCfg.market_type.toUpperCase()}).`}
@@ -4903,8 +5232,8 @@ export function App() {
                         }}
                         className={`py-2 rounded-lg font-semibold border transition-colors ${
                           liveOrderSide === 'BUY'
-                            ? 'bg-[#10B981] text-[#090D16] border-[#10B981]'
-                            : 'bg-[#090D16] text-[#94A3B8] border-white/10'
+                            ? 'bg-[#20C997] text-[#080C0F] border-[#20C997]'
+                            : 'bg-[#080C0F] text-[#8B98A4] border-white/10'
                         }`}
                       >
                         {tr(lang, '🟢 OUVRIR LONG (BUY)')}
@@ -4917,8 +5246,8 @@ export function App() {
                         }}
                         className={`py-2 rounded-lg font-semibold border transition-colors ${
                           liveOrderSide === 'SELL'
-                            ? 'bg-[#F43F5E] text-white border-[#F43F5E]'
-                            : 'bg-[#090D16] text-[#94A3B8] border-white/10'
+                            ? 'bg-[#F04438] text-white border-[#F04438]'
+                            : 'bg-[#080C0F] text-[#8B98A4] border-white/10'
                         }`}
                       >
                         {tr(lang, '🔴 OUVRIR SHORT (SELL)')}
@@ -4927,14 +5256,14 @@ export function App() {
 
                     <div className="grid grid-cols-2 gap-2.5">
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Symbole')}</label>
+                        <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Symbole')}</label>
                         <select
                           value={liveOrderSymbol}
                           onChange={(e) => {
                             setLiveOrderSymbol(e.target.value);
                             setLiveOrderDraftCheck(null);
                           }}
-                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                         >
                           {SYMBOLS.map((s) => (
                             <option key={s.id} value={s.id}>
@@ -4944,14 +5273,14 @@ export function App() {
                         </select>
                       </div>
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, "Type d'Ordre")}</label>
+                        <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, "Type d'Ordre")}</label>
                         <select
                           value={liveOrderType}
                           onChange={(e) => {
                             setLiveOrderType(e.target.value as 'MARKET' | 'LIMIT');
                             setLiveOrderDraftCheck(null);
                           }}
-                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                         >
                           <option value="MARKET">MARKET</option>
                           <option value="LIMIT">LIMIT</option>
@@ -4961,7 +5290,7 @@ export function App() {
 
                     <div className="grid grid-cols-3 gap-2.5">
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Montant')}</label>
+                        <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Montant')}</label>
                         <input
                           type="number"
                           step="any"
@@ -4970,25 +5299,25 @@ export function App() {
                             setLiveOrderAmount(e.target.value);
                             setLiveOrderDraftCheck(null);
                           }}
-                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                         />
                       </div>
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Mode Montant')}</label>
+                        <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Mode Montant')}</label>
                         <select
                           value={liveOrderAmountMode}
                           onChange={(e) => {
                             setLiveOrderAmountMode(e.target.value as 'fixed' | 'percentage');
                             setLiveOrderDraftCheck(null);
                           }}
-                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded text-[#F1F5F9]"
+                          className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded text-[#E8EEF2]"
                         >
                           <option value="fixed">{tr(lang, 'USDT Fixe')}</option>
                           <option value="percentage">{tr(lang, '% Solde')}</option>
                         </select>
                       </div>
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Levier (1–125)')}</label>
+                        <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Levier (1–125)')}</label>
                         <input
                           type="number"
                           min="1"
@@ -4998,14 +5327,14 @@ export function App() {
                             setLiveOrderLeverage(e.target.value);
                             setLiveOrderDraftCheck(null);
                           }}
-                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                         />
                       </div>
                     </div>
 
                     {liveOrderType === 'LIMIT' && (
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, "Prix Limite d'Entrée")}</label>
+                        <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, "Prix Limite d'Entrée")}</label>
                         <input
                           type="number"
                           step="any"
@@ -5015,14 +5344,14 @@ export function App() {
                             setLiveOrderDraftCheck(null);
                           }}
                           placeholder="Ex: 82500"
-                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                         />
                       </div>
                     )}
 
                     <div className="grid grid-cols-2 gap-2.5">
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">Stop Loss (SL)</label>
+                        <label className="block text-[11px] text-[#8B98A4] mb-1">Stop Loss (SL)</label>
                         <input
                           type="number"
                           step="any"
@@ -5032,11 +5361,11 @@ export function App() {
                             setLiveOrderDraftCheck(null);
                           }}
                           placeholder={tr(lang, 'Prix SL...')}
-                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#F43F5E]"
+                          className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#F04438]"
                         />
                       </div>
                       <div>
-                        <label className="block text-[11px] text-[#94A3B8] mb-1">Take Profit (TP)</label>
+                        <label className="block text-[11px] text-[#8B98A4] mb-1">Take Profit (TP)</label>
                         <input
                           type="number"
                           step="any"
@@ -5046,14 +5375,14 @@ export function App() {
                             setLiveOrderDraftCheck(null);
                           }}
                           placeholder={tr(lang, 'Prix TP...')}
-                          className="w-full px-2.5 py-1.5 bg-[#090D16] border border-white/10 rounded font-mono-tabular text-[#10B981]"
+                          className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#20C997]"
                         />
                       </div>
                     </div>
 
                     <div className="flex items-center justify-between gap-2 pt-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-[#94A3B8]">{lang === 'en' ? 'Margin:' : 'Marge :'}</span>
+                        <span className="text-[#8B98A4]">{lang === 'en' ? 'Margin:' : 'Marge :'}</span>
                         {(['ISOLATED', 'CROSS'] as const).map((mt) => (
                           <button
                             key={mt}
@@ -5061,8 +5390,8 @@ export function App() {
                             onClick={() => setLiveOrderMarginType(mt)}
                             className={`px-2 py-1 rounded text-[11px] font-mono-tabular border ${
                               liveOrderMarginType === mt
-                                ? 'bg-[#10B981]/20 border-[#10B981] text-[#10B981]'
-                                : 'bg-[#090D16] border-white/10 text-[#94A3B8]'
+                                ? 'bg-[#20C997]/20 border-[#20C997] text-[#20C997]'
+                                : 'bg-[#080C0F] border-white/10 text-[#8B98A4]'
                             }`}
                           >
                             {mt}
@@ -5080,8 +5409,8 @@ export function App() {
                     </div>
 
                     {liveOrderDraftCheck && (
-                      <div className="p-3 rounded-lg bg-[#090D16] border border-[#10B981]/40 space-y-1 font-mono-tabular text-[11px]">
-                        <div className="text-[#10B981] font-bold">{tr(lang, '✅ Pré-validation Binance réussie :')}</div>
+                      <div className="p-3 rounded-lg bg-[#080C0F] border border-[#20C997]/40 space-y-1 font-mono-tabular text-[11px]">
+                        <div className="text-[#20C997] font-bold">{tr(lang, '✅ Pré-validation Binance réussie :')}</div>
                         <div>
                           {lang === 'en' ? 'Ref price:' : 'Prix réf:'} {Number(liveOrderDraftCheck.price).toFixed(2)} •{' '}
                           {tr(lang, 'Quantité')}: <strong>{liveOrderDraftCheck.quantity}</strong>
@@ -5102,7 +5431,7 @@ export function App() {
                         type="button"
                         disabled={isPending('live-order')}
                         onClick={() => handleLiveOrderAction('validate')}
-                        className="flex-1 py-2.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="flex-1 py-2.5 bg-[#172129] hover:bg-[#202A32] border border-white/10 text-[#E8EEF2] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {isPending('live-order') ? tr(lang, 'Traitement…') : tr(lang, "1. Valider l'Ordre")}
                       </button>
@@ -5112,8 +5441,8 @@ export function App() {
                         onClick={() => handleLiveOrderAction('execute')}
                         className={`flex-1 py-2.5 font-semibold rounded-lg transition-colors ${
                           liveOrderDraftCheck
-                            ? 'bg-[#10B981] hover:bg-[#059669] text-[#090D16]'
-                            : 'bg-[#090D16] text-[#64748B] border border-white/5 cursor-not-allowed'
+                            ? 'bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F]'
+                            : 'bg-[#080C0F] text-[#6E7B88] border border-white/5 cursor-not-allowed'
                         }`}
                       >
                         {isPending('live-order') ? tr(lang, 'Exécution en cours…') : tr(lang, '2. Confirmer Envoi Réel')}
@@ -5123,11 +5452,11 @@ export function App() {
                 </div>
 
                 {/* Open Positions, Open Orders & Trade History (7 cols) */}
-                <div className="lg:col-span-7 space-y-6">
+                <div id="at-positions" className="scroll-mt-24 lg:col-span-7 space-y-6">
                   {/* Open Positions (/positions, /close) */}
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl overflow-hidden">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl overflow-hidden">
                     <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
-                      <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
+                      <h3 className="font-display font-semibold text-sm text-[#E8EEF2]">
                         {lang === 'en'
                           ? `Open AutoTrade & Live Positions (${
                               liveTrades.open.length +
@@ -5155,15 +5484,15 @@ export function App() {
                       <button
                         type="button"
                         onClick={loadLiveAccountAndOrders}
-                        className="text-xs text-[#10B981] hover:underline"
+                        className="text-xs text-[#20C997] hover:underline"
                       >
                         {tr(lang, 'Actualiser')}
                       </button>
                     </div>
                     <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse text-xs">
+                      <table className="bs-stack w-full text-left border-collapse text-xs">
                         <thead>
-                          <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
+                          <tr className="border-b border-white/[0.07] text-[#6E7B88] font-mono-tabular uppercase">
                             <th className="py-2.5 px-4">{tr(lang, 'ID / Actif')}</th>
                             <th className="py-2.5 px-4">{tr(lang, 'Sens & Marché')}</th>
                             <th className="py-2.5 px-4 text-right">{tr(lang, 'Quantité')}</th>
@@ -5186,7 +5515,7 @@ export function App() {
                             if (liveTrades.open.length === 0 && remoteUnmatched.length === 0) {
                               return (
                                 <tr>
-                                  <td colSpan={7} className="py-6 text-center text-[#64748B] font-sans">
+                                  <td colSpan={7} className="py-6 text-center text-[#6E7B88] font-sans">
                                     {tr(lang, 'Aucune position ouverte enregistrée localement ou sur Binance.')}
                                   </td>
                                 </tr>
@@ -5196,20 +5525,20 @@ export function App() {
                               <>
                                 {liveTrades.open.map((t: any) => (
                                   <tr key={`local-${t.id}`} className="hover:bg-white/[0.02]">
-                                    <td className="py-3 px-4 font-semibold text-[#F1F5F9]">
+                                    <td className="py-3 px-4 font-semibold text-[#E8EEF2]">
                                       #{t.id} {t.symbol}
                                     </td>
                                     <td className="py-3 px-4">
-                                      <span className={t.direction === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                                      <span className={t.direction === 'BUY' ? 'text-[#20C997]' : 'text-[#F04438]'}>
                                         {t.direction} x{t.leverage || 1}
                                       </span>{' '}
-                                      <span className="text-[10px] text-[#64748B] uppercase">({t.market_type})</span>
+                                      <span className="text-[10px] text-[#6E7B88] uppercase">({t.market_type})</span>
                                     </td>
                                     <td className="py-3 px-4 text-right">{t.quantity}</td>
                                     <td className="py-3 px-4 text-right">{Number(t.entry_price || 0).toLocaleString()}</td>
                                     <td className="py-3 px-4 text-right">
-                                      <span className="text-[#F43F5E]">{t.sl_price ?? '—'}</span> /{' '}
-                                      <span className="text-[#10B981]">{t.tp_price ?? '—'}</span>
+                                      <span className="text-[#F04438]">{t.sl_price ?? '—'}</span> /{' '}
+                                      <span className="text-[#20C997]">{t.tp_price ?? '—'}</span>
                                     </td>
                                     <td className="py-3 px-4 text-right whitespace-nowrap">
                                       {renderOpenPnl(
@@ -5232,7 +5561,7 @@ export function App() {
                                         type="button"
                                         onClick={() => handleCloseLivePosition(t.id, t.symbol, t.direction)}
                                         disabled={isPending(`live-close-${t.id}-${t.symbol}`)}
-                                        className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
+                                        className="px-2.5 py-1 bg-[#F04438]/15 hover:bg-[#F04438]/25 border border-[#F04438]/40 text-[#F97066] rounded text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
                                       >
                                         {isPending(`live-close-${t.id}-${t.symbol}`) ? tr(lang, 'Fermeture…') : <>{tr(lang, 'Fermer')} (#{t.id})</>}
                                       </button>
@@ -5251,21 +5580,21 @@ export function App() {
                                   );
                                   const upnl = remotePnl ? remotePnl.usdt : Number(rp.unrealized_pnl || 0);
                                   return (
-                                    <tr key={`remote-${rp.symbol}-${dir}`} className="hover:bg-white/[0.02] bg-[#F59E0B]/[0.03]">
-                                      <td className="py-3 px-4 font-semibold text-[#F1F5F9]">
-                                        <span className="text-[#F59E0B] text-[10px] mr-1">[BINANCE]</span>
+                                    <tr key={`remote-${rp.symbol}-${dir}`} className="hover:bg-white/[0.02] bg-[#D6A84F]/[0.03]">
+                                      <td className="py-3 px-4 font-semibold text-[#E8EEF2]">
+                                        <span className="text-[#D6A84F] text-[10px] mr-1">[BINANCE]</span>
                                         {rp.symbol}
                                       </td>
                                       <td className="py-3 px-4">
-                                        <span className={dir === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                                        <span className={dir === 'BUY' ? 'text-[#20C997]' : 'text-[#F04438]'}>
                                           {dir} x{rp.leverage || 1}
                                         </span>{' '}
-                                        <span className="text-[10px] text-[#64748B] uppercase">(futures)</span>
+                                        <span className="text-[10px] text-[#6E7B88] uppercase">(futures)</span>
                                       </td>
                                       <td className="py-3 px-4 text-right">{rp.quantity}</td>
                                       <td className="py-3 px-4 text-right">{Number(rp.entry_price || 0).toLocaleString()}</td>
                                       <td className="py-3 px-4 text-right">
-                                        <span className={upnl >= 0 ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                                        <span className={upnl >= 0 ? 'text-[#20C997]' : 'text-[#F04438]'}>
                                           PnL: {upnl >= 0 ? '+' : ''}
                                           {upnl.toFixed(2)} USDT
                                         </span>
@@ -5276,7 +5605,7 @@ export function App() {
                                           type="button"
                                           onClick={() => handleCloseLivePosition(0, rp.symbol, dir)}
                                           disabled={isPending(`live-close-0-${rp.symbol}`)}
-                                          className="px-2.5 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
+                                          className="px-2.5 py-1 bg-[#F04438]/15 hover:bg-[#F04438]/25 border border-[#F04438]/40 text-[#F97066] rounded text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
                                         >
                                           {isPending(`live-close-0-${rp.symbol}`) ? tr(lang, 'Fermeture…') : <>{tr(lang, 'Fermer')} ({rp.symbol})</>}
                                         </button>
@@ -5293,18 +5622,18 @@ export function App() {
                   </div>
 
                   {/* Open Binance Orders (live_orders / live_cancel_menu) */}
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl overflow-hidden">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl overflow-hidden">
                     <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
-                      <h3 className="font-display font-semibold text-sm text-[#F1F5F9]">
+                      <h3 className="font-display font-semibold text-sm text-[#E8EEF2]">
                         {lang === 'en'
                           ? `Protective & Limit Orders Open on Binance (${liveOpenOrders.length})`
                           : `Ordres Protecteurs & Limites Ouverts sur Binance (${liveOpenOrders.length})`}
                       </h3>
                     </div>
                     <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse text-xs">
+                      <table className="bs-stack w-full text-left border-collapse text-xs">
                         <thead>
-                          <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
+                          <tr className="border-b border-white/[0.07] text-[#6E7B88] font-mono-tabular uppercase">
                             <th className="py-2.5 px-4">{tr(lang, 'Symbole')}</th>
                             <th className="py-2.5 px-4">{tr(lang, 'Type & Sens')}</th>
                             <th className="py-2.5 px-4 text-right">{tr(lang, 'Prix / Stop')}</th>
@@ -5315,16 +5644,16 @@ export function App() {
                         <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
                           {liveOpenOrders.length === 0 ? (
                             <tr>
-                              <td colSpan={5} className="py-5 text-center text-[#64748B] font-sans">
+                              <td colSpan={5} className="py-5 text-center text-[#6E7B88] font-sans">
                                 {tr(lang, 'Aucun ordre ouvert sur Binance actuellement.')}
                               </td>
                             </tr>
                           ) : (
                             liveOpenOrders.map((ord: any) => (
                               <tr key={ord.orderId} className="hover:bg-white/[0.02]">
-                                <td className="py-2.5 px-4 font-semibold text-[#F1F5F9]">{ord.symbol}</td>
+                                <td className="py-2.5 px-4 font-semibold text-[#E8EEF2]">{ord.symbol}</td>
                                 <td className="py-2.5 px-4">
-                                  <span className={ord.side === 'BUY' ? 'text-[#10B981]' : 'text-[#F43F5E]'}>
+                                  <span className={ord.side === 'BUY' ? 'text-[#20C997]' : 'text-[#F04438]'}>
                                     {ord.side}
                                   </span>{' '}
                                   • {ord.type}
@@ -5340,7 +5669,7 @@ export function App() {
                                     type="button"
                                     onClick={() => handleCancelLiveOrder(ord.symbol, String(ord.orderId))}
                                     disabled={isPending(`live-cancel-${String(ord.orderId)}`)}
-                                    className="px-2 py-1 bg-[#1E293B] hover:bg-[#F43F5E]/20 text-[#94A3B8] hover:text-[#FB7185] rounded text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
+                                    className="px-2 py-1 bg-[#172129] hover:bg-[#F04438]/20 text-[#8B98A4] hover:text-[#F97066] rounded text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
                                     {isPending(`live-cancel-${String(ord.orderId)}`) ? tr(lang, 'Annulation…') : tr(lang, 'Annuler')}
                                   </button>
@@ -5362,21 +5691,21 @@ export function App() {
              ========================================================= */}
           {activeTab === 'history' && (
             <div className="space-y-6">
-              <div className="bg-[#111827] border border-white/[0.07] rounded-xl overflow-hidden">
+              <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl overflow-hidden">
                 <div className="px-5 py-4 border-b border-white/[0.07] flex items-center justify-between">
                   <div>
-                    <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                    <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                       {lang === 'en' ? 'Validated Signals History' : 'Historique des Signaux Validés'} ({signalHistory.length})
                     </h3>
-                    <p className="text-xs text-[#64748B]">
+                    <p className="text-xs text-[#6E7B88]">
                       {tr(lang, 'Registre persistant des signaux générés par SignalEngine avec suivi de performance.')}
                     </p>
                   </div>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-xs">
+                  <table className="bs-stack w-full text-left border-collapse text-xs">
                     <thead>
-                      <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
+                      <tr className="border-b border-white/[0.07] text-[#6E7B88] font-mono-tabular uppercase">
                         <th className="py-3 px-4">ID</th>
                         <th className="py-3 px-4">{tr(lang, 'Actif & TF')}</th>
                         <th className="py-3 px-4">Signal</th>
@@ -5390,32 +5719,32 @@ export function App() {
                     <tbody className="divide-y divide-white/[0.05] font-mono-tabular">
                       {signalHistory.map((sig) => (
                         <tr key={sig.id} className="hover:bg-white/[0.02]">
-                          <td className="py-3 px-4 text-[#64748B]">#{sig.id.slice(0, 8)}</td>
-                          <td className="py-3 px-4 font-semibold text-[#F1F5F9]">
+                          <td className="py-3 px-4 text-[#6E7B88]">#{sig.id.slice(0, 8)}</td>
+                          <td className="py-3 px-4 font-semibold text-[#E8EEF2]">
                             {sig.symbol} • {sig.timeframe.toUpperCase()}
                           </td>
                           <td className="py-3 px-4">
-                            <span className={sig.direction === 'BUY' ? 'text-[#10B981] font-bold' : 'text-[#F43F5E] font-bold'}>
+                            <span className={sig.direction === 'BUY' ? 'text-[#20C997] font-bold' : 'text-[#F04438] font-bold'}>
                               {sig.direction}
                             </span>
                           </td>
                           <td className="py-3 px-4 text-right">{sig.score}/100</td>
                           <td className="py-3 px-4 text-right">{sig.entry_price?.toLocaleString()}</td>
                           <td className="py-3 px-4 text-right">
-                            <span className="text-[#F43F5E]">{sig.sl?.toLocaleString() || '—'}</span> /{' '}
-                            <span className="text-[#10B981]">{sig.tp?.toLocaleString() || '—'}</span>
+                            <span className="text-[#F04438]">{sig.sl?.toLocaleString() || '—'}</span> /{' '}
+                            <span className="text-[#20C997]">{sig.tp?.toLocaleString() || '—'}</span>
                           </td>
-                          <td className="py-3 px-4 text-right text-[#F59E0B]">
+                          <td className="py-3 px-4 text-right text-[#D6A84F]">
                             {sig.rr_ratio ? `1:${sig.rr_ratio.toFixed(2)}` : '—'}
                           </td>
                           <td className="py-3 px-4">
                             <span
                               className={`px-2 py-0.5 rounded text-[11px] uppercase ${
                                 sig.status === 'win'
-                                  ? 'bg-[#10B981]/15 text-[#10B981]'
+                                  ? 'bg-[#20C997]/15 text-[#20C997]'
                                   : sig.status === 'loss'
-                                  ? 'bg-[#F43F5E]/15 text-[#F43F5E]'
-                                  : 'bg-white/[0.06] text-[#94A3B8]'
+                                  ? 'bg-[#F04438]/15 text-[#F04438]'
+                                  : 'bg-white/[0.06] text-[#8B98A4]'
                               }`}
                             >
                               {sig.status} {sig.result_pct ? `(${sig.result_pct > 0 ? '+' : ''}${sig.result_pct}%)` : ''}
@@ -5437,8 +5766,8 @@ export function App() {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               {/* Left: Plans, Promo Code & Binance Pay */}
               <div className="lg:col-span-6 space-y-6">
-                <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
-                  <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                  <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                     {tr(lang, 'Abonnement PRO / VIP & Codes Promotionnels')}
                   </h3>
                   <form onSubmit={handleRedeemPromo} className="flex gap-2 text-xs">
@@ -5447,13 +5776,13 @@ export function App() {
                       value={promoCodeInput}
                       onChange={(e) => setPromoCodeInput(e.target.value)}
                       placeholder={tr(lang, 'Code Promo (ex: TEDDYPRO ou TEDDYVIP)')}
-                      className="flex-1 px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular uppercase text-[#F1F5F9]"
+                      className="flex-1 px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg font-mono-tabular uppercase text-[#E8EEF2]"
                       required
                     />
                     <button
                       type="submit"
                       disabled={isPending('promo')}
-                      className="px-4 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="px-4 py-2 bg-[#20C997] text-[#080C0F] font-semibold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {isPending('promo') ? tr(lang, 'Vérification…') : tr(lang, 'Activer Code')}
                     </button>
@@ -5463,64 +5792,64 @@ export function App() {
                     <button
                       onClick={() => handleGenerateBinancePay('pro')}
                       disabled={isPending('binance-pay')}
-                      className="p-3.5 rounded-lg bg-[#090D16] border border-[#10B981]/40 hover:bg-[#10B981]/10 text-left space-y-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="p-3.5 rounded-lg bg-[#080C0F] border border-[#20C997]/40 hover:bg-[#20C997]/10 text-left space-y-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      <div className="font-semibold text-[#10B981]">{tr(lang, 'Générer Mémo Binance Pay PRO')}</div>
-                      <div className="font-mono-tabular text-[#F1F5F9]">{tr(lang, '19 USDT / mois')}</div>
+                      <div className="font-semibold text-[#20C997]">{tr(lang, 'Générer Mémo Binance Pay PRO')}</div>
+                      <div className="font-mono-tabular text-[#E8EEF2]">{tr(lang, '19 USDT / mois')}</div>
                     </button>
                     <button
                       onClick={() => handleGenerateBinancePay('vip')}
                       disabled={isPending('binance-pay')}
-                      className="p-3.5 rounded-lg bg-[#090D16] border border-[#F59E0B]/40 hover:bg-[#F59E0B]/10 text-left space-y-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="p-3.5 rounded-lg bg-[#080C0F] border border-[#D6A84F]/40 hover:bg-[#D6A84F]/10 text-left space-y-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      <div className="font-semibold text-[#F59E0B]">{tr(lang, 'Générer Mémo Binance Pay VIP')}</div>
-                      <div className="font-mono-tabular text-[#F1F5F9]">{tr(lang, '49 USDT / mois')}</div>
+                      <div className="font-semibold text-[#D6A84F]">{tr(lang, 'Générer Mémo Binance Pay VIP')}</div>
+                      <div className="font-mono-tabular text-[#E8EEF2]">{tr(lang, '49 USDT / mois')}</div>
                     </button>
                   </div>
 
                   {paymentInfo && (
-                    <div className="p-4 rounded-lg bg-[#090D16] border border-[#10B981]/40 space-y-1.5 text-xs font-mono-tabular">
-                      <div className="text-[#10B981] font-semibold">{tr(lang, 'Instructions Binance Pay :')}</div>
+                    <div className="p-4 rounded-lg bg-[#080C0F] border border-[#20C997]/40 space-y-1.5 text-xs font-mono-tabular">
+                      <div className="text-[#20C997] font-semibold">{tr(lang, 'Instructions Binance Pay :')}</div>
                       <div>
                         {tr(lang, 'Binance ID destinataire :')}{' '}
-                        <strong className="text-[#F1F5F9]">{paymentInfo.binance_id || tr(lang, 'Non configuré')}</strong>
+                        <strong className="text-[#E8EEF2]">{paymentInfo.binance_id || tr(lang, 'Non configuré')}</strong>
                       </div>
                       <div>
-                        {tr(lang, 'Montant à envoyer :')} <strong className="text-[#F1F5F9]">{paymentInfo.amount_usdt} USDT</strong>
+                        {tr(lang, 'Montant à envoyer :')} <strong className="text-[#E8EEF2]">{paymentInfo.amount_usdt} USDT</strong>
                       </div>
                       <div>
-                        {tr(lang, 'Mémo obligatoire :')} <strong className="text-[#F59E0B]">{paymentInfo.memo}</strong>
+                        {tr(lang, 'Mémo obligatoire :')} <strong className="text-[#D6A84F]">{paymentInfo.memo}</strong>
                       </div>
                     </div>
                   )}
                 </div>
 
                 {/* Security PIN Configuration */}
-                <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
                   <div className="flex items-center justify-between">
-                    <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                    <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                       {lang === 'en' ? 'Security PIN Code (4-6 digits)' : 'Code PIN de Sécurité (4 à 6 chiffres)'}
                     </h3>
-                    <span className="text-xs font-mono-tabular text-[#10B981]">
+                    <span className="text-xs font-mono-tabular text-[#20C997]">
                       {user.has_pin ? tr(lang, '● PIN Configuré') : tr(lang, '○ Aucun PIN')}
                     </span>
                   </div>
                   <form onSubmit={handleSavePin} className="space-y-3 text-xs">
                     {user.has_pin && (
                       <div>
-                        <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Ancien Code PIN')}</label>
+                        <label className="block text-[#8B98A4] mb-1">{tr(lang, 'Ancien Code PIN')}</label>
                         <input
                           type="password"
                           maxLength={6}
                           value={oldPin}
                           onChange={(e) => setOldPin(e.target.value)}
-                          className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                          className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg font-mono-tabular text-[#E8EEF2]"
                           required
                         />
                       </div>
                     )}
                     <div>
-                      <label className="block text-[#94A3B8] mb-1">
+                      <label className="block text-[#8B98A4] mb-1">
                         {lang === 'en' ? 'New Security PIN (4 to 6 digits)' : 'Nouveau Code PIN (4 à 6 chiffres)'}
                       </label>
                       <input
@@ -5529,7 +5858,7 @@ export function App() {
                         value={newPin}
                         onChange={(e) => setNewPin(e.target.value)}
                         placeholder="123456"
-                        className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                        className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg font-mono-tabular text-[#E8EEF2]"
                         required
                       />
                     </div>
@@ -5537,7 +5866,7 @@ export function App() {
                       <button
                         type="submit"
                         disabled={isPending('save-pin')}
-                        className="px-4 py-2 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-[#F1F5F9] font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="px-4 py-2 bg-[#172129] hover:bg-[#202A32] border border-white/10 rounded-lg text-[#E8EEF2] font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {isPending('save-pin') ? tr(lang, 'Enregistrement…') : tr(lang, 'Enregistrer le Code PIN')}
                       </button>
@@ -5547,7 +5876,7 @@ export function App() {
                             type="button"
                             onClick={handleResetPinLockout}
                             disabled={isPending('pin-unlock')}
-                            className="px-3 py-2 bg-[#090D16] hover:bg-white/[0.05] border border-white/15 rounded-lg text-[#94A3B8] hover:text-[#F1F5F9] disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="px-3 py-2 bg-[#080C0F] hover:bg-white/[0.05] border border-white/15 rounded-lg text-[#8B98A4] hover:text-[#E8EEF2] disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             {lang === 'en' ? 'Reset PIN Lockout' : 'Débloquer essai PIN'}
                           </button>
@@ -5576,7 +5905,7 @@ export function App() {
                                 showToast(err.message, 'error');
                               }
                             }}
-                            className="px-3 py-2 bg-[#F59E0B]/15 hover:bg-[#F59E0B]/25 border border-[#F59E0B]/40 rounded-lg text-[#FBBF24]"
+                            className="px-3 py-2 bg-[#D6A84F]/15 hover:bg-[#D6A84F]/25 border border-[#D6A84F]/40 rounded-lg text-[#E2BC6A]"
                           >
                             {lang === 'en' ? 'Force Reset Forgotten PIN' : 'Réinitialiser PIN oublié'}
                           </button>
@@ -5588,53 +5917,53 @@ export function App() {
               </div>
 
               {/* Right: Direct Admin Support Messaging */}
-              <div className="lg:col-span-6 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
-                <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+              <div className="lg:col-span-6 bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                   {tr(lang, 'Support Direct Administrateur')}
                 </h3>
                 <form onSubmit={handleCreateSupportTicket} className="space-y-3 text-xs">
                   <div>
-                    <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Sujet')}</label>
+                    <label className="block text-[#8B98A4] mb-1">{tr(lang, 'Sujet')}</label>
                     <input
                       type="text"
                       value={ticketSubject}
                       onChange={(e) => setTicketSubject(e.target.value)}
                       placeholder={tr(lang, 'Validation paiement / Question stratégie...')}
-                      className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+                      className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2]"
                       required
                     />
                   </div>
                   <div>
-                    <label className="block text-[#94A3B8] mb-1">{tr(lang, 'Message')}</label>
+                    <label className="block text-[#8B98A4] mb-1">{tr(lang, 'Message')}</label>
                     <textarea
                       rows={3}
                       value={ticketMessage}
                       onChange={(e) => setTicketMessage(e.target.value)}
                       placeholder={tr(lang, 'Décrivez votre demande...')}
-                      className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+                      className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2]"
                       required
                     />
                   </div>
                   <button
                     type="submit"
                     disabled={isPending('support-ticket')}
-                    className="px-4 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="px-4 py-2 bg-[#20C997] text-[#080C0F] font-semibold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {isPending('support-ticket') ? tr(lang, 'Envoi…') : tr(lang, "Envoyer à l'Administrateur")}
                   </button>
                 </form>
 
                 <div className="space-y-2.5 pt-3 border-t border-white/[0.07]">
-                  <div className="text-xs font-semibold text-[#94A3B8]">{tr(lang, 'Vos échanges récents :')}</div>
+                  <div className="text-xs font-semibold text-[#8B98A4]">{tr(lang, 'Vos échanges récents :')}</div>
                   {tickets.map((t) => (
-                    <div key={t.id} className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] space-y-1.5 text-xs">
+                    <div key={t.id} className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-1.5 text-xs">
                       <div className="flex items-center justify-between">
-                        <span className="font-semibold text-[#F1F5F9]">{t.subject}</span>
-                        <span className="font-mono-tabular text-[11px] text-[#10B981] uppercase">{t.status}</span>
+                        <span className="font-semibold text-[#E8EEF2]">{t.subject}</span>
+                        <span className="font-mono-tabular text-[11px] text-[#20C997] uppercase">{t.status}</span>
                       </div>
-                      <p className="text-[#94A3B8]">{t.message}</p>
+                      <p className="text-[#8B98A4]">{t.message}</p>
                       {t.admin_reply && (
-                        <div className="p-2 rounded bg-[#10B981]/10 border border-[#10B981]/30 text-[#34D399]">
+                        <div className="p-2 rounded bg-[#20C997]/10 border border-[#20C997]/30 text-[#32D583]">
                           <strong>{tr(lang, 'Réponse Admin :')}</strong> {t.admin_reply}
                         </div>
                       )}
@@ -5651,16 +5980,16 @@ export function App() {
           {activeTab === 'admin' && isAdminUser && (
             <div className="space-y-6">
               {/* Direct Banner to Open Users 360° Dossier & Public Terms */}
-              <div className="bg-[#111827] border border-[#10B981]/40 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="bg-[#0D1318] border border-[#20C997]/40 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-[#10B981]/15 border border-[#10B981]/40 flex items-center justify-center text-[#10B981]">
+                  <div className="w-10 h-10 rounded-xl bg-[#20C997]/15 border border-[#20C997]/40 flex items-center justify-center text-[#20C997]">
                     <Users className="w-5 h-5" />
                   </div>
                   <div>
-                    <div className="text-sm font-display font-bold text-[#F1F5F9]">
+                    <div className="text-sm font-display font-bold text-[#E8EEF2]">
                       {tr(lang, 'Dossier Utilisateurs 360° & Consentement CGU')}
                     </div>
-                    <div className="text-xs text-[#94A3B8]">
+                    <div className="text-xs text-[#8B98A4]">
                       {tr(
                         lang,
                         'Consultez toutes les informations par utilisateur : appareil, OS, navigateur, batterie, IP, géolocalisation GPS/IP, preuves CGU et trading.'
@@ -5672,7 +6001,7 @@ export function App() {
                   <button
                     type="button"
                     onClick={() => setActiveTab('users_intelligence')}
-                    className="px-3.5 py-2 rounded-lg bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold text-xs flex items-center gap-1.5"
+                    className="px-3.5 py-2 rounded-lg bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold text-xs flex items-center gap-1.5"
                   >
                     <Users className="w-4 h-4" />
                     <span>{tr(lang, 'Ouvrir Utilisateurs 360°')}</span>
@@ -5680,7 +6009,7 @@ export function App() {
                   <button
                     type="button"
                     onClick={() => setActiveTab('terms')}
-                    className="px-3 py-2 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#FBBF24] font-semibold text-xs flex items-center gap-1.5"
+                    className="px-3 py-2 rounded-lg bg-[#172129] hover:bg-[#202A32] border border-white/10 text-[#E2BC6A] font-semibold text-xs flex items-center gap-1.5"
                   >
                     <Shield className="w-4 h-4" />
                     <span>{tr(lang, 'Voir les CGU publiques')}</span>
@@ -5690,33 +6019,33 @@ export function App() {
 
               {/* Top Summary Metrics for Admin */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-4">
-                  <div className="text-[11px] text-[#64748B] uppercase font-mono-tabular">{tr(lang, 'Total Comptes')}</div>
-                  <div className="text-xl font-bold font-mono-tabular text-[#F1F5F9] mt-1">
+                <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-4">
+                  <div className="text-[11px] text-[#6E7B88] uppercase font-mono-tabular">{tr(lang, 'Total Comptes')}</div>
+                  <div className="text-xl font-bold font-mono-tabular text-[#E8EEF2] mt-1">
                     {(adminData?.users || []).length}
                   </div>
                 </div>
-                <div className="bg-[#111827] border border-[#F59E0B]/30 rounded-xl p-4">
-                  <div className="text-[11px] text-[#F59E0B] uppercase font-mono-tabular">
+                <div className="bg-[#0D1318] border border-[#D6A84F]/30 rounded-xl p-4">
+                  <div className="text-[11px] text-[#D6A84F] uppercase font-mono-tabular">
                     {tr(lang, "En Attente d'Approbation")}
                   </div>
-                  <div className="text-xl font-bold font-mono-tabular text-[#F59E0B] mt-1">
+                  <div className="text-xl font-bold font-mono-tabular text-[#D6A84F] mt-1">
                     {(adminData?.users || []).filter((u: any) => u.account_status === 'PENDING_APPROVAL').length}
                   </div>
                 </div>
-                <div className="bg-[#111827] border border-[#10B981]/30 rounded-xl p-4">
-                  <div className="text-[11px] text-[#10B981] uppercase font-mono-tabular">
+                <div className="bg-[#0D1318] border border-[#20C997]/30 rounded-xl p-4">
+                  <div className="text-[11px] text-[#20C997] uppercase font-mono-tabular">
                     {tr(lang, 'Comptes Approuvés')}
                   </div>
-                  <div className="text-xl font-bold font-mono-tabular text-[#10B981] mt-1">
+                  <div className="text-xl font-bold font-mono-tabular text-[#20C997] mt-1">
                     {(adminData?.users || []).filter((u: any) => u.account_status === 'APPROVED').length}
                   </div>
                 </div>
-                <div className="bg-[#111827] border border-[#F43F5E]/30 rounded-xl p-4">
-                  <div className="text-[11px] text-[#FB7185] uppercase font-mono-tabular">
+                <div className="bg-[#0D1318] border border-[#F04438]/30 rounded-xl p-4">
+                  <div className="text-[11px] text-[#F97066] uppercase font-mono-tabular">
                     {tr(lang, 'Suspendus / Refusés')}
                   </div>
-                  <div className="text-xl font-bold font-mono-tabular text-[#FB7185] mt-1">
+                  <div className="text-xl font-bold font-mono-tabular text-[#F97066] mt-1">
                     {
                       (adminData?.users || []).filter(
                         (u: any) => u.account_status === 'SUSPENDED' || u.account_status === 'REJECTED'
@@ -5728,13 +6057,13 @@ export function App() {
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* User Management, Approval & Quotas Table */}
-                <div className="lg:col-span-8 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                <div className="lg:col-span-8 bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                      <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                         {tr(lang, 'Contrôle des Accès, Approbation des Comptes & Quotas Utilisateurs')}
                       </h3>
-                      <p className="text-xs text-[#64748B]">
+                      <p className="text-xs text-[#6E7B88]">
                         {tr(
                           lang,
                           'Approuvez, refusez, suspendez ou ajustez les quotas individuels de chaque utilisateur.'
@@ -5757,8 +6086,8 @@ export function App() {
                           onClick={() => setAdminUserFilter(f.id)}
                           className={`px-2.5 py-1 rounded text-[11px] font-mono-tabular border transition-colors ${
                             adminUserFilter === f.id
-                              ? 'bg-[#10B981]/20 border-[#10B981] text-[#10B981]'
-                              : 'bg-[#090D16] border-white/10 text-[#94A3B8] hover:text-[#F1F5F9]'
+                              ? 'bg-[#20C997]/20 border-[#20C997] text-[#20C997]'
+                              : 'bg-[#080C0F] border-white/10 text-[#8B98A4] hover:text-[#E8EEF2]'
                           }`}
                         >
                           {f.label}
@@ -5766,7 +6095,7 @@ export function App() {
                       ))}
                       <button
                         onClick={loadAdminOverview}
-                        className="px-2.5 py-1 bg-[#1E293B] hover:bg-[#334155] rounded text-xs text-[#10B981] flex items-center gap-1"
+                        className="px-2.5 py-1 bg-[#172129] hover:bg-[#202A32] rounded text-xs text-[#20C997] flex items-center gap-1"
                       >
                         <RefreshCw className="w-3.5 h-3.5" /> {tr(lang, 'Actualiser')}
                       </button>
@@ -5775,9 +6104,9 @@ export function App() {
 
                   {/* Per-User Quota Editor Modal/Drawer Inline */}
                   {editingQuotasUid !== null && (
-                    <div className="p-4 rounded-xl bg-[#090D16] border border-[#10B981]/40 space-y-3">
+                    <div className="p-4 rounded-xl bg-[#080C0F] border border-[#20C997]/40 space-y-3">
                       <div className="flex items-center justify-between">
-                        <div className="text-xs font-semibold text-[#10B981]">
+                        <div className="text-xs font-semibold text-[#20C997]">
                           {lang === 'en'
                             ? `Quota Configuration — User #${editingQuotasUid}`
                             : `Configuration des quotas — Utilisateur #${editingQuotasUid}`}
@@ -5785,14 +6114,14 @@ export function App() {
                         <button
                           type="button"
                           onClick={() => setEditingQuotasUid(null)}
-                          className="text-xs text-[#94A3B8] hover:text-[#F1F5F9]"
+                          className="text-xs text-[#8B98A4] hover:text-[#E8EEF2]"
                         >
                           {tr(lang, 'Fermer')}
                         </button>
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Analyses / jour')}</label>
+                          <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Analyses / jour')}</label>
                           <input
                             type="number"
                             min={1}
@@ -5800,11 +6129,11 @@ export function App() {
                             onChange={(e) =>
                               setQuotaForm((prev) => ({ ...prev, daily_analyses: parseInt(e.target.value, 10) || 1 }))
                             }
-                            className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                            className="w-full px-2.5 py-1.5 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Scans / jour')}</label>
+                          <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Scans / jour')}</label>
                           <input
                             type="number"
                             min={1}
@@ -5812,11 +6141,11 @@ export function App() {
                             onChange={(e) =>
                               setQuotaForm((prev) => ({ ...prev, daily_scans: parseInt(e.target.value, 10) || 1 }))
                             }
-                            className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                            className="w-full px-2.5 py-1.5 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Alertes actives max')}</label>
+                          <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Alertes actives max')}</label>
                           <input
                             type="number"
                             min={1}
@@ -5824,11 +6153,11 @@ export function App() {
                             onChange={(e) =>
                               setQuotaForm((prev) => ({ ...prev, max_alerts: parseInt(e.target.value, 10) || 1 }))
                             }
-                            className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                            className="w-full px-2.5 py-1.5 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] text-[#94A3B8] mb-1">{tr(lang, 'Paper Trades / jour')}</label>
+                          <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Paper Trades / jour')}</label>
                           <input
                             type="number"
                             min={1}
@@ -5836,7 +6165,7 @@ export function App() {
                             onChange={(e) =>
                               setQuotaForm((prev) => ({ ...prev, max_paper_trades: parseInt(e.target.value, 10) || 1 }))
                             }
-                            className="w-full px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded font-mono-tabular text-[#F1F5F9]"
+                            className="w-full px-2.5 py-1.5 bg-[#0D1318] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
                           />
                         </div>
                       </div>
@@ -5858,7 +6187,7 @@ export function App() {
                               })
                               .catch((err) => showToast(err.message, 'error'))
                           }
-                          className="px-4 py-1.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold text-xs rounded-lg"
+                          className="px-4 py-1.5 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold text-xs rounded-lg"
                         >
                           {tr(lang, 'Enregistrer les Quotas')}
                         </button>
@@ -5867,9 +6196,9 @@ export function App() {
                   )}
 
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse text-xs">
+                    <table className="bs-stack w-full text-left border-collapse text-xs">
                       <thead>
-                        <tr className="border-b border-white/[0.07] text-[#64748B] font-mono-tabular uppercase">
+                        <tr className="border-b border-white/[0.07] text-[#6E7B88] font-mono-tabular uppercase">
                           <th className="py-2.5 px-3">{tr(lang, 'Utilisateur & Email')}</th>
                           <th className="py-2.5 px-3">{tr(lang, 'Statut & Rôle')}</th>
                           <th className="py-2.5 px-3">{tr(lang, 'Quotas (Utilisé / Max)')}</th>
@@ -5898,11 +6227,11 @@ export function App() {
                             return (
                               <tr key={u.user_id} className="hover:bg-white/[0.02]">
                                 <td className="py-3 px-3">
-                                  <div className="font-semibold text-[#F1F5F9]">
+                                  <div className="font-semibold text-[#E8EEF2]">
                                     {u.display_name || u.username || `Trader #${u.user_id}`}
                                   </div>
-                                  <div className="text-[11px] text-[#94A3B8]">{u.email || tr(lang, 'Compte Telegram')}</div>
-                                  <div className="text-[10px] text-[#64748B]">
+                                  <div className="text-[11px] text-[#8B98A4]">{u.email || tr(lang, 'Compte Telegram')}</div>
+                                  <div className="text-[10px] text-[#6E7B88]">
                                     ID: #{u.user_id} {u.auth_provider ? `• ${u.auth_provider.toUpperCase()}` : ''}
                                   </div>
                                 </td>
@@ -5911,30 +6240,30 @@ export function App() {
                                     <span
                                       className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
                                         status === 'APPROVED'
-                                          ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#10B981]'
+                                          ? 'bg-[#20C997]/15 border-[#20C997]/40 text-[#20C997]'
                                           : status === 'PENDING_APPROVAL'
-                                          ? 'bg-[#F59E0B]/15 border-[#F59E0B]/40 text-[#F59E0B]'
-                                          : 'bg-[#F43F5E]/15 border-[#F43F5E]/40 text-[#FB7185]'
+                                          ? 'bg-[#D6A84F]/15 border-[#D6A84F]/40 text-[#D6A84F]'
+                                          : 'bg-[#F04438]/15 border-[#F04438]/40 text-[#F97066]'
                                       }`}
                                     >
                                       {status}
                                     </span>
                                   </div>
-                                  <div className="text-[11px] uppercase text-[#10B981] font-bold">
+                                  <div className="text-[11px] uppercase text-[#20C997] font-bold">
                                     {lang === 'en' ? 'Role:' : 'Rôle :'} {u.role} {u.memo ? `• Memo: ${u.memo}` : ''}
                                   </div>
                                 </td>
                                 <td className="py-3 px-3 text-[11px] space-y-0.5">
                                   <div>
-                                    Analyses: <span className="text-[#F1F5F9]">{qu.analyses_used}</span>/{q.daily_analyses}
+                                    Analyses: <span className="text-[#E8EEF2]">{qu.analyses_used}</span>/{q.daily_analyses}
                                   </div>
                                   <div>
-                                    Scans: <span className="text-[#F1F5F9]">{qu.scans_used}</span>/{q.daily_scans}
+                                    Scans: <span className="text-[#E8EEF2]">{qu.scans_used}</span>/{q.daily_scans}
                                   </div>
                                   <div>
                                     {lang === 'en' ? 'Max alerts:' : 'Alertes max:'}{' '}
-                                    <span className="text-[#F1F5F9]">{q.max_alerts}</span> • Paper:{' '}
-                                    <span className="text-[#F1F5F9]">{qu.paper_trades_used}</span>/{q.max_paper_trades}
+                                    <span className="text-[#E8EEF2]">{q.max_alerts}</span> • Paper:{' '}
+                                    <span className="text-[#E8EEF2]">{qu.paper_trades_used}</span>/{q.max_paper_trades}
                                   </div>
                                   <button
                                     type="button"
@@ -5947,12 +6276,12 @@ export function App() {
                                         max_paper_trades: q.max_paper_trades,
                                       });
                                     }}
-                                    className="text-[10px] text-[#10B981] hover:underline"
+                                    className="text-[10px] text-[#20C997] hover:underline"
                                   >
                                     {tr(lang, 'Modifier quotas')}
                                   </button>
                                 </td>
-                                <td className="py-3 px-3 text-[10px] text-[#94A3B8] space-y-1">
+                                <td className="py-3 px-3 text-[10px] text-[#8B98A4] space-y-1">
                                   <div>
                                     {lang === 'en' ? 'Created:' : 'Créé:'}{' '}
                                     {u.created_at
@@ -5987,7 +6316,7 @@ export function App() {
                                             loadAdminOverview();
                                           })
                                         }
-                                        className="px-2.5 py-1 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-bold rounded text-[10px]"
+                                        className="px-2.5 py-1 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-bold rounded text-[10px]"
                                       >
                                         {tr(lang, 'Approuver')}
                                       </button>
@@ -6003,7 +6332,7 @@ export function App() {
                                             loadAdminOverview();
                                           })
                                         }
-                                        className="px-2 py-1 bg-[#F43F5E]/20 hover:bg-[#F43F5E]/30 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[10px]"
+                                        className="px-2 py-1 bg-[#F04438]/20 hover:bg-[#F04438]/30 border border-[#F04438]/40 text-[#F97066] rounded text-[10px]"
                                       >
                                         {tr(lang, 'Refuser')}
                                       </button>
@@ -6019,7 +6348,7 @@ export function App() {
                                             loadAdminOverview();
                                           })
                                         }
-                                        className="px-2 py-1 bg-[#F59E0B]/20 hover:bg-[#F59E0B]/30 border border-[#F59E0B]/40 text-[#F59E0B] rounded text-[10px]"
+                                        className="px-2 py-1 bg-[#D6A84F]/20 hover:bg-[#D6A84F]/30 border border-[#D6A84F]/40 text-[#D6A84F] rounded text-[10px]"
                                       >
                                         {tr(lang, 'Suspendre')}
                                       </button>
@@ -6035,7 +6364,7 @@ export function App() {
                                             loadAdminOverview();
                                           })
                                         }
-                                        className="px-2 py-1 bg-[#10B981]/20 hover:bg-[#10B981]/30 border border-[#10B981]/40 text-[#10B981] rounded text-[10px]"
+                                        className="px-2 py-1 bg-[#20C997]/20 hover:bg-[#20C997]/30 border border-[#20C997]/40 text-[#20C997] rounded text-[10px]"
                                       >
                                         {tr(lang, 'Réactiver')}
                                       </button>
@@ -6059,8 +6388,8 @@ export function App() {
                                         }
                                         className={`px-2 py-1 rounded text-[10px] uppercase ${
                                           u.role === r
-                                            ? 'bg-[#10B981]/25 text-[#10B981] border border-[#10B981]/40'
-                                            : 'bg-[#1E293B] hover:bg-[#334155] text-[#F1F5F9]'
+                                            ? 'bg-[#20C997]/25 text-[#20C997] border border-[#20C997]/40'
+                                            : 'bg-[#172129] hover:bg-[#202A32] text-[#E8EEF2]'
                                         }`}
                                       >
                                         {r}
@@ -6080,7 +6409,7 @@ export function App() {
                                             loadAdminOverview();
                                           })
                                         }
-                                        className="px-2 py-1 bg-[#10B981] text-[#090D16] font-semibold rounded text-[10px]"
+                                        className="px-2 py-1 bg-[#20C997] text-[#080C0F] font-semibold rounded text-[10px]"
                                       >
                                         {tr(lang, 'Valider Pay')}
                                       </button>
@@ -6100,7 +6429,7 @@ export function App() {
                                           })
                                         }
                                         title={lang === 'en' ? 'Delete user account' : 'Supprimer le compte utilisateur'}
-                                        className="px-2 py-1 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/30 text-[#FB7185] rounded text-[10px] inline-flex items-center gap-1"
+                                        className="px-2 py-1 bg-[#F04438]/15 hover:bg-[#F04438]/25 border border-[#F04438]/30 text-[#F97066] rounded text-[10px] inline-flex items-center gap-1"
                                       >
                                         <Trash2 className="w-3 h-3" />
                                       </button>
@@ -6118,40 +6447,40 @@ export function App() {
                 {/* Log Doctor Diagnostics, Security Audit Log & Broadcast */}
                 <div className="lg:col-span-4 space-y-6">
                   {/* Security Events Audit Log */}
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-3">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-3">
                     <div className="flex items-center justify-between">
-                      <h3 className="font-display font-semibold text-base text-[#F1F5F9] flex items-center gap-2">
-                        <Shield className="w-4 h-4 text-[#10B981]" />
+                      <h3 className="font-display font-semibold text-base text-[#E8EEF2] flex items-center gap-2">
+                        <Shield className="w-4 h-4 text-[#20C997]" />
                         <span>{tr(lang, 'Journal de Sécurité & Accès')}</span>
                       </h3>
-                      <span className="text-[10px] font-mono-tabular text-[#64748B]">
+                      <span className="text-[10px] font-mono-tabular text-[#6E7B88]">
                         {(adminData?.security_events || []).length} {lang === 'en' ? 'events' : 'événements'}
                       </span>
                     </div>
                     <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
                       {(adminData?.security_events || []).length === 0 ? (
-                        <div className="text-xs text-[#64748B]">
+                        <div className="text-xs text-[#6E7B88]">
                           {tr(lang, 'Aucun événement de sécurité enregistré.')}
                         </div>
                       ) : (
                         (adminData?.security_events || []).map((ev: SecurityEvent) => (
                           <div
                             key={ev.id}
-                            className="p-2.5 rounded-lg bg-[#090D16] border border-white/[0.06] text-[11px] space-y-1"
+                            className="p-2.5 rounded-lg bg-[#080C0F] border border-white/[0.06] text-[11px] space-y-1"
                           >
                             <div className="flex items-center justify-between font-mono-tabular">
                               <span
                                 className={`font-bold ${
                                   ev.severity === 'critical'
-                                    ? 'text-[#FB7185]'
+                                    ? 'text-[#F97066]'
                                     : ev.severity === 'warning'
-                                    ? 'text-[#F59E0B]'
-                                    : 'text-[#10B981]'
+                                    ? 'text-[#D6A84F]'
+                                    : 'text-[#20C997]'
                                 }`}
                               >
                                 {ev.event_type}
                               </span>
-                              <span className="text-[10px] text-[#64748B]">
+                              <span className="text-[10px] text-[#6E7B88]">
                                 {ev.created_at
                                   ? new Date(Number(ev.created_at) * 1000).toLocaleTimeString(
                                       lang === 'en' ? 'en-US' : 'fr-FR'
@@ -6159,8 +6488,8 @@ export function App() {
                                   : ''}
                               </span>
                             </div>
-                            <div className="text-[#94A3B8]">{ev.details}</div>
-                            <div className="text-[10px] text-[#64748B] font-mono-tabular">
+                            <div className="text-[#8B98A4]">{ev.details}</div>
+                            <div className="text-[10px] text-[#6E7B88] font-mono-tabular">
                               {ev.email ? `Email: ${ev.email} • ` : ''}
                               {ev.user_id ? `UID: #${ev.user_id} • ` : ''}
                               IP: {ev.ip_address || '—'}
@@ -6171,8 +6500,8 @@ export function App() {
                     </div>
                   </div>
 
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
-                    <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                    <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                       {tr(lang, 'Diagnostic Système (Log Doctor)')}
                     </h3>
                     <div className="flex gap-2 text-xs">
@@ -6181,7 +6510,7 @@ export function App() {
                         value={doctorQuestion}
                         onChange={(e) => setDoctorQuestion(e.target.value)}
                         placeholder={tr(lang, 'Posez une question diagnostic (ex: erreur Binance, DB, Telegram)...')}
-                        className="flex-1 px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-[#F1F5F9]"
+                        className="flex-1 px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2]"
                       />
                       <button
                         onClick={() =>
@@ -6198,19 +6527,19 @@ export function App() {
                           })
                         }
                         disabled={isPending('log-doctor')}
-                        className="px-3.5 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg disabled:opacity-60 disabled:cursor-not-allowed"
+                        className="px-3.5 py-2 bg-[#20C997] text-[#080C0F] font-semibold rounded-lg disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         {isPending('log-doctor') ? tr(lang, 'Traitement…') : tr(lang, 'Analyser')}
                       </button>
                     </div>
-                    <pre className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.06] text-[11px] font-mono-tabular text-[#94A3B8] whitespace-pre-wrap max-h-64 overflow-y-auto">
+                    <pre className="p-3.5 rounded-lg bg-[#080C0F] border border-white/[0.06] text-[11px] font-mono-tabular text-[#8B98A4] whitespace-pre-wrap max-h-64 overflow-y-auto">
                       {doctorReport || tr(lang, 'Chargement du diagnostic...')}
                     </pre>
                   </div>
 
                   {/* Admin Broadcast */}
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-3">
-                    <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-3">
+                    <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                       {tr(lang, 'Diffusion Globale (Broadcast)')}
                     </h3>
                     <input
@@ -6218,14 +6547,14 @@ export function App() {
                       value={broadcastTitle}
                       onChange={(e) => setBroadcastTitle(e.target.value)}
                       placeholder={tr(lang, "Titre de l'annonce...")}
-                      className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-xs text-[#F1F5F9]"
+                      className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-xs text-[#E8EEF2]"
                     />
                     <textarea
                       rows={2}
                       value={broadcastBody}
                       onChange={(e) => setBroadcastBody(e.target.value)}
                       placeholder={tr(lang, 'Message diffusé à tous les utilisateurs...')}
-                      className="w-full px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg text-xs text-[#F1F5F9]"
+                      className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-xs text-[#E8EEF2]"
                     />
                     <button
                       onClick={() =>
@@ -6238,7 +6567,7 @@ export function App() {
                           showToast(res.message, 'success');
                         })
                       }
-                      className="w-full py-2 bg-[#F59E0B] text-[#090D16] font-semibold text-xs rounded-lg"
+                      className="w-full py-2 bg-[#D6A84F] text-[#080C0F] font-semibold text-xs rounded-lg"
                     >
                       {tr(lang, 'Diffuser à tous les comptes')}
                     </button>
@@ -6251,51 +6580,51 @@ export function App() {
                  ========================================================= */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* 1. Admin Support Tickets Inbox & Reply */}
-                <div className="lg:col-span-6 bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                <div className="lg:col-span-6 bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
                   <div className="flex items-center justify-between">
-                    <h3 className="font-display font-semibold text-base text-[#F1F5F9] flex items-center gap-2">
-                      <MessageSquare className="w-4 h-4 text-[#10B981]" />
+                    <h3 className="font-display font-semibold text-base text-[#E8EEF2] flex items-center gap-2">
+                      <MessageSquare className="w-4 h-4 text-[#20C997]" />
                       <span>
                         {lang === 'en'
                           ? 'Support Tickets & User Requests'
                           : 'Boîte de Réception Support & Demandes Utilisateurs'}
                       </span>
                     </h3>
-                    <span className="text-xs font-mono-tabular text-[#64748B]">
+                    <span className="text-xs font-mono-tabular text-[#6E7B88]">
                       {tickets.length} {lang === 'en' ? 'ticket(s)' : 'ticket(s)'}
                     </span>
                   </div>
                   <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
                     {tickets.length === 0 ? (
-                      <div className="text-xs text-[#64748B]">
+                      <div className="text-xs text-[#6E7B88]">
                         {lang === 'en' ? 'No support tickets opened yet.' : 'Aucun ticket support ouvert pour le moment.'}
                       </div>
                     ) : (
                       tickets.map((t) => (
                         <div
                           key={t.id}
-                          className="p-3.5 rounded-lg bg-[#090D16] border border-white/[0.07] space-y-2 text-xs"
+                          className="p-3.5 rounded-lg bg-[#080C0F] border border-white/[0.07] space-y-2 text-xs"
                         >
                           <div className="flex items-center justify-between">
                             <div>
-                              <span className="font-semibold text-[#F1F5F9]">{t.subject}</span>
-                              <span className="ml-2 text-[11px] font-mono-tabular text-[#64748B]">
+                              <span className="font-semibold text-[#E8EEF2]">{t.subject}</span>
+                              <span className="ml-2 text-[11px] font-mono-tabular text-[#6E7B88]">
                                 {t.username || `#${t.user_id}`} (UID #{t.user_id})
                               </span>
                             </div>
                             <span
                               className={`px-2 py-0.5 rounded text-[10px] font-mono-tabular uppercase ${
                                 t.status === 'answered'
-                                  ? 'bg-[#10B981]/15 text-[#10B981]'
-                                  : 'bg-[#F59E0B]/15 text-[#F59E0B]'
+                                  ? 'bg-[#20C997]/15 text-[#20C997]'
+                                  : 'bg-[#D6A84F]/15 text-[#D6A84F]'
                               }`}
                             >
                               {t.status}
                             </span>
                           </div>
-                          <p className="text-[#94A3B8]">{t.message}</p>
+                          <p className="text-[#8B98A4]">{t.message}</p>
                           {t.admin_reply && (
-                            <div className="p-2 rounded bg-[#10B981]/10 border border-[#10B981]/30 text-[#34D399]">
+                            <div className="p-2 rounded bg-[#20C997]/10 border border-[#20C997]/30 text-[#32D583]">
                               <strong>{tr(lang, 'Réponse Admin :')}</strong> {t.admin_reply}
                             </div>
                           )}
@@ -6309,7 +6638,7 @@ export function App() {
                               placeholder={
                                 lang === 'en' ? 'Write a reply to this user...' : 'Répondre à cet utilisateur...'
                               }
-                              className="flex-1 px-2.5 py-1.5 bg-[#111827] border border-white/10 rounded text-xs text-[#F1F5F9]"
+                              className="flex-1 px-2.5 py-1.5 bg-[#0D1318] border border-white/10 rounded text-xs text-[#E8EEF2]"
                             />
                             <button
                               type="button"
@@ -6331,7 +6660,7 @@ export function App() {
                                   })
                                   .catch((err) => showToast(err.message, 'error'));
                               }}
-                              className="px-3 py-1.5 bg-[#10B981] hover:bg-[#059669] text-[#090D16] font-semibold rounded text-xs"
+                              className="px-3 py-1.5 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold rounded text-xs"
                             >
                               {lang === 'en' ? 'Reply' : 'Répondre'}
                             </button>
@@ -6345,51 +6674,51 @@ export function App() {
                 {/* 2. Global AutoTrade Supervision, Memo Finder & Signal Maintenance */}
                 <div className="lg:col-span-6 space-y-6">
                   {/* Global AutoTrade Stats & Open Trades (/trading_stats, /trades, /forceclose) */}
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-4">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-4">
                     <div className="flex items-center justify-between">
-                      <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                      <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                         {lang === 'en'
                           ? 'Global AutoTrade Supervision & Force Close'
                           : 'Supervision Globale AutoTrade & Clôture Forcée'}
                       </h3>
-                      <span className="text-[11px] font-mono-tabular text-[#10B981]">
+                      <span className="text-[11px] font-mono-tabular text-[#20C997]">
                         {lang === 'en' ? 'Source:' : 'Source :'}{' '}
                         {(adminData?.active_data_source || 'binance').toUpperCase()}
                       </span>
                     </div>
 
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs font-mono-tabular">
-                      <div className="p-2.5 rounded-lg bg-[#090D16] border border-white/[0.06]">
-                        <div className="text-[10px] text-[#64748B]">
+                      <div className="p-2.5 rounded-lg bg-[#080C0F] border border-white/[0.06]">
+                        <div className="text-[10px] text-[#6E7B88]">
                           {lang === 'en' ? 'AutoTrade ON' : 'AutoTrade Actifs'}
                         </div>
-                        <div className="text-sm font-bold text-[#10B981] mt-0.5">
+                        <div className="text-sm font-bold text-[#20C997] mt-0.5">
                           {adminData?.global_trading_stats?.active_auto_users ?? 0}
                         </div>
                       </div>
-                      <div className="p-2.5 rounded-lg bg-[#090D16] border border-white/[0.06]">
-                        <div className="text-[10px] text-[#64748B]">
+                      <div className="p-2.5 rounded-lg bg-[#080C0F] border border-white/[0.06]">
+                        <div className="text-[10px] text-[#6E7B88]">
                           {lang === 'en' ? 'Open Trades' : 'Positions Ouvertes'}
                         </div>
-                        <div className="text-sm font-bold text-[#F1F5F9] mt-0.5">
+                        <div className="text-sm font-bold text-[#E8EEF2] mt-0.5">
                           {adminData?.global_trading_stats?.open_trades_count ?? 0}
                         </div>
                       </div>
-                      <div className="p-2.5 rounded-lg bg-[#090D16] border border-white/[0.06]">
-                        <div className="text-[10px] text-[#64748B]">Win Rate</div>
-                        <div className="text-sm font-bold text-[#F1F5F9] mt-0.5">
+                      <div className="p-2.5 rounded-lg bg-[#080C0F] border border-white/[0.06]">
+                        <div className="text-[10px] text-[#6E7B88]">Win Rate</div>
+                        <div className="text-sm font-bold text-[#E8EEF2] mt-0.5">
                           {adminData?.global_trading_stats?.win_rate ?? 0}%
                         </div>
                       </div>
-                      <div className="p-2.5 rounded-lg bg-[#090D16] border border-white/[0.06]">
-                        <div className="text-[10px] text-[#64748B]">
+                      <div className="p-2.5 rounded-lg bg-[#080C0F] border border-white/[0.06]">
+                        <div className="text-[10px] text-[#6E7B88]">
                           {lang === 'en' ? 'Realized PnL' : 'PnL Réalisé'}
                         </div>
                         <div
                           className={`text-sm font-bold mt-0.5 ${
                             (adminData?.global_trading_stats?.total_pnl_usdt || 0) >= 0
-                              ? 'text-[#10B981]'
-                              : 'text-[#FB7185]'
+                              ? 'text-[#20C997]'
+                              : 'text-[#F97066]'
                           }`}
                         >
                           {(adminData?.global_trading_stats?.total_pnl_usdt || 0) >= 0 ? '+' : ''}
@@ -6403,11 +6732,11 @@ export function App() {
                         {(adminData?.global_open_trades || []).map((gt: any) => (
                           <div
                             key={gt.id}
-                            className="p-2.5 rounded-lg bg-[#090D16] border border-white/[0.06] flex items-center justify-between text-xs font-mono-tabular"
+                            className="p-2.5 rounded-lg bg-[#080C0F] border border-white/[0.06] flex items-center justify-between text-xs font-mono-tabular"
                           >
                             <div>
-                              <span className="text-[#10B981] font-bold">#{gt.id}</span> • UID #{gt.user_id} •{' '}
-                              <span className="text-[#F1F5F9] font-semibold">{gt.symbol}</span> ({gt.direction}){' '}
+                              <span className="text-[#20C997] font-bold">#{gt.id}</span> • UID #{gt.user_id} •{' '}
+                              <span className="text-[#E8EEF2] font-semibold">{gt.symbol}</span> ({gt.direction}){' '}
                               qty={gt.quantity} @ {gt.entry_price}
                             </div>
                             <button
@@ -6426,7 +6755,7 @@ export function App() {
                                   })
                                   .catch((err) => showToast(err.message, 'error'))
                               }
-                              className="px-2.5 py-1 bg-[#F43F5E]/20 hover:bg-[#F43F5E]/30 border border-[#F43F5E]/40 text-[#FB7185] rounded text-[10px] font-semibold"
+                              className="px-2.5 py-1 bg-[#F04438]/20 hover:bg-[#F04438]/30 border border-[#F04438]/40 text-[#F97066] rounded text-[10px] font-semibold"
                             >
                               {lang === 'en' ? 'Force Close' : 'Forcer Clôture'}
                             </button>
@@ -6438,7 +6767,7 @@ export function App() {
                     {/* Data Source Switch, Memo Finder & Signal Maintenance Actions */}
                     <div className="pt-2 border-t border-white/[0.07] space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                        <span className="text-[#94A3B8]">
+                        <span className="text-[#8B98A4]">
                           {lang === 'en' ? 'Market Data Source (/switchapi):' : 'Source de données marché (/switchapi) :'}
                         </span>
                         <div className="flex gap-1.5">
@@ -6459,8 +6788,8 @@ export function App() {
                               }
                               className={`px-2.5 py-1 rounded text-[11px] font-mono-tabular uppercase border ${
                                 (adminData?.active_data_source || 'binance') === src
-                                  ? 'bg-[#10B981]/20 border-[#10B981] text-[#10B981]'
-                                  : 'bg-[#090D16] border-white/10 text-[#94A3B8] hover:text-[#F1F5F9]'
+                                  ? 'bg-[#20C997]/20 border-[#20C997] text-[#20C997]'
+                                  : 'bg-[#080C0F] border-white/10 text-[#8B98A4] hover:text-[#E8EEF2]'
                               }`}
                             >
                               {src}
@@ -6480,7 +6809,7 @@ export function App() {
                               ? 'Search Binance Pay Memo (e.g. TEDDY-PRO-...)'
                               : 'Rechercher un mémo Binance Pay (ex: TEDDY-PRO-...)'
                           }
-                          className="flex-1 px-3 py-1.5 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                          className="flex-1 px-3 py-1.5 bg-[#080C0F] border border-white/10 rounded-lg font-mono-tabular text-[#E8EEF2]"
                         />
                         <button
                           type="button"
@@ -6495,7 +6824,7 @@ export function App() {
                               })
                               .catch((err) => showToast(err.message, 'error'))
                           }
-                          className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 rounded-lg text-[#F1F5F9] font-semibold"
+                          className="px-3 py-1.5 bg-[#172129] hover:bg-[#202A32] border border-white/10 rounded-lg text-[#E8EEF2] font-semibold"
                         >
                           {lang === 'en' ? 'Find Memo' : 'Chercher Mémo'}
                         </button>
@@ -6515,7 +6844,7 @@ export function App() {
                                 loadAdminOverview();
                               })
                             }
-                            className="px-3 py-1.5 bg-[#10B981] text-[#090D16] font-bold rounded-lg"
+                            className="px-3 py-1.5 bg-[#20C997] text-[#080C0F] font-bold rounded-lg"
                           >
                             {lang === 'en'
                               ? `Confirm PRO #${adminFoundMemoUid}`
@@ -6556,7 +6885,7 @@ export function App() {
                             })
                           }
                           disabled={isPending('export-signals')}
-                          className="px-3 py-1.5 bg-[#10B981]/15 hover:bg-[#10B981]/25 border border-[#10B981]/40 text-[#10B981] rounded-lg text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+                          className="px-3 py-1.5 bg-[#20C997]/15 hover:bg-[#20C997]/25 border border-[#20C997]/40 text-[#20C997] rounded-lg text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
                         >
                           {isPending('export-signals') ? tr(lang, 'Traitement…') : lang === 'en' ? 'Export Signals CSV' : 'Exporter Signaux CSV'}
                         </button>
@@ -6573,7 +6902,7 @@ export function App() {
                               })
                               .catch((err) => showToast(err.message, 'error'))
                           }
-                          className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#F1F5F9] rounded-lg text-xs"
+                          className="px-3 py-1.5 bg-[#172129] hover:bg-[#202A32] border border-white/10 text-[#E8EEF2] rounded-lg text-xs"
                         >
                           {lang === 'en' ? 'Refresh Signal Outcomes' : 'Vérifier Issue Signaux'}
                         </button>
@@ -6590,7 +6919,7 @@ export function App() {
                               })
                               .catch((err) => showToast(err.message, 'error'))
                           }
-                          className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] border border-white/10 text-[#94A3B8] hover:text-[#F1F5F9] rounded-lg text-xs"
+                          className="px-3 py-1.5 bg-[#172129] hover:bg-[#202A32] border border-white/10 text-[#8B98A4] hover:text-[#E8EEF2] rounded-lg text-xs"
                         >
                           {lang === 'en' ? 'Purge WAIT Signals' : 'Purger Signaux WAIT'}
                         </button>
@@ -6607,7 +6936,7 @@ export function App() {
                               })
                               .catch((err) => showToast(err.message, 'error'))
                           }
-                          className="px-3 py-1.5 bg-[#F43F5E]/15 hover:bg-[#F43F5E]/25 border border-[#F43F5E]/30 text-[#FB7185] rounded-lg text-xs"
+                          className="px-3 py-1.5 bg-[#F04438]/15 hover:bg-[#F04438]/25 border border-[#F04438]/30 text-[#F97066] rounded-lg text-xs"
                         >
                           {lang === 'en' ? 'Clear Signal History' : 'Vider Historique Signaux'}
                         </button>
@@ -6616,8 +6945,8 @@ export function App() {
                   </div>
 
                   {/* SQL Inspector (/dbquery) */}
-                  <div className="bg-[#111827] border border-white/[0.07] rounded-xl p-5 space-y-3">
-                    <h3 className="font-display font-semibold text-base text-[#F1F5F9]">
+                  <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-5 space-y-3">
+                    <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
                       {lang === 'en' ? 'Database Inspector (/dbquery SELECT)' : 'Inspecteur Base de Données (/dbquery SELECT)'}
                     </h3>
                     <div className="flex gap-2 text-xs">
@@ -6625,7 +6954,7 @@ export function App() {
                         type="text"
                         value={adminSqlQuery}
                         onChange={(e) => setAdminSqlQuery(e.target.value)}
-                        className="flex-1 px-3 py-2 bg-[#090D16] border border-white/10 rounded-lg font-mono-tabular text-[#F1F5F9]"
+                        className="flex-1 px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg font-mono-tabular text-[#E8EEF2]"
                       />
                       <button
                         type="button"
@@ -6640,13 +6969,13 @@ export function App() {
                             })
                             .catch((err) => showToast(err.message, 'error'))
                         }
-                        className="px-3.5 py-2 bg-[#10B981] text-[#090D16] font-semibold rounded-lg"
+                        className="px-3.5 py-2 bg-[#20C997] text-[#080C0F] font-semibold rounded-lg"
                       >
                         {lang === 'en' ? 'Run SQL' : 'Exécuter'}
                       </button>
                     </div>
                     {adminSqlRows && (
-                      <pre className="p-3 rounded-lg bg-[#090D16] border border-white/[0.06] text-[11px] font-mono-tabular text-[#94A3B8] max-h-48 overflow-auto">
+                      <pre className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] text-[11px] font-mono-tabular text-[#8B98A4] max-h-48 overflow-auto">
                         {JSON.stringify(adminSqlRows, null, 2)}
                       </pre>
                     )}
@@ -6715,24 +7044,25 @@ export function App() {
         </main>
 
         {/* Mobile Bottom Consolidated Hub Navigation Bar (4 Hubs for standard users, 5 for Admins) */}
-        <nav className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-[#0B101B]/95 backdrop-blur-md border-t border-white/[0.08] flex items-center justify-around py-1.5 px-1">
+        <nav aria-label={tr(lang, 'Navigation mobile', 'Mobile navigation')} className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-[#0D1318] border-t border-[#202A32] flex items-center justify-around py-1 px-1">
           {mobileHubGroups.map((hub) => {
             const Icon = hub.icon;
             const isHubActive = hub.tabs.some((t) => t.id === activeTab);
             return (
               <button
                 key={hub.hubId}
+                aria-current={isHubActive ? 'page' : undefined}
                 onClick={() => {
-                  if (!isHubActive) {
-                    setActiveTab(hub.tabs[0].id);
-                  } else if (hub.tabs.length > 1) {
-                    const idx = hub.tabs.findIndex((t) => t.id === activeTab);
-                    const nextIdx = (idx + 1) % hub.tabs.length;
-                    setActiveTab(hub.tabs[nextIdx].id);
+                  if (isHubActive) {
+                    // Pas de changement d'onglet involontaire : le choix se fait via la barre de sous-onglets.
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  } else {
+                    const remembered = lastTabByHubRef.current[hub.hubId];
+                    setActiveTab(remembered && hub.tabs.some((t) => t.id === remembered) ? remembered : hub.tabs[0].id);
                   }
                 }}
-                className={`flex flex-col items-center justify-center py-1 px-2 rounded-lg text-[10px] font-medium relative transition-colors ${
-                  isHubActive ? 'text-[#10B981]' : 'text-[#94A3B8]'
+                className={`flex flex-col items-center justify-center min-h-[48px] min-w-[56px] py-1 px-2 rounded-md text-[10px] font-medium relative transition-colors ${
+                  isHubActive ? 'text-[#20C997]' : 'text-[#8B98A4]'
                 }`}
               >
                 <Icon className="w-4 h-4 mb-0.5" />
@@ -6740,14 +7070,14 @@ export function App() {
                 {hub.tabs.length > 1 && (
                   <span
                     className={`w-1 h-1 rounded-full mt-0.5 ${
-                      isHubActive ? 'bg-[#10B981]' : 'bg-white/20'
+                      isHubActive ? 'bg-[#20C997]' : 'bg-white/20'
                     }`}
                   />
                 )}
                 {hub.hasSafetyDot && (
                   <span
                     className={`absolute top-1 right-2 w-2 h-2 rounded-full ${
-                      hub.apiConnected ? 'bg-[#10B981]' : 'bg-[#F43F5E]'
+                      hub.apiConnected ? 'bg-[#20C997]' : 'bg-[#F04438]'
                     }`}
                   />
                 )}
@@ -6757,10 +7087,10 @@ export function App() {
         </nav>
         {/* Interactive Security PIN Confirmation Modal for Auto-Trade & Safe Mode Unlock */}
         {pinModalAction && (
-          <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="bg-[#111827] border border-white/15 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+          <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
+            <div className="bg-[#0D1318] border border-white/15 rounded-lg max-w-md w-full p-6 space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="font-display text-base font-bold text-[#F1F5F9]">
+                <h3 className="font-display text-base font-bold text-[#E8EEF2]">
                   {pinModalAction === 'enable_autotrade'
                     ? lang === 'en'
                       ? 'Confirm Auto-Trade Activation'
@@ -6780,27 +7110,27 @@ export function App() {
                     setPinModalValue('');
                     setPinModalError('');
                   }}
-                  className="text-xs text-[#94A3B8] hover:text-[#F1F5F9]"
+                  className="text-xs text-[#8B98A4] hover:text-[#E8EEF2]"
                 >
                   ✕
                 </button>
               </div>
 
-              <p className="text-xs text-[#94A3B8] leading-relaxed">
+              <p className="text-xs text-[#8B98A4] leading-relaxed">
                 {lang === 'en'
                   ? 'Please enter your 6-digit Security PIN code to authorize this sensitive live trading action.'
                   : 'Veuillez saisir votre code PIN de sécurité (6 chiffres) pour autoriser cette opération de trading réel.'}
               </p>
 
               {pinModalError && (
-                <div className="p-3 rounded-lg bg-[#F43F5E]/15 border border-[#F43F5E]/40 text-xs text-[#FB7185] space-y-2">
+                <div className="p-3 rounded-lg bg-[#F04438]/15 border border-[#F04438]/40 text-xs text-[#F97066] space-y-2">
                   <div>{pinModalError}</div>
                   {pinModalError.toLowerCase().includes('tentatives') && (
                     <button
                       type="button"
                       onClick={handleResetPinLockout}
                       disabled={isPending('pin-unlock')}
-                      className="px-3 py-1.5 rounded bg-[#10B981] text-[#090D16] font-semibold text-xs inline-block disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="px-3 py-1.5 rounded bg-[#20C997] text-[#080C0F] font-semibold text-xs inline-block disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {lang === 'en'
                         ? 'Reset anti-bruteforce timer now'
@@ -6811,7 +7141,7 @@ export function App() {
               )}
 
               <div>
-                <label className="block text-xs text-[#94A3B8] mb-1.5">
+                <label className="block text-xs text-[#8B98A4] mb-1.5">
                   {lang === 'en' ? 'Security PIN (6 digits)' : 'Code PIN de Sécurité (6 chiffres)'}
                 </label>
                 <input
@@ -6821,7 +7151,7 @@ export function App() {
                   value={pinModalValue}
                   onChange={(e) => setPinModalValue(e.target.value)}
                   placeholder="••••••"
-                  className="w-full px-3.5 py-2.5 bg-[#090D16] border border-white/20 rounded-xl font-mono-tabular text-base tracking-widest text-center text-[#F1F5F9] focus:outline-none focus:border-[#10B981]"
+                  className="w-full px-3.5 py-2.5 bg-[#080C0F] border border-white/20 rounded-xl font-mono-tabular text-base tracking-widest text-center text-[#E8EEF2] focus:outline-none focus:border-[#20C997]"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && pinModalValue.trim()) {
                       const entered = pinModalValue.trim();
@@ -6845,7 +7175,7 @@ export function App() {
                     setPinModalAction(null);
                     setActiveTab('account');
                   }}
-                  className="text-xs text-[#60A5FA] hover:underline"
+                  className="text-xs text-[#6BB1FF] hover:underline"
                 >
                   {lang === 'en' ? 'Manage / Reset PIN in Account →' : 'Gérer / Réinitialiser mon PIN dans Compte →'}
                 </button>
@@ -6857,7 +7187,7 @@ export function App() {
                       setPinModalValue('');
                       setPinModalError('');
                     }}
-                    className="px-4 py-2 rounded-lg bg-[#1E293B] text-xs text-[#94A3B8] hover:text-[#F1F5F9]"
+                    className="px-4 py-2 rounded-lg bg-[#172129] text-xs text-[#8B98A4] hover:text-[#E8EEF2]"
                   >
                     {lang === 'en' ? 'Cancel' : 'Annuler'}
                   </button>
@@ -6875,7 +7205,7 @@ export function App() {
                         handleSafetyAction('clearsafe', undefined, entered);
                       }
                     }}
-                    className="px-4 py-2 rounded-lg bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-semibold text-xs"
+                    className="px-4 py-2 rounded-lg bg-[#20C997] hover:bg-[#1AA67D] disabled:opacity-50 text-[#080C0F] font-semibold text-xs"
                   >
                     {lang === 'en' ? 'Confirm' : 'Valider'}
                   </button>

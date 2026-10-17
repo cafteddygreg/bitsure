@@ -163,7 +163,7 @@ export function AdminUsersIntelligenceTab({
   return (
     <div className="space-y-5">
       {/* Top Executive Telemetry Header */}
-      <div className="rounded-xl border border-amber-500/30 bg-[#0B101D] p-5 shadow-lg">
+      <div className="rounded-xl border border-amber-500/30 bg-[#0D1318] p-5">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center">
@@ -277,7 +277,7 @@ export function AdminUsersIntelligenceTab({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Rechercher par email, User ID, @telegram, adresse IP, pays, ville, OS, modèle d'appareil..."
-            className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-[#0B101D] border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50"
+            className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-[#0D1318] border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50"
           />
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -296,7 +296,7 @@ export function AdminUsersIntelligenceTab({
               className={`px-3 py-2 rounded-lg text-xs font-semibold border transition ${
                 filterMode === f.id
                   ? "bg-amber-500/20 border-amber-500/40 text-amber-300"
-                  : "bg-[#0B101D] border-slate-800 text-slate-400 hover:text-slate-200"
+                  : "bg-[#0D1318] border-slate-800 text-slate-400 hover:text-slate-200"
               }`}
             >
               {f.label}
@@ -308,7 +308,7 @@ export function AdminUsersIntelligenceTab({
       {/* Main Master-Detail Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
         {/* Left List of Users (4 cols) */}
-        <div className="lg:col-span-4 rounded-xl border border-slate-800/90 bg-[#0B101D] overflow-hidden">
+        <div className="lg:col-span-4 rounded-xl border border-slate-800/90 bg-[#0D1318] overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
             <span className="text-xs font-bold text-slate-200 uppercase tracking-wider font-mono">
               Comptes répertoriés ({filteredUsers.length})
@@ -384,11 +384,11 @@ export function AdminUsersIntelligenceTab({
         {/* Right 360° User Dossier (8 cols) */}
         <div className="lg:col-span-8 space-y-4">
           {!selectedUser ? (
-            <div className="rounded-xl border border-slate-800 bg-[#0B101D] p-8 text-center text-xs text-slate-400">
+            <div className="rounded-xl border border-slate-800 bg-[#0D1318] p-8 text-center text-xs text-slate-400">
               Sélectionnez un utilisateur dans la liste de gauche pour inspecter son dossier 360° complet.
             </div>
           ) : (
-            <div className="rounded-xl border border-slate-800/90 bg-[#0B101D] p-5 space-y-5">
+            <div className="rounded-xl border border-slate-800/90 bg-[#0D1318] p-5 space-y-5">
               {/* User Dossier Header */}
               <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-800 pb-4">
                 <div className="space-y-1">

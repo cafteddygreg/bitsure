@@ -47,7 +47,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
 
   if (!visibleCandles.length) {
     return (
-      <div className="h-[380px] flex items-center justify-center bg-[#090D16] border border-white/[0.07] rounded-lg text-[#64748B] text-sm">
+      <div className="h-[380px] flex items-center justify-center bg-[#080C0F] border border-white/[0.07] rounded-lg text-[#6E7B88] text-sm">
         {tr(lang, 'Chargement des bougies OHLCV...', 'Loading OHLCV candles...')}
       </div>
     );
@@ -113,17 +113,17 @@ export const PriceChart: React.FC<PriceChartProps> = ({
   };
 
   return (
-    <div className="bg-[#0B101B] border border-white/[0.08] rounded-lg overflow-hidden">
+    <div className="bg-[#0D1318] border border-white/[0.08] rounded-lg overflow-hidden">
       {/* Top Chart Controls & OHLCV Telemetry Bar */}
-      <div className="px-4 py-2.5 border-b border-white/[0.07] flex flex-wrap items-center justify-between gap-3 bg-[#111827]/70">
+      <div className="px-4 py-2.5 border-b border-white/[0.07] flex flex-wrap items-center justify-between gap-3 bg-[#0D1318]/70">
         <div className="flex items-center gap-4 text-xs font-mono-tabular">
-          <span className="font-semibold text-[#F1F5F9] tracking-tight">{symbol} • {timeframe.toUpperCase()}</span>
-          <span className="text-[#94A3B8]">O <strong className="text-[#F1F5F9]">{formatNum(activeCandle?.open)}</strong></span>
-          <span className="text-[#94A3B8]">H <strong className="text-[#10B981]">{formatNum(activeCandle?.high)}</strong></span>
-          <span className="text-[#94A3B8]">L <strong className="text-[#F43F5E]">{formatNum(activeCandle?.low)}</strong></span>
-          <span className="text-[#94A3B8]">C <strong className="text-[#F1F5F9]">{formatNum(activeCandle?.close)}</strong></span>
+          <span className="font-semibold text-[#E8EEF2] tracking-tight">{symbol} • {timeframe.toUpperCase()}</span>
+          <span className="text-[#8B98A4]">O <strong className="text-[#E8EEF2]">{formatNum(activeCandle?.open)}</strong></span>
+          <span className="text-[#8B98A4]">H <strong className="text-[#20C997]">{formatNum(activeCandle?.high)}</strong></span>
+          <span className="text-[#8B98A4]">L <strong className="text-[#F04438]">{formatNum(activeCandle?.low)}</strong></span>
+          <span className="text-[#8B98A4]">C <strong className="text-[#E8EEF2]">{formatNum(activeCandle?.close)}</strong></span>
           {activeCandle?.rsi !== null && (
-            <span className="text-[#94A3B8] hidden sm:inline">RSI(14) <strong className="text-[#F59E0B]">{activeCandle?.rsi?.toFixed(1)}</strong></span>
+            <span className="text-[#8B98A4] hidden sm:inline">RSI(14) <strong className="text-[#D6A84F]">{activeCandle?.rsi?.toFixed(1)}</strong></span>
           )}
         </div>
 
@@ -131,7 +131,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
           <button
             onClick={() => setShowSMA(!showSMA)}
             className={`px-2 py-1 rounded border transition-colors ${
-              showSMA ? 'bg-[#3B82F6]/15 border-[#3B82F6]/40 text-[#60A5FA]' : 'border-white/10 text-[#64748B]'
+              showSMA ? 'bg-[#4EA1FF]/15 border-[#4EA1FF]/40 text-[#6BB1FF]' : 'border-white/10 text-[#6E7B88]'
             }`}
           >
             SMA 20/50
@@ -139,7 +139,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
           <button
             onClick={() => setShowBB(!showBB)}
             className={`px-2 py-1 rounded border transition-colors ${
-              showBB ? 'bg-[#8B5CF6]/15 border-[#8B5CF6]/40 text-[#A78BFA]' : 'border-white/10 text-[#64748B]'
+              showBB ? 'bg-[#8B5CF6]/15 border-[#8B5CF6]/40 text-[#A78BFA]' : 'border-white/10 text-[#6E7B88]'
             }`}
           >
             Bollinger
@@ -147,7 +147,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
           <button
             onClick={() => setShowLevels(!showLevels)}
             className={`px-2 py-1 rounded border transition-colors ${
-              showLevels ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#34D399]' : 'border-white/10 text-[#64748B]'
+              showLevels ? 'bg-[#20C997]/15 border-[#20C997]/40 text-[#32D583]' : 'border-white/10 text-[#6E7B88]'
             }`}
           >
             SL / TP / S-R
@@ -155,7 +155,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
           <div className="h-3.5 w-[1px] bg-white/10 mx-1" />
           <button
             onClick={() => setSubChart(subChart === 'rsi' ? 'macd' : 'rsi')}
-            className="px-2 py-1 rounded border border-white/15 bg-white/[0.04] text-[#F1F5F9] hover:bg-white/[0.08] transition-colors font-mono-tabular"
+            className="px-2 py-1 rounded border border-white/15 bg-white/[0.04] text-[#E8EEF2] hover:bg-white/[0.08] transition-colors font-mono-tabular"
           >
             Osc: {subChart.toUpperCase()}
           </button>
@@ -176,7 +176,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
             return (
               <g key={idx}>
                 <line x1={padLeft} y1={y} x2={width - padRight} y2={y} stroke="rgba(255,255,255,0.04)" strokeDasharray="3 3" />
-                <text x={width - padRight + 6} y={y + 3} fill="#64748B" fontSize="10" fontFamily="JetBrains Mono, monospace">
+                <text x={width - padRight + 6} y={y + 3} fill="#6E7B88" fontSize="10" fontFamily="JetBrains Mono, monospace">
                   {formatNum(p)}
                 </text>
               </g>
@@ -186,26 +186,26 @@ export const PriceChart: React.FC<PriceChartProps> = ({
           {/* Support / Resistance / SL / TP Horizontal Lines */}
           {showLevels && support && support >= minPrice && support <= maxPrice && (
             <g>
-              <line x1={padLeft} y1={yForPrice(support)} x2={width - padRight} y2={yForPrice(support)} stroke="#3B82F6" strokeWidth="1" strokeDasharray="4 4" opacity="0.7" />
-              <text x={padLeft + 6} y={yForPrice(support) - 4} fill="#60A5FA" fontSize="9.5" fontFamily="JetBrains Mono, monospace">SUP {formatNum(support)}</text>
+              <line x1={padLeft} y1={yForPrice(support)} x2={width - padRight} y2={yForPrice(support)} stroke="#4EA1FF" strokeWidth="1" strokeDasharray="4 4" opacity="0.7" />
+              <text x={padLeft + 6} y={yForPrice(support) - 4} fill="#6BB1FF" fontSize="9.5" fontFamily="JetBrains Mono, monospace">SUP {formatNum(support)}</text>
             </g>
           )}
           {showLevels && resistance && resistance >= minPrice && resistance <= maxPrice && (
             <g>
-              <line x1={padLeft} y1={yForPrice(resistance)} x2={width - padRight} y2={yForPrice(resistance)} stroke="#F59E0B" strokeWidth="1" strokeDasharray="4 4" opacity="0.7" />
-              <text x={padLeft + 6} y={yForPrice(resistance) - 4} fill="#FBBF24" fontSize="9.5" fontFamily="JetBrains Mono, monospace">RES {formatNum(resistance)}</text>
+              <line x1={padLeft} y1={yForPrice(resistance)} x2={width - padRight} y2={yForPrice(resistance)} stroke="#D6A84F" strokeWidth="1" strokeDasharray="4 4" opacity="0.7" />
+              <text x={padLeft + 6} y={yForPrice(resistance) - 4} fill="#E2BC6A" fontSize="9.5" fontFamily="JetBrains Mono, monospace">RES {formatNum(resistance)}</text>
             </g>
           )}
           {showLevels && sl && sl >= minPrice && sl <= maxPrice && (
             <g>
-              <line x1={padLeft} y1={yForPrice(sl)} x2={width - padRight} y2={yForPrice(sl)} stroke="#F43F5E" strokeWidth="1.2" strokeDasharray="2 2" />
-              <text x={width - padRight - 72} y={yForPrice(sl) - 4} fill="#FB7185" fontSize="9.5" fontFamily="JetBrains Mono, monospace">SL {formatNum(sl)}</text>
+              <line x1={padLeft} y1={yForPrice(sl)} x2={width - padRight} y2={yForPrice(sl)} stroke="#F04438" strokeWidth="1.2" strokeDasharray="2 2" />
+              <text x={width - padRight - 72} y={yForPrice(sl) - 4} fill="#F97066" fontSize="9.5" fontFamily="JetBrains Mono, monospace">SL {formatNum(sl)}</text>
             </g>
           )}
           {showLevels && tp1 && tp1 >= minPrice && tp1 <= maxPrice && (
             <g>
-              <line x1={padLeft} y1={yForPrice(tp1)} x2={width - padRight} y2={yForPrice(tp1)} stroke="#10B981" strokeWidth="1.2" strokeDasharray="2 2" />
-              <text x={width - padRight - 72} y={yForPrice(tp1) - 4} fill="#34D399" fontSize="9.5" fontFamily="JetBrains Mono, monospace">TP1 {formatNum(tp1)}</text>
+              <line x1={padLeft} y1={yForPrice(tp1)} x2={width - padRight} y2={yForPrice(tp1)} stroke="#20C997" strokeWidth="1.2" strokeDasharray="2 2" />
+              <text x={width - padRight - 72} y={yForPrice(tp1) - 4} fill="#32D583" fontSize="9.5" fontFamily="JetBrains Mono, monospace">TP1 {formatNum(tp1)}</text>
             </g>
           )}
           {livePrice && livePrice >= minPrice && livePrice <= maxPrice && (
@@ -215,7 +215,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
                 y1={yForPrice(livePrice)}
                 x2={width - padRight}
                 y2={yForPrice(livePrice)}
-                stroke="#10B981"
+                stroke="#20C997"
                 strokeWidth="1"
                 strokeDasharray="2 2"
                 opacity="0.85"
@@ -226,12 +226,12 @@ export const PriceChart: React.FC<PriceChartProps> = ({
                 width={padRight - 4}
                 height={16}
                 rx="3"
-                fill="#10B981"
+                fill="#20C997"
               />
               <text
                 x={width - padRight + 6}
                 y={yForPrice(livePrice) + 3.5}
-                fill="#090D16"
+                fill="#080C0F"
                 fontSize="9.5"
                 fontWeight="bold"
                 fontFamily="JetBrains Mono, monospace"
@@ -251,10 +251,10 @@ export const PriceChart: React.FC<PriceChartProps> = ({
 
           {/* SMA 20 & SMA 50 */}
           {showSMA && sma20Points && (
-            <polyline fill="none" stroke="#38BDF8" strokeWidth="1.5" points={sma20Points} />
+            <polyline fill="none" stroke="#4EA1FF" strokeWidth="1.5" points={sma20Points} />
           )}
           {showSMA && sma50Points && (
-            <polyline fill="none" stroke="#F59E0B" strokeWidth="1.5" points={sma50Points} />
+            <polyline fill="none" stroke="#D6A84F" strokeWidth="1.5" points={sma50Points} />
           )}
 
           {/* Candlesticks */}
@@ -262,7 +262,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
             if (c.open === null || c.close === null || c.high === null || c.low === null) return null;
             const x = xForIdx(idx);
             const isBull = c.close >= c.open;
-            const color = isBull ? '#10B981' : '#F43F5E';
+            const color = isBull ? '#20C997' : '#F04438';
             const yHigh = yForPrice(c.high);
             const yLow = yForPrice(c.low);
             const yOpen = yForPrice(c.open);
@@ -305,14 +305,14 @@ export const PriceChart: React.FC<PriceChartProps> = ({
                 y={10 + (1 - 0.7) * (subHeight - 20)}
                 width={plotW}
                 height={(0.7 - 0.3) * (subHeight - 20)}
-                fill="rgba(59, 130, 246, 0.04)"
+                fill="rgba(78, 161, 255, 0.04)"
               />
               <line
                 x1={padLeft}
                 y1={10 + (1 - 0.7) * (subHeight - 20)}
                 x2={width - padRight}
                 y2={10 + (1 - 0.7) * (subHeight - 20)}
-                stroke="rgba(244, 63, 94, 0.35)"
+                stroke="rgba(240, 68, 56, 0.35)"
                 strokeDasharray="2 2"
               />
               <line
@@ -320,14 +320,14 @@ export const PriceChart: React.FC<PriceChartProps> = ({
                 y1={10 + (1 - 0.3) * (subHeight - 20)}
                 x2={width - padRight}
                 y2={10 + (1 - 0.3) * (subHeight - 20)}
-                stroke="rgba(16, 185, 129, 0.35)"
+                stroke="rgba(32, 201, 151, 0.35)"
                 strokeDasharray="2 2"
               />
-              <text x={width - padRight + 6} y={10 + (1 - 0.7) * (subHeight - 20) + 3} fill="#64748B" fontSize="9" fontFamily="JetBrains Mono">70</text>
-              <text x={width - padRight + 6} y={10 + (1 - 0.3) * (subHeight - 20) + 3} fill="#64748B" fontSize="9" fontFamily="JetBrains Mono">30</text>
+              <text x={width - padRight + 6} y={10 + (1 - 0.7) * (subHeight - 20) + 3} fill="#6E7B88" fontSize="9" fontFamily="JetBrains Mono">70</text>
+              <text x={width - padRight + 6} y={10 + (1 - 0.3) * (subHeight - 20) + 3} fill="#6E7B88" fontSize="9" fontFamily="JetBrains Mono">30</text>
               <polyline
                 fill="none"
-                stroke="#F59E0B"
+                stroke="#D6A84F"
                 strokeWidth="1.5"
                 points={visibleCandles
                   .map((c, idx) => {
@@ -364,13 +364,13 @@ export const PriceChart: React.FC<PriceChartProps> = ({
                           y={Math.min(zeroY, yVal)}
                           width={Math.max(stepX * 0.45, 2)}
                           height={h}
-                          fill={c.macd_hist >= 0 ? 'rgba(16, 185, 129, 0.55)' : 'rgba(244, 63, 94, 0.55)'}
+                          fill={c.macd_hist >= 0 ? 'rgba(32, 201, 151, 0.55)' : 'rgba(240, 68, 56, 0.55)'}
                         />
                       );
                     })}
                     <polyline
                       fill="none"
-                      stroke="#38BDF8"
+                      stroke="#4EA1FF"
                       strokeWidth="1.3"
                       points={visibleCandles
                         .map((c, idx) => (c.macd !== null ? `${xForIdx(idx).toFixed(1)},${yM(c.macd).toFixed(1)}` : null))
@@ -379,7 +379,7 @@ export const PriceChart: React.FC<PriceChartProps> = ({
                     />
                     <polyline
                       fill="none"
-                      stroke="#F59E0B"
+                      stroke="#D6A84F"
                       strokeWidth="1.3"
                       points={visibleCandles
                         .map((c, idx) => (c.macd_signal !== null ? `${xForIdx(idx).toFixed(1)},${yM(c.macd_signal).toFixed(1)}` : null))
