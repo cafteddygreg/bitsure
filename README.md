@@ -361,6 +361,7 @@ Recherche automatique de configurations robustes sur le **moteur de backtest ré
 - **Résultats** : meilleure performance brute, meilleur compromis, meilleure robustesse (stabilité des voisins, cohérence train/val), meilleure configuration globale, comparaison avec la configuration actuelle, sensibilité par paramètre, Monte Carlo (rééchantillonnage des trades réels), rapport HTML autonome. Walk-Forward : non implémenté (le moteur n'expose pas de fenêtres glissantes).
 - **Jobs persistants** (PostgreSQL : `optimization_jobs`, `optimization_results`) : identifiants `OPT-AAAA-NNNNN`, statuts `queued / running / completed / failed / cancelled`, reprise automatique si le worker disparaît (heartbeat > 120 s), annulation depuis l'interface.
 - **Worker séparé** (même repository) : `python optimization_worker.py` (`--once` pour traiter la file puis quitter). Service Railway/Render distinct du service web ; variables : `DATABASE_URL` (obligatoire), `TELEGRAM_TOKEN` (notifications), `OPT_NOTIFY_INTERVAL_SECONDS` (défaut 900).
+- **Limites réglables** (variables du service web) : `OPT_MAX_CONFIGS` (défaut 20000), `OPT_WARN_CONFIGS` (1000), `OPT_MAX_PARAMS` (12), `OPT_MAX_VALUES_PER_PARAM` (100), `OPT_MAX_ACTIVE_JOBS_USER` (3), `OPT_MAX_ACTIVE_JOBS_ADMIN` (10).
 - **API** : `GET /api/admin/strategy-lab/optimization/{overview,job,report}`, `POST .../{plan,create,cancel}`.
 - Outil de recherche uniquement : ne modifie pas le trading live, n'active pas AutoTrade, ne garantit aucune rentabilité.
 

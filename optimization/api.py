@@ -5,6 +5,7 @@ Le worker (service Railway séparé) exécute les simulations.
 """
 from __future__ import annotations
 
+import os
 import threading
 from typing import Any, Dict, Optional, Tuple
 
@@ -13,8 +14,8 @@ import strategy_lab as sl
 from . import engine, store
 from .space import SpaceError, get_optimizable_parameters, MAX_CONFIGS_HARD, MAX_PARAMS, WARN_CONFIGS
 
-MAX_ACTIVE_JOBS_USER = 2
-MAX_ACTIVE_JOBS_ADMIN = 5
+MAX_ACTIVE_JOBS_USER = int(os.getenv("OPT_MAX_ACTIVE_JOBS_USER", "3") or 3)
+MAX_ACTIVE_JOBS_ADMIN = int(os.getenv("OPT_MAX_ACTIVE_JOBS_ADMIN", "10") or 10)
 
 _schema_lock = threading.Lock()
 _schema_ready = False

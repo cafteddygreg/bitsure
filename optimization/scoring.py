@@ -83,38 +83,40 @@ def _norm_vector(params: Dict[str, Any], parameters: List[Dict[str, Any]]) -> Li
     return vec
 
 
+def build_vectors(overrides: Dict[int, Dict[str, Any]], parameters: List[Dict[str, Any]]) -> Dict[int, List[float]]:
+    """Position normalisée (0-1 par paramètre) de chaque configuration — calculée une seule fois par job."""
+    return {i: _norm_vector(ov, parameters) for i, ov in overrides.items()}
+
+
 def neighbor_stats(
     idx: int,
     train: Dict[int, Dict[str, Any]],
     overrides: Dict[int, Dict[str, Any]],
     parameters: List[Dict[str, Any]],
     k: int = 6,
+    vectors: Optional[Dict[int, List[float]]] = None,
 ) -> Dict[str, Any]:
     """Performance des k configurations les plus proches (espace des paramètres normalisé)."""
     own = train.get(idx, {}).get("score")
-    me = _norm_vector(overrides[idx], parameters)
-    dists = []
-    for j, rec in train.items():
-        if j == idx or rec.get("score") is None or j not in overrides:
-            continue
-        other = _norm_vector(overrides[j], parameters)
-        d = float(np.sum(np.abs(np.array(me) - np.array(other))))
-        dists.append((d, rec["score"]))
-    dists.sort(key=lambda t: t[0])
-    near = dists[:k]
-    if own is None or not near:
-        return {"n": len(near), "mean": None, "min": None, "std": None, "mean_distance": None, "stability": 0.0}
-    scores = np.array([s for _, s in near], dtype=float)
+    vectors = vectors if vectors is not None else build_vectors(overrides, parameters)
+    ids = [j for j, rec in train.items() if j != idx and rec.get("score") is not None and j in vectors]
+    if own is None or not ids:
+        return {"n": 0, "mean": None, "min": None, "std": None, "mean_distance": None, "stability": 0.0}
+    mat = np.asarray([vectors[j] for j in ids], dtype=float)
+    me = np.asarray(vectors[idx], dtype=float)
+    dist = np.abs(mat - me).sum(axis=1)
+    order = np.argsort(dist, kind="stable")[:k]
+    scores = np.asarray([train[ids[o]]["score"] for o in order], dtype=float)
     mean = float(scores.mean())
     stability = 0.0 if own <= 0 else clip(mean / own, 0.0, 1.0)
     if float(scores.min()) < 0:
         stability *= 0.7
     return {
-        "n": len(near),
+        "n": int(len(order)),
         "mean": round(mean, 4),
         "min": round(float(scores.min()), 4),
         "std": round(float(scores.std()), 4),
-        "mean_distance": round(float(np.mean([d for d, _ in near])), 4),
+        "mean_distance": round(float(dist[order].mean()), 4),
         "stability": round(float(stability), 4),
     }
 
@@ -183,14 +185,21 @@ def sensitivity(
     overrides: Dict[int, Dict[str, Any]],
     train: Dict[int, Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Score training moyen par valeur de chaque paramètre + amplitude (sensibilité)."""
+    """Score training moyen par valeur de chaque paramètre + amplitude (sensibilité). Un seul passage sur les configurations."""
     all_scores = [r["score"] for r in train.values() if r.get("score") is not None]
     overall_std = float(np.std(all_scores)) if len(all_scores) > 1 else 0.0
+    acc: Dict[str, Dict[str, List[float]]] = {p["key"]: {} for p in parameters}
+    for i, ov in overrides.items():
+        sc = train.get(i, {}).get("score")
+        if sc is None:
+            continue
+        for p in parameters:
+            acc[p["key"]].setdefault(repr(ov.get(p["key"])), []).append(sc)
     out = []
     for p in parameters:
         rows = []
         for v in p["values"]:
-            sc = [train[i]["score"] for i, ov in overrides.items() if ov.get(p["key"]) == v and i in train and train[i].get("score") is not None]
+            sc = acc[p["key"]].get(repr(v), [])
             rows.append({"value": v, "n": len(sc), "mean_score": round(float(np.mean(sc)), 4) if sc else None,
                          "max_score": round(float(np.max(sc)), 4) if sc else None})
         means = [r["mean_score"] for r in rows if r["mean_score"] is not None]

@@ -123,6 +123,9 @@ def plan_request(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
 def public_plan(space: Dict[str, Any], request: Dict[str, Any]) -> Dict[str, Any]:
     """Version légère du plan (sans la liste complète des configurations) pour l'API/l'UI."""
+    n_backtests = space["n_configs"] + 1 + 2 * (min(request["top_k"], space["n_configs"]) + 1) + 3 * 4
+    # Estimation INDICATIVE (≈ 0,2 ms par bougie simulée mesuré en local ; dépend du CPU du worker)
+    per_backtest = 0.0002 * 0.6 * int(request.get("max_candles") or 4000)
     return {
         "method": space["method"],
         "parameters": space["parameters"],
@@ -131,7 +134,8 @@ def public_plan(space: Dict[str, Any], request: Dict[str, Any]) -> Dict[str, Any
         "invalid_skipped": space["invalid_skipped"],
         "warnings": space["warnings"],
         "sample_configs": space["configs"][:5],
-        "estimated_backtests": space["n_configs"] + 1 + 2 * (min(request["top_k"], space["n_configs"]) + 1) + 3 * 4,
+        "estimated_backtests": n_backtests,
+        "estimated_seconds": round(n_backtests * per_backtest, 0),
         "total_steps": estimate_total_steps(space["n_configs"], request["top_k"]),
     }
 
@@ -345,6 +349,7 @@ def run_job(
         prog.stage = "analysis"
         prog.beat()
         overrides_scored = {i: configs[i] for i in range(n)}
+        vectors = scoring.build_vectors(overrides_scored, parameters)
         entries: Dict[int, Dict[str, Any]] = {}
         for idx in eval_ids:
             t_m = train[idx]["metrics"]
@@ -354,7 +359,7 @@ def run_job(
             v_s = scoring.performance_score(v_m, max(3, min_trades // 3)) if v_m else None
             o_s = scoring.performance_score(o_m, max(3, min_trades // 3)) if o_m else None
             if idx >= 0:
-                nb = scoring.neighbor_stats(idx, {i: train[i] for i in range(n) if i in train}, overrides_scored, parameters)
+                nb = scoring.neighbor_stats(idx, {i: train[i] for i in range(n) if i in train}, overrides_scored, parameters, vectors=vectors)
             else:
                 nb = {"n": 0, "mean": None, "min": None, "std": None, "mean_distance": None, "stability": 0.0}
             cons = scoring.consistency(t_m, v_m, t_s, v_s)

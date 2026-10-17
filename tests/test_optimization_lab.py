@@ -132,6 +132,21 @@ class SpaceTests(unittest.TestCase):
                 {"key": "cooldown_candles", "min": 0, "max": 50, "step": 1},
             ])
 
+    def test_indicator_cache_is_bounded(self):
+        df = synthetic_df(1200)
+        cache = {}
+        for period in range(8, 8 + 60):  # 60 périodes RSI distinctes
+            sl.run_backtest_experiment("BTCUSDT", "15m", "day", "futures", "dev", raw_params={"rsi_period": period},
+                                       preloaded_df=(df, "s"), allow_unreliable_data=True, opt_cache=cache, lean=True)
+        self.assertLessEqual(len(cache["indicators"]), 48)
+
+    def test_larger_default_limits(self):
+        self.assertGreaterEqual(space.MAX_CONFIGS_HARD, 20000)
+        plan = space.build_search_space([{"key": "adx_min", "min": 10, "max": 40, "step": 1},
+                                         {"key": "min_teddy_score", "min": 30, "max": 88, "step": 1}])
+        self.assertEqual(plan["total_grid"], 31 * 59)  # 1829 configurations : accepté (avertissement de durée)
+        self.assertTrue(any("longtemps" in w for w in plan["warnings"]))
+
     def test_forbidden_and_out_of_range_inputs(self):
         for bad in ([{"key": "leverage", "values": [1, 2]}], [{"key": "adx_min", "values": [1, 20]}], [{"key": "nope", "values": [1, 2]}]):
             with self.assertRaises(space.SpaceError):
@@ -146,6 +161,45 @@ class SpaceTests(unittest.TestCase):
     def test_inactive_parameter_warning(self):
         plan = space.build_search_space([{"key": "tp_atr_mult", "min": 1, "max": 3, "step": 1}])  # tp_mode = rr par défaut
         self.assertTrue(any("aucun effet" in w for w in plan["warnings"]))
+
+
+class LargeSpaceTests(unittest.TestCase):
+    def test_large_grid_is_accepted_up_to_the_raised_limit(self):
+        plan = space.build_search_space([
+            {"key": "adx_min", "min": 10, "max": 40, "step": 1},          # 31 valeurs
+            {"key": "min_teddy_score", "min": 30, "max": 88, "step": 1},  # 59 valeurs
+            {"key": "cooldown_candles", "min": 0, "max": 9, "step": 1},   # 10 valeurs -> 18 290 combinaisons
+        ])
+        self.assertEqual(plan["n_configs"], 31 * 59 * 10)
+        self.assertGreater(space.MAX_CONFIGS_HARD, 18290)
+
+    def test_plan_exposes_estimated_duration(self):
+        _, space_plan = engine.plan_request(REQUEST)
+        req, _ = engine.plan_request(REQUEST)
+        pub = engine.public_plan(space_plan, req)
+        self.assertGreater(pub["estimated_seconds"], 0)
+        self.assertEqual(pub["n_configs"], 12)
+
+    def test_sensitivity_matches_naive_computation(self):
+        parameters = [{"key": "adx_min", "values": [16, 20, 24]}, {"key": "min_teddy_score", "values": [50, 60]}]
+        overrides, train, i = {}, {}, 0
+        for a in parameters[0]["values"]:
+            for b in parameters[1]["values"]:
+                overrides[i] = {"adx_min": a, "min_teddy_score": b}
+                train[i] = {"score": float(a - b / 10)}
+                i += 1
+        out = {r["key"]: r for r in scoring.sensitivity(parameters, overrides, train)}
+        for row in out["adx_min"]["values"]:
+            naive = [train[j]["score"] for j, ov in overrides.items() if ov["adx_min"] == row["value"]]
+            self.assertAlmostEqual(row["mean_score"], sum(naive) / len(naive), places=3)
+
+    def test_precomputed_vectors_give_same_neighbors(self):
+        parameters = [{"key": "adx_min", "values": [20, 21, 22, 23, 24, 25]}]
+        overrides = {i: {"adx_min": v} for i, v in enumerate(parameters[0]["values"])}
+        train = {i: {"score": float(10 - abs(i - 2))} for i in overrides}
+        a = scoring.neighbor_stats(2, train, overrides, parameters, k=2)
+        b = scoring.neighbor_stats(2, train, overrides, parameters, k=2, vectors=scoring.build_vectors(overrides, parameters))
+        self.assertEqual(a, b)
 
 
 class EngineInjectionTests(unittest.TestCase):
@@ -362,7 +416,8 @@ class ApiTests(unittest.TestCase):
         st, out = self.api.create(1, False, REQUEST)
         self.assertEqual((st, out["status"]), (200, "queued"))
         job_id = out["job_id"]
-        self.assertEqual(self.api.create(1, False, REQUEST)[0], 200)
+        for _ in range(self.api.MAX_ACTIVE_JOBS_USER - 1):
+            self.assertEqual(self.api.create(1, False, REQUEST)[0], 200)
         self.assertEqual(self.api.create(1, False, REQUEST)[0], 429)           # plafond de jobs simultanés
         self.assertEqual(self.api.get_job(2, False, job_id)[0], 404)            # un autre utilisateur n'y accède pas
         self.assertEqual(self.api.get_job(2, True, job_id)[0], 200)             # l'admin oui

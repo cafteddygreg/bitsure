@@ -4,6 +4,7 @@ from __future__ import annotations
 import inspect
 import json
 import math
+import os
 import random
 import re
 from functools import lru_cache
@@ -15,10 +16,18 @@ import strategy_lab as sl
 # opérationnelles) ne sont PAS des décisions de stratégie : on ne les optimise pas (risk management inchangé).
 NON_OPTIMIZABLE_MODELS = {"capital"}
 
-MAX_PARAMS = 8
-MAX_VALUES_PER_PARAM = 60
-MAX_CONFIGS_HARD = 5000      # au-delà : refus explicite (jamais de réduction silencieuse)
-WARN_CONFIGS = 400           # au-delà : avertissement de durée
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    try:
+        return max(lo, min(hi, int(os.getenv(name, default))))
+    except (TypeError, ValueError):
+        return default
+
+
+# Limites réglables (variables d'environnement du service WEB) — relevées par rapport aux valeurs initiales.
+MAX_PARAMS = _env_int("OPT_MAX_PARAMS", 12, 1, 20)
+MAX_VALUES_PER_PARAM = _env_int("OPT_MAX_VALUES_PER_PARAM", 100, 2, 500)
+MAX_CONFIGS_HARD = _env_int("OPT_MAX_CONFIGS", 20000, 10, 200000)   # au-delà : refus explicite (jamais de réduction silencieuse)
+WARN_CONFIGS = _env_int("OPT_WARN_CONFIGS", 1000, 1, 200000)        # au-delà : avertissement de durée
 DEFAULT_RANDOM_CONFIGS = 200
 SUPPORTED_METHODS = ("grid", "random")
 

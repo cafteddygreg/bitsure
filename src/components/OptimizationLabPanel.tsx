@@ -85,6 +85,27 @@ const signed = (v: any, nd = 2, suffix = ''): React.ReactNode => {
   return <span className={f > 0 ? 'text-[#10B981]' : f < 0 ? 'text-[#F43F5E]' : ''}>{`${f > 0 ? '+' : ''}${f.toFixed(nd)}${suffix}`}</span>;
 };
 
+// Nombre de valeurs candidates d'un paramètre (même formule que le backend) — null si la saisie est incomplète/invalide.
+const countValues = (s: RangeSel | undefined): number | null => {
+  if (!s) return null;
+  if (s.values) return s.values.length;
+  if (s.min === '' || s.max === '' || s.step === '') return null;
+  const lo = Number(s.min);
+  const hi = Number(s.max);
+  const st = Number(s.step);
+  if ([lo, hi, st].some((x) => Number.isNaN(x)) || st <= 0 || hi < lo) return null;
+  return Math.floor((hi - lo) / st + 1e-9) + 1;
+};
+
+const formatDuration = (seconds: number): string => {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '—';
+  if (seconds < 90) return `${Math.round(seconds)} s`;
+  const minutes = seconds / 60;
+  if (minutes < 90) return `${Math.round(minutes)} min`;
+  const h = Math.floor(minutes / 60);
+  return `${h} h ${String(Math.round(minutes - h * 60)).padStart(2, '0')} min`;
+};
+
 const inputCls = 'w-full px-2.5 py-1.5 bg-[#090D16] border border-white/15 rounded-lg text-xs text-[#F1F5F9]';
 
 export const OptimizationLabPanel: React.FC<Props> = ({
@@ -92,7 +113,7 @@ export const OptimizationLabPanel: React.FC<Props> = ({
 }) => {
   const en = lang === 'en';
   const [catalog, setCatalog] = useState<OptParam[]>([]);
-  const [limits, setLimits] = useState<any>({ max_configs: 5000, warn_configs: 400, max_params: 8, default_min_trades: 20, default_top_k: 20 });
+  const [limits, setLimits] = useState<any>({ max_configs: 20000, warn_configs: 1000, max_params: 12, default_min_trades: 20, default_top_k: 20 });
   const [jobs, setJobs] = useState<OptJob[]>([]);
   const [selected, setSelected] = useState<Record<string, RangeSel>>({});
   const [method, setMethod] = useState<'grid' | 'random'>('grid');
@@ -104,6 +125,8 @@ export const OptimizationLabPanel: React.FC<Props> = ({
   const [baseSource, setBaseSource] = useState<'official' | 'editor'>('official');
   const [plan, setPlan] = useState<any | null>(null);
   const [planError, setPlanError] = useState<string>('');
+  const [lastDelta, setLastDelta] = useState<{ text: string; tone: 'add' | 'remove' } | null>(null);
+  const planReq = useRef(0);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [activeJob, setActiveJob] = useState<OptJob | null>(null);
   const mounted = useRef(true);
@@ -256,15 +279,47 @@ export const OptimizationLabPanel: React.FC<Props> = ({
 
   const computePlan = () =>
     withBusy('plan', async () => {
-      setPlanError('');
+      const id = ++planReq.current;
       try {
         const res = await apiFetch(`${API}/plan`, { method: 'POST', body: JSON.stringify(buildBody()) });
+        if (id !== planReq.current) return; // réponse périmée : une saisie plus récente est en cours
+        setPlanError('');
         setPlan(res.plan);
       } catch (err: any) {
+        if (id !== planReq.current) return;
         setPlan(null);
         setPlanError(err.message);
       }
     });
+
+  // Décompte en direct : calcul instantané côté interface + comptage exact côté serveur (après filtrage des
+  // combinaisons incohérentes) quelques instants après la dernière modification.
+  const selectedParams = catalog.filter((p) => selected[p.key]);
+  const counts = selectedParams.map((p) => countValues(selected[p.key]));
+  const complete = counts.length > 0 && counts.every((c) => c !== null);
+  const gridTotal: number | null = complete ? (counts as number[]).reduce((a, b) => a * b, 1) : null;
+  const requested = Number(maxConfigs) || 200;
+  const liveTotal: number | null = gridTotal === null ? null : method === 'random' ? Math.min(requested, gridTotal) : gridTotal;
+  const overLimit = method === 'grid' && gridTotal !== null && gridTotal > (limits.max_configs || 20000);
+  const overWarn = liveTotal !== null && liveTotal > (limits.warn_configs || 1000);
+  const planKey = JSON.stringify([selected, method, maxConfigs, maxCandles, minTrades, topK, seed, baseSource, symbol, timeframe, tradingStyle, startDate, endDate]);
+  useEffect(() => {
+    if (Object.keys(selected).length === 0) {
+      planReq.current += 1;
+      setPlan(null);
+      setPlanError('');
+      return;
+    }
+    const t = setTimeout(() => {
+      computePlan();
+    }, 600);
+    return () => clearTimeout(t);
+  }, [planKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!lastDelta) return;
+    const t = setTimeout(() => setLastDelta(null), 5000);
+    return () => clearTimeout(t);
+  }, [lastDelta]);
 
   const launch = () =>
     withBusy('create', async () => {
@@ -568,11 +623,22 @@ export const OptimizationLabPanel: React.FC<Props> = ({
                     <button
                       key={p.key}
                       type="button"
-                      onClick={() => toggleParam(p)}
+                      onClick={() => {
+                        const before = liveTotal;
+                        const willAdd = !selected[p.key];
+                        toggleParam(p);
+                        const n = willAdd ? (p.type === 'bool' ? 2 : p.type === 'enum' ? (p.choices || []).length : null) : null;
+                        if (!willAdd) setLastDelta({ text: `${label(p)} ${tr(lang, 'retiré', 'removed')}`, tone: 'remove' });
+                        else if (n !== null) setLastDelta({ text: `${label(p)} ${tr(lang, 'ajouté', 'added')} : ×${n}${before !== null ? ` → ${(before * n).toLocaleString()} ${tr(lang, 'configurations', 'configurations')}` : ''}`, tone: 'add' });
+                        else setLastDelta({ text: `${label(p)} ${tr(lang, 'ajouté', 'added')} — ${tr(lang, 'réglez min / max / step', 'set min / max / step')}`, tone: 'add' });
+                      }}
                       className={`px-2.5 py-1 rounded-lg border text-[11px] ${on ? 'bg-[#10B981]/15 border-[#10B981]/50 text-[#10B981]' : 'bg-[#090D16] border-white/15 text-[#CBD5E1] hover:border-white/30'}`}
                       title={p.key}
                     >
                       {label(p)}
+                      {on && countValues(selected[p.key]) !== null && (
+                        <span className="ml-1.5 font-mono-tabular opacity-80">×{countValues(selected[p.key])}</span>
+                      )}
                     </button>
                   );
                 })}
@@ -592,7 +658,10 @@ export const OptimizationLabPanel: React.FC<Props> = ({
                     <div className="text-xs text-[#F1F5F9]">
                       {label(p)} <span className="text-[#64748B] font-mono-tabular">({p.key})</span>
                     </div>
-                    <div className="text-[10px] text-[#64748B] font-mono-tabular">
+                    <div className="text-[10px] text-[#64748B] font-mono-tabular text-right">
+                      <div className="text-[#10B981] text-[11px]">
+                        {countValues(s) === null ? tr(lang, 'saisie incomplète', 'incomplete input') : `${countValues(s)} ${tr(lang, 'valeurs', 'values')} → ×${countValues(s)}`}
+                      </div>
                       {tr(lang, 'actuel', 'current')} : {String(cur)} {p.min !== null && p.min !== undefined ? `· [${p.min} – ${p.max}]` : ''}
                     </div>
                   </div>
@@ -621,19 +690,49 @@ export const OptimizationLabPanel: React.FC<Props> = ({
           </div>
         )}
 
-        {planError && (
-          <div className="text-xs text-[#F43F5E] bg-[#F43F5E]/10 border border-[#F43F5E]/30 rounded-lg p-2.5 flex items-start gap-2">
-            <XCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-            <span>{planError}</span>
-          </div>
-        )}
-        {plan && (
-          <div className="text-xs bg-[#0B1220] border border-white/[0.08] rounded-lg p-3 space-y-1.5">
-            <div className="text-[#F1F5F9]">
-              <b className="text-[#10B981]">{plan.n_configs}</b> {tr(lang, 'configurations à tester', 'configurations to test')}
-              {plan.total_grid !== plan.n_configs ? ` (${tr(lang, 'espace total', 'total space')} : ${plan.total_grid})` : ''} · ~{plan.estimated_backtests} {tr(lang, 'backtests', 'backtests')}
+        {Object.keys(selected).length > 0 && (
+          <div className={`sticky bottom-2 z-10 text-xs rounded-lg p-3 space-y-1.5 border backdrop-blur ${overLimit || planError ? 'bg-[#2A0F16]/95 border-[#F43F5E]/40' : overWarn ? 'bg-[#2A200B]/95 border-[#F59E0B]/40' : 'bg-[#0B1220]/95 border-[#10B981]/30'}`}>
+            {lastDelta && <div className={lastDelta.tone === 'add' ? 'text-[#10B981]' : 'text-[#94A3B8]'}>{lastDelta.text}</div>}
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <span className="text-[#94A3B8]">{tr(lang, 'Configurations à tester', 'Configurations to test')} :</span>
+              <b className={`text-lg font-mono-tabular ${overLimit || planError ? 'text-[#F43F5E]' : overWarn ? 'text-[#F59E0B]' : 'text-[#10B981]'}`}>
+                {plan && !isBusy('plan') && !planError ? plan.n_configs.toLocaleString() : liveTotal === null ? '—' : `≈ ${liveTotal.toLocaleString()}`}
+              </b>
+              {isBusy('plan') && <span className="text-[10px] text-[#64748B]">{tr(lang, 'comptage exact…', 'exact count…')}</span>}
             </div>
-            {(plan.warnings || []).map((w: string, i: number) => (
+            {complete && (
+              <div className="text-[11px] text-[#94A3B8] font-mono-tabular break-words">
+                {(counts as number[]).join(' × ')} = {gridTotal!.toLocaleString()} {tr(lang, 'combinaisons', 'combinations')}
+                {method === 'random' && gridTotal! > requested ? ` → ${tr(lang, 'tirage aléatoire de', 'random draw of')} ${requested.toLocaleString()}` : ''}
+                {plan && !isBusy('plan') && !planError && plan.n_configs !== liveTotal ? ` · ${tr(lang, 'après filtrage des combinaisons incohérentes', 'after removing inconsistent combinations')} : ${plan.n_configs.toLocaleString()}` : ''}
+              </div>
+            )}
+            {liveTotal !== null && !planError && (
+              <div className="text-[11px] text-[#94A3B8]">
+                {tr(lang, 'Durée estimée', 'Estimated duration')} :{' '}
+                {formatDuration(plan && !isBusy('plan') ? plan.estimated_seconds : (liveTotal + 40) * 0.0002 * 0.6 * (Number(maxCandles) || 4000))}{' '}
+                <span className="text-[#64748B]">({tr(lang, 'indicatif, selon le CPU du worker', 'indicative, depends on worker CPU')})</span>
+              </div>
+            )}
+            {overLimit && (
+              <div className="text-[#F43F5E] flex items-start gap-1.5">
+                <XCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                <span>{tr(lang, `Au-delà de la limite de ${(limits.max_configs || 20000).toLocaleString()} en Grid Search : augmentez les steps, retirez un paramètre ou passez en Random Search.`, `Above the Grid Search limit of ${(limits.max_configs || 20000).toLocaleString()}: increase steps, remove a parameter or switch to Random Search.`)}</span>
+              </div>
+            )}
+            {planError && !overLimit && (
+              <div className="text-[#F43F5E] flex items-start gap-1.5">
+                <XCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                <span>{planError}</span>
+              </div>
+            )}
+            {overWarn && !overLimit && !planError && (
+              <div className="text-[#F59E0B] flex items-start gap-1.5">
+                <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+                <span>{tr(lang, 'Beaucoup de configurations : plus de temps de calcul et un risque de surapprentissage plus élevé (le meilleur score devient plus optimiste).', 'Many configurations: longer run time and a higher overfitting risk (the best score becomes more optimistic).')}</span>
+              </div>
+            )}
+            {!planError && plan && (plan.warnings || []).map((w: string, i: number) => (
               <div key={i} className="text-[#F59E0B] flex items-start gap-1.5">
                 <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
                 <span>{w}</span>
@@ -645,16 +744,8 @@ export const OptimizationLabPanel: React.FC<Props> = ({
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={computePlan}
-            disabled={isBusy('plan') || Object.keys(selected).length === 0}
-            className="px-3.5 py-2 rounded-lg bg-[#1E293B] hover:bg-[#334155] disabled:opacity-40 border border-white/10 text-xs font-medium text-[#F1F5F9]"
-          >
-            {isBusy('plan') ? tr(lang, 'Calcul…', 'Computing…') : tr(lang, 'Calculer le nombre de configurations', 'Count configurations')}
-          </button>
-          <button
-            type="button"
             onClick={launch}
-            disabled={isBusy('create') || Object.keys(selected).length === 0}
+            disabled={isBusy('create') || Object.keys(selected).length === 0 || !!planError || overLimit}
             className="px-5 py-2 rounded-lg bg-[#10B981] hover:bg-[#059669] disabled:opacity-50 text-[#090D16] font-semibold text-xs flex items-center gap-2"
           >
             <Play className={`w-4 h-4 fill-current ${isBusy('create') ? 'animate-pulse' : ''}`} />

@@ -2254,6 +2254,8 @@ def run_backtest_experiment(
         df = _ind_store.get(_ind_key)
         if df is None:
             df = _compute_lab_indicators(cleaned_df, params)
+            while len(_ind_store) >= 48:  # borne mémoire : on évince la plus ancienne combinaison
+                _ind_store.pop(next(iter(_ind_store)))
             _ind_store[_ind_key] = df
     else:
         df = _compute_lab_indicators(cleaned_df, params)
