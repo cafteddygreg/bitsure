@@ -90,6 +90,38 @@ class PaperTrader:
         except Exception as e:
             logger.error(f"[PaperTrader._load] Erreur : {e}")
 
+    @classmethod
+    def get_instance(cls) -> "PaperTrader":
+        """
+        Instance partagée (celle de bot_handlers / position_manager), resynchronisée avec la base.
+
+        Utilisée par les jobs d'arrière-plan (main.py, headless_engine.py) : sans resynchronisation,
+        le cache mémoire ne verrait pas les positions ouvertes depuis l'API web (autre instance).
+        """
+        pt = paper_trader
+        pt.refresh_from_db()
+        return pt
+
+    def refresh_from_db(self) -> None:
+        """Recharge positions ouvertes et capitaux depuis la base (la base fait foi)."""
+        if self.conn is None:
+            return
+        try:
+            new_positions: Dict[str, List[Dict]] = {}
+            for r in self.conn.execute("SELECT * FROM paper_positions WHERE status='open'").fetchall():
+                new_positions.setdefault(str(r["user_id"]), []).append(self._row_to_dict(r))
+            new_caps = dict(self.capitals)
+            for c in self.conn.execute("SELECT * FROM paper_capitals").fetchall():
+                val = float(c["capital"])
+                if val > 100_000_000.0:
+                    val = PAPER_DEFAULT_CAPITAL
+                new_caps[str(c["user_id"])] = val
+            # Affectations atomiques : pas de dict à moitié reconstruit visible par un autre thread.
+            self.positions = new_positions
+            self.capitals = new_caps
+        except Exception as e:
+            logger.error(f"[PaperTrader.refresh_from_db] {e}")
+
     def _row_to_dict(self, r) -> Dict:
         """Convertit une row psycopg2 en dict normalise."""
         entry_val = float(r["entry_price"] or 0)
@@ -164,6 +196,7 @@ class PaperTrader:
                     exit_reason    = excluded.exit_reason,
                     closed_at      = excluded.closed_at,
                     peak_price     = excluded.peak_price
+                WHERE paper_positions.status = 'open'
                 """,
                 (
                     pos["id"], int(uid), pos["symbol"], pos["side"],
@@ -422,6 +455,23 @@ class PaperTrader:
                 f"[PaperTrader.close_position] Position {position_id} introuvable ou deja fermee."
             )
             return None
+
+        # Cache possiblement obsolète (autre instance / autre processus) : la base fait foi.
+        if self.conn is not None:
+            try:
+                row = self.conn.execute(
+                    "SELECT status FROM paper_positions WHERE id = %s", (position_id,)
+                ).fetchone()
+                if row is not None and str(row["status"]) != "open":
+                    self.positions[uid] = [
+                        p for p in self.positions.get(uid, []) if p["id"] != position_id
+                    ]
+                    logger.warning(
+                        f"[PaperTrader.close_position] Position {position_id} deja fermee en base : cache aligne."
+                    )
+                    return None
+            except Exception as e:
+                logger.warning(f"[PaperTrader.close_position] Verification statut BDD ignoree: {e}")
 
         # Slippage a la sortie (sens oppose de l'entree)
         exit_side_for_slip = "SELL" if pos["side"] == "BUY" else "BUY"
