@@ -1,17 +1,37 @@
 const SESSION_TOKEN_KEY = 'bitsure_session_token';
 const CSRF_TOKEN_KEY = 'bitsure_csrf_token';
 
+/* ---------- Activité réelle de l'utilisateur (sessions d'appareils partagés) ----------
+ * Les requêtes de fond (prix, rafraîchissements) ne doivent pas empêcher le verrouillage d'inactivité :
+ * on indique au serveur depuis combien de secondes l'utilisateur n'a touché ni clavier, ni écran. */
+let lastUserActivityAt = Date.now();
+if (typeof window !== 'undefined') {
+  const markActivity = () => {
+    lastUserActivityAt = Date.now();
+  };
+  (['pointerdown', 'keydown', 'touchstart', 'wheel'] as const).forEach((evt) =>
+    window.addEventListener(evt, markActivity, { passive: true })
+  );
+}
+export function getIdleSeconds(): number {
+  return Math.max(0, Math.floor((Date.now() - lastUserActivityAt) / 1000));
+}
+export const SESSION_LOCKED_EVENT = 'bitsure:session-locked';
+
 export class ApiError extends Error {
   status: number;
   code?: string;
   accountStatus?: string;
+  /** Corps JSON complet de la réponse d'erreur (ex. rule_messages, retry_after). */
+  payload?: any;
 
-  constructor(message: string, status: number, code?: string, accountStatus?: string) {
+  constructor(message: string, status: number, code?: string, accountStatus?: string, payload?: any) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.accountStatus = accountStatus;
+    this.payload = payload;
   }
 }
 
@@ -54,6 +74,7 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
     headers['X-Session-Token'] = token;
+    headers['X-User-Idle'] = String(getIdleSeconds());
   }
   if (csrf) {
     headers['X-CSRF-Token'] = csrf;
@@ -98,12 +119,16 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
   const response = await attemptFetch(false);
 
   const data = await response.json().catch(() => ({ ok: false, error: `Erreur HTTP ${response.status}` }));
+  if (response.status === 401 && data?.code === 'SESSION_LOCKED' && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(SESSION_LOCKED_EVENT));
+  }
   if (!response.ok || data.ok === false) {
     throw new ApiError(
       data.error || data.message || `Erreur API (${response.status})`,
       response.status,
       data.code,
-      data.account_status
+      data.account_status,
+      data
     );
   }
   return data as T;

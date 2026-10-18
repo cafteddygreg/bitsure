@@ -7,7 +7,16 @@ import {
   ApiError,
   runCoreApiDiagnostic,
   CoreApiDiagnosticReport,
+  getIdleSeconds,
+  SESSION_LOCKED_EVENT,
 } from './api';
+import {
+  ForgotPasswordView,
+  ResetPasswordView,
+  DeviceChoiceView,
+  SessionLockedView,
+  SecuritySessionsPanel,
+} from './components/AuthFlows';
 import { AppLang, getInitialLang, setSavedLang, tr } from './i18n';
 import {
   UserProfile,
@@ -97,6 +106,13 @@ const STYLES = [
   { id: 'position', label: 'Position (1D)' },
 ];
 
+function parseResetRoute(): { token: string } | null {
+  if (typeof window === 'undefined') return null;
+  const path = window.location.pathname.replace(/\/+$/, '');
+  if (path !== '/reset-password') return null;
+  return { token: new URLSearchParams(window.location.search).get('token') || '' };
+}
+
 export function App() {
   const [viewMode, setViewMode] = useState<'landing' | 'workspace' | 'terms'>('workspace');
   const [returnToRegisterAfterTerms, setReturnToRegisterAfterTerms] = useState(false);
@@ -122,6 +138,25 @@ export function App() {
   const [googlePendingToken, setGooglePendingToken] = useState<string | null>(null);
   const [capsLockOn, setCapsLockOn] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [authScreen, setAuthScreen] = useState<'forgot' | null>(null);
+  const [resetRoute, setResetRoute] = useState<{ token: string } | null>(parseResetRoute);
+  const [deviceChoiceRequired, setDeviceChoiceRequired] = useState(false);
+  const [sessionLocked, setSessionLocked] = useState(false);
+  const [sessionIdleTimeout, setSessionIdleTimeout] = useState(0);
+
+  // Verrouillage d'inactivité (appareils partagés) : le serveur est l'autorité, l'UI réagit à son 401 SESSION_LOCKED.
+  useEffect(() => {
+    const onLocked = () => setSessionLocked(true);
+    window.addEventListener(SESSION_LOCKED_EVENT, onLocked);
+    return () => window.removeEventListener(SESSION_LOCKED_EVENT, onLocked);
+  }, []);
+  useEffect(() => {
+    if (!sessionIdleTimeout) return;
+    const t = setInterval(() => {
+      if (getIdleSeconds() >= sessionIdleTimeout) apiFetch('/api/auth/me').catch(() => undefined);
+    }, 30000);
+    return () => clearInterval(t);
+  }, [sessionIdleTimeout]);
 
   const collectClientTelemetry = useCallback(async (requestGeoPermission = false): Promise<Record<string, any>> => {
     const nav: any = typeof navigator !== 'undefined' ? navigator : {};
@@ -431,6 +466,9 @@ export function App() {
         }
       }
       setUser(currentUser);
+      setSessionLocked(false);
+      setDeviceChoiceRequired(Boolean(meRes.session?.device_choice_required));
+      setSessionIdleTimeout(Number(meRes.session?.idle_timeout_seconds) || 0);
       setAuthChecking(false);
 
       // Only load protected terminal data if the account is APPROVED
@@ -458,6 +496,7 @@ export function App() {
       setAuthChecking(false);
       if (err instanceof ApiError && err.status === 401) {
         setUser(null);
+        if (err.code === 'SESSION_LOCKED') setSessionLocked(true);
       }
     }
   }, []);
@@ -986,6 +1025,9 @@ export function App() {
     }
     clearStoredSession();
     setUser(null);
+    setDeviceChoiceRequired(false);
+    setSessionLocked(false);
+    setSessionIdleTimeout(0);
     setAdminData(null);
     setPaperStats(null);
     setOpenPaper([]);
@@ -1708,6 +1750,22 @@ export function App() {
               {tr(lang, 'Le verrouillage majuscule (Caps Lock) est activé.')}
             </p>
           )}
+          {mode === 'login' && !googlePendingToken && (
+            <div className="mt-1.5 text-right">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthError(null);
+                  setAuthModal(null);
+                  setViewMode('workspace');
+                  setAuthScreen('forgot');
+                }}
+                className="text-[11px] text-[#8B98A4] hover:text-[#E8EEF2] underline-offset-2 hover:underline py-1"
+              >
+                {tr(lang, 'Mot de passe oublié ?', 'Forgot password?')}
+              </button>
+            </div>
+          )}
         </div>
         {mode === 'register' && (
           <div className="p-3.5 rounded-xl bg-[#080C0F] border border-[#D6A84F]/40 space-y-2">
@@ -1830,6 +1888,45 @@ export function App() {
       )}
     </div>
   );
+
+  const leaveResetRoute = () => {
+    window.history.replaceState({}, '', '/');
+    setResetRoute(null);
+  };
+  if (resetRoute) {
+    return (
+      <ResetPasswordView
+        lang={lang}
+        token={resetRoute.token}
+        onGoLogin={() => {
+          leaveResetRoute();
+          setViewMode('workspace');
+          setAuthModal('login');
+        }}
+        onRequestNewLink={() => {
+          leaveResetRoute();
+          setViewMode('workspace');
+          setAuthScreen('forgot');
+        }}
+      />
+    );
+  }
+  if (sessionLocked) {
+    return (
+      <SessionLockedView
+        lang={lang}
+        onRelogin={() => {
+          clearStoredSession();
+          setUser(null);
+          setSessionLocked(false);
+          setDeviceChoiceRequired(false);
+          setSessionIdleTimeout(0);
+          setViewMode('workspace');
+          setAuthModal('login');
+        }}
+      />
+    );
+  }
 
   if (viewMode === 'terms') {
     const isPendingLegacyConsent = Boolean(user && !user.terms_accepted);
@@ -2073,7 +2170,13 @@ export function App() {
         </header>
 
         <div className="flex-1 flex items-center justify-center py-8">
-          {authFormModal(activeAuthMode, true)}
+          {authScreen === 'forgot' ? (
+            <div className="w-full max-w-md">
+              <ForgotPasswordView lang={lang} initialEmail={authEmail} onBackToLogin={() => setAuthScreen(null)} embedded />
+            </div>
+          ) : (
+            authFormModal(activeAuthMode, true)
+          )}
         </div>
 
         <footer className="text-center text-[11px] text-[#6E7B88] font-mono-tabular">
@@ -2082,6 +2185,19 @@ export function App() {
             : 'Bitsure Teddy • Authentification serveur obligatoire • Protection des accès & quotas actifs'}
         </footer>
       </div>
+    );
+  }
+
+  if (deviceChoiceRequired) {
+    return (
+      <DeviceChoiceView
+        lang={lang}
+        onChosen={(kind, idle) => {
+          setDeviceChoiceRequired(false);
+          setSessionIdleTimeout(kind === 'public' ? idle : 0);
+        }}
+        onLogout={handleLogout}
+      />
     );
   }
 
@@ -5977,6 +6093,13 @@ export function App() {
           {/* =========================================================
               TAB 7: ADMIN CONSOLE & LOG DOCTOR DIAGNOSTICS (ADMIN ONLY)
              ========================================================= */}
+          {activeTab === 'account' && user && (
+            <div className="mt-6 space-y-3">
+              <h2 className="font-display font-semibold text-lg text-[#E8EEF2]">{tr(lang, 'Sécurité', 'Security')}</h2>
+              <SecuritySessionsPanel lang={lang} onToast={showToast} />
+            </div>
+          )}
+
           {activeTab === 'admin' && isAdminUser && (
             <div className="space-y-6">
               {/* Direct Banner to Open Users 360° Dossier & Public Terms */}

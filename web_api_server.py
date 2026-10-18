@@ -17,6 +17,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -60,6 +61,8 @@ from config import (
     TRIAL_DAYS,
 )
 from payments import generate_binance_payment
+import auth_security as authsec
+import email_service
 from data_fetcher import DataFetcher
 from database import get_connection, get_db
 from decision_journal import decision_journal
@@ -254,6 +257,10 @@ def _init_web_schema_and_seed():
         db.execute("CREATE INDEX IF NOT EXISTS idx_web_sessions_token_hash ON web_sessions (token_hash)")
     except Exception:
         pass
+    try:
+        authsec.ensure_schema(db)  # reset de mot de passe, appareils, colonnes de session (type / activité / verrouillage)
+    except Exception as e:
+        logger.warning("auth_security schema init warning: %s", e)
 
     db.execute(
         """
@@ -488,7 +495,14 @@ def _hash_session_token(raw_token: str) -> str:
     return hashlib.sha256((raw_token or "").encode("utf-8")).hexdigest()
 
 
-def _create_session(user_id: int, email: str, ip_address: str = "", user_agent: str = "") -> Tuple[str, str]:
+def _create_session(
+    user_id: int,
+    email: str,
+    ip_address: str = "",
+    user_agent: str = "",
+    session_type: str = authsec.SESSION_PERSONAL,
+    device_hash: str = "",
+) -> Tuple[str, str]:
     raw_token = secrets.token_hex(32)
     token_hash = _hash_session_token(raw_token)
     csrf_token = secrets.token_hex(24)
@@ -498,12 +512,22 @@ def _create_session(user_id: int, email: str, ip_address: str = "", user_agent: 
         db.execute("ALTER TABLE web_sessions ADD COLUMN IF NOT EXISTS token_hash TEXT")
     except Exception:
         pass
+    try:
+        authsec.ensure_session_columns(db)
+    except Exception:
+        pass
     db.execute(
         """
-        INSERT INTO web_sessions (token, token_hash, user_id, email, csrf_token, ip_address, user_agent, created_at, expires_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO web_sessions (
+            token, token_hash, user_id, email, csrf_token, ip_address, user_agent, created_at, expires_at,
+            session_type, device_hash, last_activity_at, locked_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
         """,
-        (token_hash, token_hash, int(user_id), email, csrf_token, ip_address[:64], user_agent[:200], now, now + 86400 * 14),
+        (
+            token_hash, token_hash, int(user_id), email, csrf_token, ip_address[:64], user_agent[:200], now,
+            now + authsec.session_lifetime_seconds(session_type), session_type, device_hash or "", now,
+        ),
     )
     return raw_token, csrf_token
 
@@ -1333,37 +1357,100 @@ def _extract_session_token(headers) -> str:
     return x_tok.strip()
 
 
+def _lookup_session(headers) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Résout la session et la raison d'un échec : (session, "") ou (None, raison).
+
+    raison ∈ "" (pas de token) | "invalid" | "expired" | "locked".
+    Applique la politique de session : verrouillage après inactivité pour les appareils partagés/publics
+    (jamais pour les appareils personnels) et mise à jour throttlée de la dernière activité.
+    """
+    token = _extract_session_token(headers)
+    if not token:
+        return None, ""
+    token_hash = _hash_session_token(token)
+    db = get_db()
+    row = db.execute(
+        """
+        SELECT token, token_hash, user_id, email, csrf_token, created_at, expires_at,
+               session_type, device_hash, last_activity_at, locked_at
+        FROM web_sessions WHERE token_hash = %s OR token = %s
+        """,
+        (token_hash, token_hash),
+    ).fetchone()
+    if not row:
+        return None, "invalid"
+    th = row.get("token_hash") or row["token"]
+    state = authsec.evaluate_session(row)
+    if state == "expired":
+        try:
+            db.execute("DELETE FROM web_sessions WHERE token_hash = %s OR token = %s", (token_hash, token_hash))
+        except Exception:
+            pass
+        return None, "expired"
+    if state == "idle_lock":
+        try:
+            authsec.lock_session(db, th)
+            log_security_event(
+                "SESSION_LOCKED",
+                severity="info",
+                user_id=int(row["user_id"]),
+                email=row["email"],
+                details="Session verrouillée après inactivité (appareil partagé ou public).",
+            )
+        except Exception:
+            pass
+        return None, "locked"
+    if state == "locked":
+        return None, "locked"
+    try:
+        # Les requêtes de fond (prix, polling) ne comptent pas comme de l'activité : le client indique depuis
+        # combien de secondes l'utilisateur n'a rien touché ; sans cet en-tête (clients API) on garde l'ancien comportement.
+        raw_idle = (headers.get("X-User-Idle") or headers.get("x-user-idle") or "").strip()
+        user_idle = int(raw_idle) if raw_idle.isdigit() else None
+        if user_idle is None or user_idle < authsec.ACTIVITY_TOUCH_INTERVAL_SECONDS:
+            authsec.touch_session(db, row, th)
+    except Exception:
+        pass
+    return {
+        "token": token,
+        "token_hash": th,
+        "user_id": int(row["user_id"]),
+        "email": row["email"],
+        "csrf_token": row["csrf_token"] or "",
+        "session_type": row.get("session_type") or authsec.SESSION_PERSONAL,
+        "device_hash": row.get("device_hash") or "",
+        "created_at": float(row.get("created_at") or 0),
+    }, ""
+
+
 def _resolve_authenticated_session(headers) -> Optional[Dict[str, Any]]:
     """
     Strictly resolve user identity from server-stored session token ONLY.
     Looks up sha256(token) in web_sessions.token_hash (or token).
     NEVER trusts X-User-Id, client role claims, or fallback admin accounts.
     """
+    sess, _reason = _lookup_session(headers)
+    return sess
+
+
+def _session_failure_reason(headers) -> str:
+    """Raison d'un échec d'authentification (appelé uniquement après un échec) : "locked" ou "".
+
+    Lecture seule : ne modifie rien. Une session expirée ou inconnue reste un simple 401.
+    """
     token = _extract_session_token(headers)
     if not token:
-        return None
-    token_hash = _hash_session_token(token)
-    db = get_db()
-    row = db.execute(
-        "SELECT token, token_hash, user_id, email, csrf_token, expires_at FROM web_sessions WHERE token_hash = %s OR token = %s",
-        (token_hash, token_hash),
-    ).fetchone()
-    if not row:
-        return None
-    expires_at = float(row["expires_at"] or 0)
-    if expires_at <= time.time():
-        try:
-            db.execute("DELETE FROM web_sessions WHERE token_hash = %s OR token = %s", (token_hash, token_hash))
-        except Exception:
-            pass
-        return None
-    return {
-        "token": token,
-        "token_hash": row.get("token_hash") or row["token"],
-        "user_id": int(row["user_id"]),
-        "email": row["email"],
-        "csrf_token": row["csrf_token"] or "",
-    }
+        return ""
+    try:
+        row = get_db().execute(
+            "SELECT locked_at, expires_at FROM web_sessions WHERE token_hash = %s OR token = %s",
+            (_hash_session_token(token), _hash_session_token(token)),
+        ).fetchone()
+    except Exception:
+        return ""
+    if row and float(row.get("locked_at") or 0) > 0 and float(row.get("expires_at") or 0) > time.time():
+        return "locked"
+    return ""
 
 
 def _extract_price_float(price_obj: Any, default: float = 0.0) -> float:
@@ -1843,9 +1930,9 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Credentials", "true")
             self.send_header("Vary", "Origin")
 
-    def _build_session_cookie_header(self, token: str, max_age: int = 86400 * 14) -> str:
+    def _build_session_cookie_header(self, token: str, max_age: int = 86400 * 14, name: str = SESSION_COOKIE_NAME) -> str:
         parts = [
-            f"{SESSION_COOKIE_NAME}={token}",
+            f"{name}={token}",
             "Path=/",
             "HttpOnly",
             f"Max-Age={max_age}",
@@ -1864,6 +1951,45 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             parts.append("SameSite=Lax")
         return "; ".join(parts)
 
+    def _device_cookie_raw(self) -> str:
+        cookies = _parse_cookies(self.headers.get("Cookie", "") or self.headers.get("cookie", ""))
+        raw = (cookies.get(authsec.DEVICE_COOKIE_NAME) or "").strip()
+        return raw if 16 <= len(raw) <= 128 else ""
+
+    def _issue_login_session(self, uid: int, email: str, client_ip: str) -> Dict[str, Any]:
+        """Crée la session d'une connexion/inscription en appliquant la politique appareil personnel / partagé.
+
+        Appareil reconnu (cookie d'appareil + choix déjà enregistré) -> type hérité.
+        Appareil inconnu -> session « pending » (politique stricte) jusqu'à ce que l'utilisateur choisisse.
+        """
+        db = get_db()
+        known_raw = self._device_cookie_raw()
+        device_raw = known_raw or authsec.new_device_id()
+        device_hash = authsec.hash_device_id(device_raw)
+        kind = authsec.get_device_kind(db, uid, device_hash) if known_raw else None
+        session_type = kind if kind in (authsec.SESSION_PERSONAL, authsec.SESSION_PUBLIC) else authsec.SESSION_PENDING
+        authsec.purge_locked_sessions_for_device(db, uid, device_hash)
+        token, csrf_token = _create_session(
+            uid,
+            email,
+            ip_address=client_ip,
+            user_agent=self.headers.get("User-Agent", ""),
+            session_type=session_type,
+            device_hash=device_hash,
+        )
+        cookie_age = authsec.session_lifetime_seconds(session_type)
+        headers = [
+            ("Set-Cookie", self._build_session_cookie_header(token, max_age=cookie_age)),
+            ("Set-Cookie", self._build_session_cookie_header(device_raw, max_age=86400 * 400, name=authsec.DEVICE_COOKIE_NAME)),
+        ]
+        return {
+            "token": token,
+            "csrf_token": csrf_token,
+            "headers": headers,
+            "session_type": session_type,
+            "device_choice_required": session_type == authsec.SESSION_PENDING,
+        }
+
     def _send_json(self, status_code: int, payload: Any, extra_headers: Optional[List[Tuple[str, str]]] = None):
         raw = json.dumps(payload, default=str).encode("utf-8")
         self.send_response(status_code)
@@ -1873,7 +1999,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers",
-            "Content-Type, Authorization, X-Session-Token, X-CSRF-Token",
+            "Content-Type, Authorization, X-Session-Token, X-CSRF-Token, X-User-Idle",
         )
         if extra_headers:
             for hk, hv in extra_headers:
@@ -1918,11 +2044,18 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
         """
         sess = _resolve_authenticated_session(self.headers)
         if not sess:
-            self._send_json(401, {
-                "ok": False,
-                "code": "UNAUTHENTICATED",
-                "error": "Authentification requise. Veuillez vous connecter.",
-            })
+            if _session_failure_reason(self.headers) == "locked":
+                self._send_json(401, {
+                    "ok": False,
+                    "code": "SESSION_LOCKED",
+                    "error": "Votre session a été verrouillée après une période d'inactivité. Veuillez vous reconnecter.",
+                })
+            else:
+                self._send_json(401, {
+                    "ok": False,
+                    "code": "UNAUTHENTICATED",
+                    "error": "Authentification requise. Veuillez vous connecter.",
+                })
             return None
 
         method = (getattr(self, "command", "") or "POST").upper()
@@ -2014,7 +2147,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers",
-            "Content-Type, Authorization, X-Session-Token, X-CSRF-Token",
+            "Content-Type, Authorization, X-Session-Token, X-CSRF-Token, X-User-Idle",
         )
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -2349,12 +2482,15 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             # Session inspection endpoint: returns user profile if logged in, or 401 if visitor is not logged in
             if path == "/api/auth/me":
                 sess = _resolve_authenticated_session(self.headers)
+                fail_reason = "" if sess else _session_failure_reason(self.headers)
                 if not sess:
                     self._send_json(401, {
                         "ok": False,
                         "authenticated": False,
+                        "code": "SESSION_LOCKED" if fail_reason == "locked" else "UNAUTHENTICATED",
+                        "locked": fail_reason == "locked",
                         "google_oauth_enabled": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
-                        "error": "Non connecté.",
+                        "error": "Session verrouillée." if fail_reason == "locked" else "Non connecté.",
                     })
                     return
                 uid = int(sess["user_id"])
@@ -2362,7 +2498,17 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "authenticated": True,
                     "user": _build_user_profile(uid, csrf_token=sess.get("csrf_token", "")),
+                    "session": {
+                        "type": sess.get("session_type"),
+                        "device_choice_required": sess.get("session_type") == authsec.SESSION_PENDING,
+                        "idle_timeout_seconds": authsec.PUBLIC_IDLE_TIMEOUT_SECONDS
+                        if sess.get("session_type") in (authsec.SESSION_PUBLIC, authsec.SESSION_PENDING) else 0,
+                    },
                 })
+                return
+
+            if path == "/api/auth/sessions":
+                self._handle_sessions_list()
                 return
 
             # ALL OTHER GET ROUTES REQUIRE AN AUTHENTICATED AND APPROVED SESSION
@@ -2882,6 +3028,278 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             logger.error("GET %s error: %s\n%s", path, e, traceback.format_exc())
             self._send_json(500, {"ok": False, "error": f"Erreur serveur ({path}) : {e}"})
 
+    # ------------------------------------------------------------------
+    # Mot de passe oublié, changement de mot de passe, sessions & appareils
+    # (logique métier dans auth_security.py ; envoi d'email dans email_service.py)
+    # ------------------------------------------------------------------
+
+    _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]{2,}$")
+
+    def _password_rule_payload(self, rules: List[str]) -> Dict[str, Any]:
+        return {
+            "rules": rules,
+            "rule_messages": [authsec.PASSWORD_ERROR_MESSAGES.get(r, r) for r in rules],
+        }
+
+    def _session_cookie_for(self, sess: Dict[str, Any], session_type: str) -> Tuple[str, str]:
+        age = authsec.session_lifetime_seconds(session_type)
+        return ("Set-Cookie", self._build_session_cookie_header(sess["token"], max_age=age))
+
+    def _handle_sessions_list(self) -> None:
+        sess = self._require_auth(require_approved=False)
+        if not sess:
+            return
+        db = get_db()
+        self._send_json(200, {
+            "ok": True,
+            "sessions": authsec.list_sessions(db, sess["user_id"], sess["token_hash"]),
+            "idle_timeout_seconds": authsec.PUBLIC_IDLE_TIMEOUT_SECONDS,
+        })
+
+    def _handle_auth_extension_post(self, path: str, body: Dict[str, Any], client_ip: str) -> bool:
+        """Retourne True si la route a été traitée. Les erreurs internes ne sont jamais exposées au client."""
+        handlers = {
+            "/api/auth/forgot-password": self._post_forgot_password,
+            "/api/auth/reset-password/validate": self._post_reset_validate,
+            "/api/auth/reset-password": self._post_reset_password,
+            "/api/auth/change-password": self._post_change_password,
+            "/api/auth/session/device": self._post_session_device,
+            "/api/auth/sessions/revoke": self._post_sessions_revoke,
+            "/api/auth/sessions/revoke-others": self._post_sessions_revoke_others,
+        }
+        handler = handlers.get(path)
+        if handler is None:
+            return False
+        try:
+            handler(body, client_ip)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("POST %s error: %s\n%s", path, type(exc).__name__, traceback.format_exc())
+            self._send_json(500, {
+                "ok": False,
+                "code": "SERVER_ERROR",
+                "error": "Une erreur est survenue de notre côté. Veuillez réessayer dans quelques instants.",
+            })
+        return True
+
+    def _post_forgot_password(self, body: Dict[str, Any], client_ip: str) -> None:
+        email = (body.get("email") or "").strip().lower()
+        lang = "en" if str(body.get("lang") or "").lower().startswith("en") else "fr"
+        if not email or len(email) > 254 or not self._EMAIL_RE.match(email):
+            self._send_json(400, {"ok": False, "code": "INVALID_EMAIL", "error": "Veuillez saisir une adresse email valide."})
+            return
+        # Indépendant de l'existence du compte : ne révèle rien.
+        if not email_service.is_configured():
+            self._send_json(503, {
+                "ok": False,
+                "code": "EMAIL_UNAVAILABLE",
+                "error": "L'envoi d'emails de récupération n'est pas disponible pour le moment. Veuillez réessayer plus tard.",
+            })
+            return
+        allowed, wait = authsec.check_reset_request_allowed(client_ip, email)
+        if not allowed:
+            log_security_event(
+                "PASSWORD_RESET_RATE_LIMITED", severity="warning", email=email, ip_address=client_ip,
+                details="Demande de réinitialisation limitée (trop de demandes).",
+            )
+            self._send_json(429, {
+                "ok": False,
+                "code": "RATE_LIMITED",
+                "retry_after": wait,
+                "error": f"Trop de demandes. Veuillez patienter {wait} s avant de réessayer.",
+            })
+            return
+
+        ttl_minutes = max(1, authsec.RESET_TOKEN_TTL_SECONDS // 60)
+
+        def _send(to_email: str, reset_url: str):
+            subject, html, text = email_service.render_password_reset_email(reset_url, ttl_minutes, lang)
+            return email_service.send_email(to_email, subject, html, text)
+
+        def _work() -> None:
+            try:
+                result = authsec.request_password_reset(get_db(), email, client_ip, APP_URL, _send)
+                outcome = result.get("outcome")
+                if outcome == "SENT":
+                    log_security_event("PASSWORD_RESET_REQUESTED", user_id=result.get("user_id"), email=email,
+                                       ip_address=client_ip, details="Email de réinitialisation envoyé.")
+                elif outcome == "SEND_FAILED":
+                    log_security_event("PASSWORD_RESET_EMAIL_FAILED", severity="warning", user_id=result.get("user_id"),
+                                       email=email, ip_address=client_ip,
+                                       details=f"Le fournisseur d'emails a refusé l'envoi ({result.get('error_code')}).")
+                elif outcome == "NO_APP_URL":
+                    log_security_event("PASSWORD_RESET_EMAIL_FAILED", severity="warning", user_id=result.get("user_id"),
+                                       email=email, ip_address=client_ip,
+                                       details="APP_URL non configurée : lien impossible à construire.")
+                else:
+                    log_security_event("PASSWORD_RESET_REQUESTED", email=email, ip_address=client_ip,
+                                       details="Demande pour une adresse sans compte (aucun email envoyé).")
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Password reset worker error: %s", type(exc).__name__)
+
+        # Traitement en arrière-plan : le temps de réponse ne dépend pas de l'existence du compte.
+        threading.Thread(target=_work, name="pwreset", daemon=True).start()
+        self._send_json(200, {
+            "ok": True,
+            "cooldown_seconds": authsec.RESET_RESEND_COOLDOWN_SECONDS,
+            "message": "Si un compte correspond à cette adresse, un email de récupération vient d'être envoyé.",
+        })
+
+    def _post_reset_validate(self, body: Dict[str, Any], client_ip: str) -> None:
+        allowed, wait = authsec.reset_confirm_ip_limiter.check_and_record(f"v:{client_ip}")
+        if not allowed:
+            self._send_json(429, {"ok": False, "code": "RATE_LIMITED", "retry_after": wait,
+                                  "error": "Trop de tentatives. Veuillez patienter avant de réessayer."})
+            return
+        state, _row = authsec.inspect_reset_token(get_db(), str(body.get("token") or ""))
+        if state == "valid":
+            self._send_json(200, {"ok": True, "state": "valid", "ttl_minutes": authsec.RESET_TOKEN_TTL_SECONDS // 60})
+            return
+        code = {"invalid": "TOKEN_INVALID", "expired": "TOKEN_EXPIRED", "used": "TOKEN_USED"}[state]
+        messages = {
+            "TOKEN_INVALID": "Lien de réinitialisation invalide.",
+            "TOKEN_EXPIRED": "Ce lien a expiré.",
+            "TOKEN_USED": "Ce lien a déjà été utilisé.",
+        }
+        self._send_json(400, {"ok": False, "code": code, "error": messages[code]})
+
+    def _post_reset_password(self, body: Dict[str, Any], client_ip: str) -> None:
+        allowed, wait = authsec.reset_confirm_ip_limiter.check_and_record(f"r:{client_ip}")
+        if not allowed:
+            self._send_json(429, {"ok": False, "code": "RATE_LIMITED", "retry_after": wait,
+                                  "error": "Trop de tentatives. Veuillez patienter avant de réessayer."})
+            return
+        result = authsec.apply_password_reset(
+            get_db(),
+            str(body.get("token") or ""),
+            str(body.get("password") or ""),
+            str(body.get("confirm_password") or ""),
+            _hash_password_secure,
+        )
+        if not result["ok"]:
+            code = result["code"]
+            messages = {
+                "TOKEN_INVALID": "Lien de réinitialisation invalide.",
+                "TOKEN_EXPIRED": "Ce lien a expiré.",
+                "TOKEN_USED": "Ce lien a déjà été utilisé.",
+                "PASSWORD_MISMATCH": "Les deux mots de passe ne correspondent pas.",
+                "PASSWORD_WEAK": "Le mot de passe ne respecte pas les règles de sécurité.",
+                "ACCOUNT_NOT_FOUND": "Lien de réinitialisation invalide.",
+            }
+            payload = {"ok": False, "code": code, "error": messages.get(code, "Réinitialisation impossible.")}
+            if result.get("rules"):
+                payload.update(self._password_rule_payload(result["rules"]))
+            self._send_json(result.get("http", 400), payload)
+            return
+        log_security_event(
+            "PASSWORD_RESET_COMPLETED", severity="info", user_id=result["user_id"], email=result["email"],
+            ip_address=client_ip, details="Mot de passe réinitialisé via lien ; toutes les sessions ont été révoquées.",
+        )
+        self._notify_password_changed(result["email"])
+        self._send_json(200, {"ok": True, "message": "Mot de passe réinitialisé."})
+
+    def _notify_password_changed(self, email: str) -> None:
+        """Email d'information (best effort, en arrière-plan). N'affecte jamais le résultat du changement."""
+        if not email_service.is_configured():
+            return
+
+        def _work() -> None:
+            try:
+                subject, html, text = email_service.render_password_changed_email()
+                email_service.send_email(email, subject, html, text)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Password changed notification error: %s", type(exc).__name__)
+
+        threading.Thread(target=_work, name="pwchanged", daemon=True).start()
+
+    def _post_change_password(self, body: Dict[str, Any], client_ip: str) -> None:
+        sess = self._require_auth(require_approved=False, check_csrf=True)
+        if not sess:
+            return
+        email = (sess.get("email") or "").strip().lower()
+        if _is_auth_rate_limited(client_ip, email):
+            self._send_json(429, {"ok": False, "code": "RATE_LIMITED",
+                                  "error": "Trop de tentatives échouées. Veuillez patienter 15 minutes avant de réessayer."})
+            return
+        current = str(body.get("current_password") or "")
+        new_pw = str(body.get("new_password") or "")
+        confirm = str(body.get("confirm_password") or "")
+        db = get_db()
+        row = db.execute("SELECT password_hash FROM web_accounts WHERE user_id = %s", (int(sess["user_id"]),)).fetchone()
+        if not row or not _verify_password_secure(current, row["password_hash"] or ""):
+            _record_auth_failure(client_ip, email)
+            log_security_event("PASSWORD_CHANGE_FAILED", severity="warning", user_id=sess["user_id"], email=email,
+                               ip_address=client_ip, details="Mot de passe actuel incorrect lors d'un changement.")
+            self._send_json(400, {"ok": False, "code": "CURRENT_PASSWORD_INVALID", "error": "Le mot de passe actuel est incorrect."})
+            return
+        if new_pw != confirm:
+            self._send_json(400, {"ok": False, "code": "PASSWORD_MISMATCH", "error": "Les deux mots de passe ne correspondent pas."})
+            return
+        rules = authsec.validate_password(new_pw, email)
+        if rules:
+            payload = {"ok": False, "code": "PASSWORD_WEAK", "error": "Le mot de passe ne respecte pas les règles de sécurité."}
+            payload.update(self._password_rule_payload(rules))
+            self._send_json(400, payload)
+            return
+        if _verify_password_secure(new_pw, row["password_hash"] or ""):
+            self._send_json(400, {"ok": False, "code": "PASSWORD_UNCHANGED", "error": "Le nouveau mot de passe doit être différent de l'actuel."})
+            return
+        _clear_auth_failures(client_ip, email)
+        db.execute("UPDATE web_accounts SET password_hash = %s WHERE user_id = %s", (_hash_password_secure(new_pw), int(sess["user_id"])))
+        # Politique : la session courante est conservée, toutes les autres sont révoquées.
+        revoked = authsec.revoke_all_sessions(db, sess["user_id"], except_token_hash=sess["token_hash"])
+        db.execute(
+            "UPDATE password_reset_tokens SET invalidated_at = %s WHERE user_id = %s AND used_at = 0 AND invalidated_at = 0",
+            (time.time(), int(sess["user_id"])),
+        )
+        log_security_event("PASSWORD_CHANGED", severity="info", user_id=sess["user_id"], email=email, ip_address=client_ip,
+                           details=f"Mot de passe modifié ; {revoked} autre(s) session(s) révoquée(s).")
+        self._notify_password_changed(email)
+        self._send_json(200, {"ok": True, "revoked_sessions": revoked,
+                              "message": "Mot de passe modifié. Vos autres appareils ont été déconnectés."})
+
+    def _post_session_device(self, body: Dict[str, Any], client_ip: str) -> None:
+        sess = self._require_auth(require_approved=False, check_csrf=True)
+        if not sess:
+            return
+        kind = str(body.get("kind") or "").strip().lower()
+        if kind not in (authsec.SESSION_PERSONAL, authsec.SESSION_PUBLIC):
+            self._send_json(400, {"ok": False, "code": "INVALID_DEVICE_KIND", "error": "Choix d'appareil invalide."})
+            return
+        db = get_db()
+        authsec.apply_session_type(db, sess["token_hash"], kind, sess.get("created_at") or time.time())
+        if sess.get("device_hash"):
+            authsec.set_device_kind(db, sess["user_id"], sess["device_hash"], kind)
+        log_security_event("DEVICE_KIND_SET", severity="info", user_id=sess["user_id"], email=sess.get("email"),
+                           ip_address=client_ip, details=f"Appareil déclaré : {kind}.")
+        self._send_json(200, {"ok": True, "session_type": kind,
+                              "idle_timeout_seconds": authsec.PUBLIC_IDLE_TIMEOUT_SECONDS if kind == authsec.SESSION_PUBLIC else 0},
+                        extra_headers=[self._session_cookie_for(sess, kind)])
+
+    def _post_sessions_revoke(self, body: Dict[str, Any], client_ip: str) -> None:
+        sess = self._require_auth(require_approved=False, check_csrf=True)
+        if not sess:
+            return
+        outcome = authsec.revoke_session_by_public_id(get_db(), sess["user_id"], str(body.get("id") or ""), sess["token_hash"])
+        if outcome == "revoked":
+            log_security_event("SESSION_REVOKED", severity="info", user_id=sess["user_id"], email=sess.get("email"),
+                               ip_address=client_ip, details="Session révoquée depuis Sécurité.")
+            self._send_json(200, {"ok": True, "message": "Session révoquée."})
+        elif outcome == "current":
+            self._send_json(400, {"ok": False, "code": "CURRENT_SESSION",
+                                  "error": "Il s'agit de votre session actuelle : utilisez « Se déconnecter »."})
+        else:
+            self._send_json(404, {"ok": False, "code": "SESSION_NOT_FOUND", "error": "Session introuvable ou déjà révoquée."})
+
+    def _post_sessions_revoke_others(self, body: Dict[str, Any], client_ip: str) -> None:
+        sess = self._require_auth(require_approved=False, check_csrf=True)
+        if not sess:
+            return
+        revoked = authsec.revoke_all_sessions(get_db(), sess["user_id"], except_token_hash=sess["token_hash"])
+        log_security_event("SESSIONS_REVOKED_ALL", severity="info", user_id=sess["user_id"], email=sess.get("email"),
+                           ip_address=client_ip, details=f"{revoked} autre(s) session(s) révoquée(s) (conserve la session courante).")
+        self._send_json(200, {"ok": True, "revoked_sessions": revoked,
+                              "message": "Tous les autres appareils ont été déconnectés."})
+
     def do_POST(self):
         ensure_web_schema_initialized()
         parsed = urlparse(self.path)
@@ -2890,6 +3308,9 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
         client_ip = self._client_ip()
 
         try:
+            if path.startswith("/api/auth/") and self._handle_auth_extension_post(path, body, client_ip):
+                return
+
             # 1. Public Authentication Routes (Login, Register, Logout)
             if path == "/api/auth/login":
                 email = (body.get("email") or "").strip().lower()
@@ -2966,12 +3387,8 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 else:
                     db.execute("UPDATE web_accounts SET last_login_at = %s WHERE LOWER(email) = %s", (time.time(), email))
 
-                token, csrf_token = _create_session(
-                    uid,
-                    row["email"],
-                    ip_address=client_ip,
-                    user_agent=self.headers.get("User-Agent", ""),
-                )
+                issued = self._issue_login_session(uid, row["email"], client_ip)
+                token, csrf_token = issued["token"], issued["csrf_token"]
                 _upsert_user_telemetry(
                     user_id=uid,
                     ip_address=client_ip,
@@ -2987,7 +3404,6 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     ip_address=client_ip,
                     details="Connexion réussie (Google + Mot de passe)." if google_sub_verified else "Connexion réussie.",
                 )
-                cookie_hdr = self._build_session_cookie_header(token)
                 self._send_json(
                     200,
                     {
@@ -2995,8 +3411,10 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         "token": token,
                         "csrf_token": csrf_token,
                         "user": _build_user_profile(uid, csrf_token=csrf_token),
+                        "session_type": issued["session_type"],
+                        "device_choice_required": issued["device_choice_required"],
                     },
-                    extra_headers=[("Set-Cookie", cookie_hdr)],
+                    extra_headers=issued["headers"],
                 )
                 return
 
@@ -3132,13 +3550,8 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     ip_address=client_ip,
                     details=f"Nouvelle inscription avec acceptation explicite des CGU ({TERMS_CURRENT_VERSION}) et consentement de collecte des données (statut={'APPROVED (Admin)' if is_explicit_admin else 'PENDING_APPROVAL'}).",
                 )
-                token, csrf_token = _create_session(
-                    uid,
-                    email,
-                    ip_address=client_ip,
-                    user_agent=self.headers.get("User-Agent", ""),
-                )
-                cookie_hdr = self._build_session_cookie_header(token)
+                issued = self._issue_login_session(uid, email, client_ip)
+                token, csrf_token = issued["token"], issued["csrf_token"]
                 self._send_json(
                     200,
                     {
@@ -3146,13 +3559,15 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         "token": token,
                         "csrf_token": csrf_token,
                         "user": _build_user_profile(uid, csrf_token=csrf_token),
+                        "session_type": issued["session_type"],
+                        "device_choice_required": issued["device_choice_required"],
                         "message": (
                             "Compte administrateur initialisé et connecté."
                             if is_explicit_admin
                             else "Compte créé avec succès et consentement aux CGU enregistré. Votre demande d'accès est en attente d'approbation par l'administrateur."
                         ),
                     },
-                    extra_headers=[("Set-Cookie", cookie_hdr)],
+                    extra_headers=issued["headers"],
                 )
                 return
 
