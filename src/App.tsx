@@ -11,12 +11,11 @@ import {
   SESSION_LOCKED_EVENT,
 } from './api';
 import {
-  ForgotPasswordView,
-  ResetPasswordView,
   DeviceChoiceView,
   SessionLockedView,
   SecuritySessionsPanel,
 } from './components/AuthFlows';
+import { AccountRecoveryView, ForcePasswordChangeView, AdminRecoveryPanel } from './components/AccountRecovery';
 import { AppLang, getInitialLang, setSavedLang, tr } from './i18n';
 import {
   UserProfile,
@@ -106,13 +105,6 @@ const STYLES = [
   { id: 'position', label: 'Position (1D)' },
 ];
 
-function parseResetRoute(): { token: string } | null {
-  if (typeof window === 'undefined') return null;
-  const path = window.location.pathname.replace(/\/+$/, '');
-  if (path !== '/reset-password') return null;
-  return { token: new URLSearchParams(window.location.search).get('token') || '' };
-}
-
 export function App() {
   const [viewMode, setViewMode] = useState<'landing' | 'workspace' | 'terms'>('workspace');
   const [returnToRegisterAfterTerms, setReturnToRegisterAfterTerms] = useState(false);
@@ -139,8 +131,8 @@ export function App() {
   const [capsLockOn, setCapsLockOn] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [authScreen, setAuthScreen] = useState<'forgot' | null>(null);
-  const [resetRoute, setResetRoute] = useState<{ token: string } | null>(parseResetRoute);
   const [deviceChoiceRequired, setDeviceChoiceRequired] = useState(false);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
   const [sessionLocked, setSessionLocked] = useState(false);
   const [sessionIdleTimeout, setSessionIdleTimeout] = useState(0);
 
@@ -469,7 +461,11 @@ export function App() {
       setSessionLocked(false);
       setDeviceChoiceRequired(Boolean(meRes.session?.device_choice_required));
       setSessionIdleTimeout(Number(meRes.session?.idle_timeout_seconds) || 0);
+      const mustChange = Boolean(meRes.session?.must_change_password);
+      setMustChangePassword(mustChange);
       setAuthChecking(false);
+      // Récupération de compte : tant que le mot de passe temporaire n'est pas remplacé, l'API refuse tout le reste.
+      if (mustChange) return;
 
       // Only load protected terminal data if the account is APPROVED
       if (!currentUser.approved && currentUser.account_status !== 'APPROVED' && !currentUser.is_admin) {
@@ -1026,6 +1022,7 @@ export function App() {
     clearStoredSession();
     setUser(null);
     setDeviceChoiceRequired(false);
+    setMustChangePassword(false);
     setSessionLocked(false);
     setSessionIdleTimeout(0);
     setAdminData(null);
@@ -1889,28 +1886,6 @@ export function App() {
     </div>
   );
 
-  const leaveResetRoute = () => {
-    window.history.replaceState({}, '', '/');
-    setResetRoute(null);
-  };
-  if (resetRoute) {
-    return (
-      <ResetPasswordView
-        lang={lang}
-        token={resetRoute.token}
-        onGoLogin={() => {
-          leaveResetRoute();
-          setViewMode('workspace');
-          setAuthModal('login');
-        }}
-        onRequestNewLink={() => {
-          leaveResetRoute();
-          setViewMode('workspace');
-          setAuthScreen('forgot');
-        }}
-      />
-    );
-  }
   if (sessionLocked) {
     return (
       <SessionLockedView
@@ -2172,7 +2147,15 @@ export function App() {
         <div className="flex-1 flex items-center justify-center py-8">
           {authScreen === 'forgot' ? (
             <div className="w-full max-w-md">
-              <ForgotPasswordView lang={lang} initialEmail={authEmail} onBackToLogin={() => setAuthScreen(null)} embedded />
+              <AccountRecoveryView
+                lang={lang}
+                initialEmail={authEmail}
+                embedded
+                onBackToLogin={() => {
+                  setAuthScreen(null);
+                  setAuthModal('login');
+                }}
+              />
             </div>
           ) : (
             authFormModal(activeAuthMode, true)
@@ -2185,6 +2168,19 @@ export function App() {
             : 'Bitsure Teddy • Authentification serveur obligatoire • Protection des accès & quotas actifs'}
         </footer>
       </div>
+    );
+  }
+
+  if (mustChangePassword) {
+    return (
+      <ForcePasswordChangeView
+        lang={lang}
+        onDone={() => {
+          setMustChangePassword(false);
+          loadUserAndCoreData();
+        }}
+        onLogout={handleLogout}
+      />
     );
   }
 
@@ -6102,6 +6098,7 @@ export function App() {
 
           {activeTab === 'admin' && isAdminUser && (
             <div className="space-y-6">
+              <AdminRecoveryPanel lang={lang} onToast={showToast} />
               {/* Direct Banner to Open Users 360° Dossier & Public Terms */}
               <div className="bg-[#0D1318] border border-[#20C997]/40 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">

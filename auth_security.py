@@ -2,15 +2,13 @@
 auth_security.py
 ----------------
 Logique de sécurité d'authentification de Bitsure :
-  - réinitialisation de mot de passe (tokens à usage unique, stockés hashés) ;
-  - politique de mot de passe (partagée reset / changement) ;
+  - politique de mot de passe (changement et récupération) ;
   - politique de sessions (appareil personnel vs partagé/public, verrouillage d'inactivité) ;
   - liste / révocation des sessions.
 
 Ce module ne dépend PAS du serveur HTTP : toutes les fonctions reçoivent un objet `db`
 (compatible `get_db()` : `db.execute(sql, params)` avec placeholders `%s`) afin d'être testables.
-Il réutilise les tables existantes (`web_accounts`, `web_sessions`, `security_events`) et n'ajoute que
-`password_reset_tokens` et `web_devices`. Le hashing des mots de passe reste celui de web_api_server
+Il réutilise les tables existantes (`web_accounts`, `web_sessions`, `security_events`) et n'ajoute que `web_devices`. Le hashing des mots de passe reste celui de web_api_server
 (PBKDF2) : il est injecté par l'appelant, jamais dupliqué ici.
 """
 
@@ -35,9 +33,6 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
     except ValueError:
         return default
 
-
-RESET_TOKEN_TTL_SECONDS = _env_int("PASSWORD_RESET_TTL_MINUTES", 30) * 60
-RESET_RESEND_COOLDOWN_SECONDS = 60
 
 PERSONAL_SESSION_SECONDS = _env_int("PERSONAL_SESSION_DAYS", 7) * 86400
 PUBLIC_SESSION_MAX_SECONDS = _env_int("PUBLIC_SESSION_MAX_HOURS", 12) * 3600
@@ -71,21 +66,6 @@ def _add_column(db, table: str, column_def: str) -> None:
 def ensure_schema(db) -> None:
     db.execute(
         """
-        CREATE TABLE IF NOT EXISTS password_reset_tokens (
-            token_hash TEXT PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            email TEXT,
-            created_at DOUBLE PRECISION DEFAULT 0,
-            expires_at DOUBLE PRECISION DEFAULT 0,
-            used_at DOUBLE PRECISION DEFAULT 0,
-            invalidated_at DOUBLE PRECISION DEFAULT 0,
-            requested_ip TEXT
-        )
-        """
-    )
-    db.execute("CREATE INDEX IF NOT EXISTS idx_pwreset_user ON password_reset_tokens (user_id)")
-    db.execute(
-        """
         CREATE TABLE IF NOT EXISTS web_devices (
             user_id BIGINT NOT NULL,
             device_hash TEXT NOT NULL,
@@ -105,6 +85,7 @@ def ensure_session_columns(db) -> None:
     _add_column(db, "web_sessions", "device_hash TEXT")
     _add_column(db, "web_sessions", "last_activity_at DOUBLE PRECISION DEFAULT 0")
     _add_column(db, "web_sessions", "locked_at DOUBLE PRECISION DEFAULT 0")
+    _add_column(db, "web_sessions", "must_change_password INTEGER DEFAULT 0")
 
 
 # ---------------------------------------------------------------------
@@ -174,176 +155,6 @@ class SlidingWindowLimiter:
     def reset(self) -> None:
         with self._lock:
             self._events.clear()
-
-
-# 3 demandes / heure / email et 10 / heure / IP ; cooldown de 60 s entre deux demandes pour un même email.
-# Les compteurs s'appliquent à toute adresse saisie (existante ou non) : ils ne révèlent donc rien.
-reset_email_limiter = SlidingWindowLimiter(3, 3600)
-reset_ip_limiter = SlidingWindowLimiter(10, 3600)
-reset_cooldown_limiter = SlidingWindowLimiter(1, RESET_RESEND_COOLDOWN_SECONDS)
-reset_confirm_ip_limiter = SlidingWindowLimiter(20, 900)
-
-
-def check_reset_request_allowed(ip: str, email: str, now: Optional[float] = None) -> Tuple[bool, int]:
-    ok, wait = reset_cooldown_limiter.check_and_record(f"cd:{email}", now)
-    if not ok:
-        return False, wait
-    ok, wait = reset_ip_limiter.check_and_record(f"ip:{ip}", now)
-    if not ok:
-        return False, wait
-    ok, wait = reset_email_limiter.check_and_record(f"em:{email}", now)
-    if not ok:
-        return False, wait
-    return True, 0
-
-
-# ---------------------------------------------------------------------
-# Tokens de réinitialisation
-# ---------------------------------------------------------------------
-
-def hash_reset_token(raw: str) -> str:
-    return hashlib.sha256((raw or "").encode("utf-8")).hexdigest()
-
-
-def create_reset_token(db, user_id: int, email: str, ip: str, now: Optional[float] = None) -> str:
-    """Crée un token (renvoyé en clair UNE fois, seul son hash est stocké) et invalide les précédents."""
-    now = time.time() if now is None else now
-    raw = secrets.token_urlsafe(32)
-    db.execute(
-        "UPDATE password_reset_tokens SET invalidated_at = %s WHERE user_id = %s AND used_at = 0 AND invalidated_at = 0",
-        (now, int(user_id)),
-    )
-    db.execute(
-        """
-        INSERT INTO password_reset_tokens (token_hash, user_id, email, created_at, expires_at, used_at, invalidated_at, requested_ip)
-        VALUES (%s, %s, %s, %s, %s, 0, 0, %s)
-        """,
-        (hash_reset_token(raw), int(user_id), email, now, now + RESET_TOKEN_TTL_SECONDS, (ip or "")[:64]),
-    )
-    return raw
-
-
-def invalidate_reset_token(db, raw: str, now: Optional[float] = None) -> None:
-    db.execute(
-        "UPDATE password_reset_tokens SET invalidated_at = %s WHERE token_hash = %s AND used_at = 0",
-        (time.time() if now is None else now, hash_reset_token(raw)),
-    )
-
-
-def inspect_reset_token(db, raw: str, now: Optional[float] = None) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Retourne (état, ligne) avec état ∈ valid | invalid | expired | used."""
-    now = time.time() if now is None else now
-    if not raw or len(raw) > 200:
-        return "invalid", None
-    row = db.execute(
-        "SELECT token_hash, user_id, email, expires_at, used_at, invalidated_at FROM password_reset_tokens WHERE token_hash = %s",
-        (hash_reset_token(raw),),
-    ).fetchone()
-    if not row:
-        return "invalid", None
-    if float(row["used_at"] or 0) > 0:
-        return "used", row
-    if float(row["invalidated_at"] or 0) > 0:
-        # remplacé par un lien plus récent : pour l'utilisateur, ce lien n'est plus valable
-        return "invalid", row
-    if float(row["expires_at"] or 0) <= now:
-        return "expired", row
-    return "valid", row
-
-
-def claim_reset_token(db, raw: str, now: Optional[float] = None) -> bool:
-    """Marque le token comme utilisé de façon atomique. True seulement pour le premier appelant."""
-    now = time.time() if now is None else now
-    cur = db.execute(
-        """
-        UPDATE password_reset_tokens SET used_at = %s
-        WHERE token_hash = %s AND used_at = 0 AND invalidated_at = 0 AND expires_at > %s
-        """,
-        (now, hash_reset_token(raw), now),
-    )
-    return int(getattr(cur, "rowcount", 0) or 0) == 1
-
-
-def release_reset_token(db, raw: str) -> None:
-    db.execute("UPDATE password_reset_tokens SET used_at = 0 WHERE token_hash = %s", (hash_reset_token(raw),))
-
-
-def apply_password_reset(
-    db,
-    raw_token: str,
-    new_password: str,
-    confirm_password: str,
-    hash_password: Callable[[str], str],
-    now: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Valide et applique une réinitialisation. Toutes les validations sont faites ici (jamais côté client seul).
-
-    Retourne {"ok": True, "user_id", "email"} ou {"ok": False, "code", "http", "rules"?}.
-    Codes : TOKEN_INVALID | TOKEN_EXPIRED | TOKEN_USED | PASSWORD_MISMATCH | PASSWORD_WEAK | ACCOUNT_NOT_FOUND | RESET_FAILED
-    """
-    now = time.time() if now is None else now
-    state, row = inspect_reset_token(db, raw_token, now)
-    if state != "valid":
-        return {"ok": False, "code": {"invalid": "TOKEN_INVALID", "expired": "TOKEN_EXPIRED", "used": "TOKEN_USED"}[state], "http": 400}
-
-    email = str(row["email"] or "")
-    if (new_password or "") != (confirm_password or ""):
-        return {"ok": False, "code": "PASSWORD_MISMATCH", "http": 400}
-    rules = validate_password(new_password, email)
-    if rules:
-        return {"ok": False, "code": "PASSWORD_WEAK", "http": 400, "rules": rules}
-
-    if not claim_reset_token(db, raw_token, now):
-        # perdu une course (double soumission) : relire l'état pour répondre précisément
-        state2, _ = inspect_reset_token(db, raw_token, now)
-        return {"ok": False, "code": "TOKEN_USED" if state2 == "used" else "TOKEN_INVALID", "http": 400}
-
-    try:
-        user_id = int(row["user_id"])
-        acct = db.execute("SELECT email FROM web_accounts WHERE user_id = %s", (user_id,)).fetchone()
-        if not acct:
-            release_reset_token(db, raw_token)
-            return {"ok": False, "code": "ACCOUNT_NOT_FOUND", "http": 400}
-        db.execute("UPDATE web_accounts SET password_hash = %s WHERE user_id = %s", (hash_password(new_password), user_id))
-        revoke_all_sessions(db, user_id)
-        db.execute(
-            "UPDATE password_reset_tokens SET invalidated_at = %s WHERE user_id = %s AND used_at = 0 AND invalidated_at = 0",
-            (now, user_id),
-        )
-    except Exception:
-        try:
-            release_reset_token(db, raw_token)
-        except Exception:
-            pass
-        raise
-    return {"ok": True, "user_id": user_id, "email": email}
-
-
-def request_password_reset(
-    db,
-    email: str,
-    ip: str,
-    app_url: str,
-    send: Callable[[str, str], Any],
-    now: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Traitement serveur d'une demande (appelé en arrière-plan : la réponse HTTP est générique).
-
-    `send(to_email, reset_url)` doit retourner un objet avec `.ok`. Retourne un résumé pour la journalisation
-    (jamais le token). outcome ∈ NO_ACCOUNT | NO_APP_URL | SENT | SEND_FAILED
-    """
-    now = time.time() if now is None else now
-    acct = db.execute("SELECT email, user_id FROM web_accounts WHERE LOWER(email) = %s", (email,)).fetchone()
-    if not acct:
-        return {"outcome": "NO_ACCOUNT"}
-    if not app_url:
-        return {"outcome": "NO_APP_URL", "user_id": int(acct["user_id"])}
-    raw = create_reset_token(db, int(acct["user_id"]), acct["email"], ip, now)
-    result = send(acct["email"], f"{app_url.rstrip('/')}/reset-password?token={raw}")
-    if not getattr(result, "ok", False):
-        invalidate_reset_token(db, raw, now)  # un lien jamais livré ne doit pas rester valable
-        return {"outcome": "SEND_FAILED", "user_id": int(acct["user_id"]), "error_code": getattr(result, "error_code", None)}
-    return {"outcome": "SENT", "user_id": int(acct["user_id"])}
 
 
 # ---------------------------------------------------------------------

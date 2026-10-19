@@ -62,7 +62,7 @@ from config import (
 )
 from payments import generate_binance_payment
 import auth_security as authsec
-import email_service
+import account_recovery as recovery
 from data_fetcher import DataFetcher
 from database import get_connection, get_db
 from decision_journal import decision_journal
@@ -259,6 +259,7 @@ def _init_web_schema_and_seed():
         pass
     try:
         authsec.ensure_schema(db)  # reset de mot de passe, appareils, colonnes de session (type / activité / verrouillage)
+        recovery.ensure_schema(db)  # récupération de compte interne (demandes, suivi, messages)
     except Exception as e:
         logger.warning("auth_security schema init warning: %s", e)
 
@@ -502,6 +503,7 @@ def _create_session(
     user_agent: str = "",
     session_type: str = authsec.SESSION_PERSONAL,
     device_hash: str = "",
+    must_change_password: bool = False,
 ) -> Tuple[str, str]:
     raw_token = secrets.token_hex(32)
     token_hash = _hash_session_token(raw_token)
@@ -520,13 +522,14 @@ def _create_session(
         """
         INSERT INTO web_sessions (
             token, token_hash, user_id, email, csrf_token, ip_address, user_agent, created_at, expires_at,
-            session_type, device_hash, last_activity_at, locked_at
+            session_type, device_hash, last_activity_at, locked_at, must_change_password
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s)
         """,
         (
             token_hash, token_hash, int(user_id), email, csrf_token, ip_address[:64], user_agent[:200], now,
             now + authsec.session_lifetime_seconds(session_type), session_type, device_hash or "", now,
+            1 if must_change_password else 0,
         ),
     )
     return raw_token, csrf_token
@@ -1372,7 +1375,7 @@ def _lookup_session(headers) -> Tuple[Optional[Dict[str, Any]], str]:
     row = db.execute(
         """
         SELECT token, token_hash, user_id, email, csrf_token, created_at, expires_at,
-               session_type, device_hash, last_activity_at, locked_at
+               session_type, device_hash, last_activity_at, locked_at, must_change_password
         FROM web_sessions WHERE token_hash = %s OR token = %s
         """,
         (token_hash, token_hash),
@@ -1420,6 +1423,7 @@ def _lookup_session(headers) -> Tuple[Optional[Dict[str, Any]], str]:
         "session_type": row.get("session_type") or authsec.SESSION_PERSONAL,
         "device_hash": row.get("device_hash") or "",
         "created_at": float(row.get("created_at") or 0),
+        "must_change_password": bool(int(row.get("must_change_password") or 0)),
     }, ""
 
 
@@ -1956,7 +1960,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
         raw = (cookies.get(authsec.DEVICE_COOKIE_NAME) or "").strip()
         return raw if 16 <= len(raw) <= 128 else ""
 
-    def _issue_login_session(self, uid: int, email: str, client_ip: str) -> Dict[str, Any]:
+    def _issue_login_session(self, uid: int, email: str, client_ip: str, must_change_password: bool = False) -> Dict[str, Any]:
         """Crée la session d'une connexion/inscription en appliquant la politique appareil personnel / partagé.
 
         Appareil reconnu (cookie d'appareil + choix déjà enregistré) -> type hérité.
@@ -1976,6 +1980,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             user_agent=self.headers.get("User-Agent", ""),
             session_type=session_type,
             device_hash=device_hash,
+            must_change_password=must_change_password,
         )
         cookie_age = authsec.session_lifetime_seconds(session_type)
         headers = [
@@ -1988,6 +1993,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             "headers": headers,
             "session_type": session_type,
             "device_choice_required": session_type == authsec.SESSION_PENDING,
+            "must_change_password": must_change_password,
         }
 
     def _send_json(self, status_code: int, payload: Any, extra_headers: Optional[List[Tuple[str, str]]] = None):
@@ -2056,6 +2062,17 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     "code": "UNAUTHENTICATED",
                     "error": "Authentification requise. Veuillez vous connecter.",
                 })
+            return None
+
+        if sess.get("must_change_password") and urlparse(self.path).path not in (
+            "/api/auth/password/force-change",
+            "/api/auth/logout",
+        ):
+            self._send_json(403, {
+                "ok": False,
+                "code": "PASSWORD_CHANGE_REQUIRED",
+                "error": "Vous devez choisir un nouveau mot de passe avant de continuer.",
+            })
             return None
 
         method = (getattr(self, "command", "") or "POST").upper()
@@ -2501,6 +2518,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     "session": {
                         "type": sess.get("session_type"),
                         "device_choice_required": sess.get("session_type") == authsec.SESSION_PENDING,
+                        "must_change_password": bool(sess.get("must_change_password")),
                         "idle_timeout_seconds": authsec.PUBLIC_IDLE_TIMEOUT_SECONDS
                         if sess.get("session_type") in (authsec.SESSION_PUBLIC, authsec.SESSION_PENDING) else 0,
                     },
@@ -2520,6 +2538,10 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
             user_id = int(sess["user_id"])
             is_admin = bool(sess.get("is_admin"))
+
+            if path.startswith("/api/admin/recovery/"):
+                self._handle_recovery_admin_get(path, query, sess)
+                return
 
             if path == "/api/market/tickers":
                 fetcher = DataFetcher.get_instance()
@@ -3029,8 +3051,8 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"ok": False, "error": f"Erreur serveur ({path}) : {e}"})
 
     # ------------------------------------------------------------------
-    # Mot de passe oublié, changement de mot de passe, sessions & appareils
-    # (logique métier dans auth_security.py ; envoi d'email dans email_service.py)
+    # Changement de mot de passe, sessions & appareils
+    # (logique métier dans auth_security.py)
     # ------------------------------------------------------------------
 
     _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]{2,}$")
@@ -3059,13 +3081,14 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
     def _handle_auth_extension_post(self, path: str, body: Dict[str, Any], client_ip: str) -> bool:
         """Retourne True si la route a été traitée. Les erreurs internes ne sont jamais exposées au client."""
         handlers = {
-            "/api/auth/forgot-password": self._post_forgot_password,
-            "/api/auth/reset-password/validate": self._post_reset_validate,
-            "/api/auth/reset-password": self._post_reset_password,
             "/api/auth/change-password": self._post_change_password,
             "/api/auth/session/device": self._post_session_device,
             "/api/auth/sessions/revoke": self._post_sessions_revoke,
             "/api/auth/sessions/revoke-others": self._post_sessions_revoke_others,
+            "/api/auth/recovery/request": self._post_recovery_request,
+            "/api/auth/recovery/status": self._post_recovery_status,
+            "/api/auth/recovery/message": self._post_recovery_message,
+            "/api/auth/password/force-change": self._post_force_change,
         }
         handler = handlers.get(path)
         if handler is None:
@@ -3080,136 +3103,6 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 "error": "Une erreur est survenue de notre côté. Veuillez réessayer dans quelques instants.",
             })
         return True
-
-    def _post_forgot_password(self, body: Dict[str, Any], client_ip: str) -> None:
-        email = (body.get("email") or "").strip().lower()
-        lang = "en" if str(body.get("lang") or "").lower().startswith("en") else "fr"
-        if not email or len(email) > 254 or not self._EMAIL_RE.match(email):
-            self._send_json(400, {"ok": False, "code": "INVALID_EMAIL", "error": "Veuillez saisir une adresse email valide."})
-            return
-        # Indépendant de l'existence du compte : ne révèle rien.
-        if not email_service.is_configured():
-            self._send_json(503, {
-                "ok": False,
-                "code": "EMAIL_UNAVAILABLE",
-                "error": "L'envoi d'emails de récupération n'est pas disponible pour le moment. Veuillez réessayer plus tard.",
-            })
-            return
-        allowed, wait = authsec.check_reset_request_allowed(client_ip, email)
-        if not allowed:
-            log_security_event(
-                "PASSWORD_RESET_RATE_LIMITED", severity="warning", email=email, ip_address=client_ip,
-                details="Demande de réinitialisation limitée (trop de demandes).",
-            )
-            self._send_json(429, {
-                "ok": False,
-                "code": "RATE_LIMITED",
-                "retry_after": wait,
-                "error": f"Trop de demandes. Veuillez patienter {wait} s avant de réessayer.",
-            })
-            return
-
-        ttl_minutes = max(1, authsec.RESET_TOKEN_TTL_SECONDS // 60)
-
-        def _send(to_email: str, reset_url: str):
-            subject, html, text = email_service.render_password_reset_email(reset_url, ttl_minutes, lang)
-            return email_service.send_email(to_email, subject, html, text)
-
-        def _work() -> None:
-            try:
-                result = authsec.request_password_reset(get_db(), email, client_ip, APP_URL, _send)
-                outcome = result.get("outcome")
-                if outcome == "SENT":
-                    log_security_event("PASSWORD_RESET_REQUESTED", user_id=result.get("user_id"), email=email,
-                                       ip_address=client_ip, details="Email de réinitialisation envoyé.")
-                elif outcome == "SEND_FAILED":
-                    log_security_event("PASSWORD_RESET_EMAIL_FAILED", severity="warning", user_id=result.get("user_id"),
-                                       email=email, ip_address=client_ip,
-                                       details=f"Le fournisseur d'emails a refusé l'envoi ({result.get('error_code')}).")
-                elif outcome == "NO_APP_URL":
-                    log_security_event("PASSWORD_RESET_EMAIL_FAILED", severity="warning", user_id=result.get("user_id"),
-                                       email=email, ip_address=client_ip,
-                                       details="APP_URL non configurée : lien impossible à construire.")
-                else:
-                    log_security_event("PASSWORD_RESET_REQUESTED", email=email, ip_address=client_ip,
-                                       details="Demande pour une adresse sans compte (aucun email envoyé).")
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Password reset worker error: %s", type(exc).__name__)
-
-        # Traitement en arrière-plan : le temps de réponse ne dépend pas de l'existence du compte.
-        threading.Thread(target=_work, name="pwreset", daemon=True).start()
-        self._send_json(200, {
-            "ok": True,
-            "cooldown_seconds": authsec.RESET_RESEND_COOLDOWN_SECONDS,
-            "message": "Si un compte correspond à cette adresse, un email de récupération vient d'être envoyé.",
-        })
-
-    def _post_reset_validate(self, body: Dict[str, Any], client_ip: str) -> None:
-        allowed, wait = authsec.reset_confirm_ip_limiter.check_and_record(f"v:{client_ip}")
-        if not allowed:
-            self._send_json(429, {"ok": False, "code": "RATE_LIMITED", "retry_after": wait,
-                                  "error": "Trop de tentatives. Veuillez patienter avant de réessayer."})
-            return
-        state, _row = authsec.inspect_reset_token(get_db(), str(body.get("token") or ""))
-        if state == "valid":
-            self._send_json(200, {"ok": True, "state": "valid", "ttl_minutes": authsec.RESET_TOKEN_TTL_SECONDS // 60})
-            return
-        code = {"invalid": "TOKEN_INVALID", "expired": "TOKEN_EXPIRED", "used": "TOKEN_USED"}[state]
-        messages = {
-            "TOKEN_INVALID": "Lien de réinitialisation invalide.",
-            "TOKEN_EXPIRED": "Ce lien a expiré.",
-            "TOKEN_USED": "Ce lien a déjà été utilisé.",
-        }
-        self._send_json(400, {"ok": False, "code": code, "error": messages[code]})
-
-    def _post_reset_password(self, body: Dict[str, Any], client_ip: str) -> None:
-        allowed, wait = authsec.reset_confirm_ip_limiter.check_and_record(f"r:{client_ip}")
-        if not allowed:
-            self._send_json(429, {"ok": False, "code": "RATE_LIMITED", "retry_after": wait,
-                                  "error": "Trop de tentatives. Veuillez patienter avant de réessayer."})
-            return
-        result = authsec.apply_password_reset(
-            get_db(),
-            str(body.get("token") or ""),
-            str(body.get("password") or ""),
-            str(body.get("confirm_password") or ""),
-            _hash_password_secure,
-        )
-        if not result["ok"]:
-            code = result["code"]
-            messages = {
-                "TOKEN_INVALID": "Lien de réinitialisation invalide.",
-                "TOKEN_EXPIRED": "Ce lien a expiré.",
-                "TOKEN_USED": "Ce lien a déjà été utilisé.",
-                "PASSWORD_MISMATCH": "Les deux mots de passe ne correspondent pas.",
-                "PASSWORD_WEAK": "Le mot de passe ne respecte pas les règles de sécurité.",
-                "ACCOUNT_NOT_FOUND": "Lien de réinitialisation invalide.",
-            }
-            payload = {"ok": False, "code": code, "error": messages.get(code, "Réinitialisation impossible.")}
-            if result.get("rules"):
-                payload.update(self._password_rule_payload(result["rules"]))
-            self._send_json(result.get("http", 400), payload)
-            return
-        log_security_event(
-            "PASSWORD_RESET_COMPLETED", severity="info", user_id=result["user_id"], email=result["email"],
-            ip_address=client_ip, details="Mot de passe réinitialisé via lien ; toutes les sessions ont été révoquées.",
-        )
-        self._notify_password_changed(result["email"])
-        self._send_json(200, {"ok": True, "message": "Mot de passe réinitialisé."})
-
-    def _notify_password_changed(self, email: str) -> None:
-        """Email d'information (best effort, en arrière-plan). N'affecte jamais le résultat du changement."""
-        if not email_service.is_configured():
-            return
-
-        def _work() -> None:
-            try:
-                subject, html, text = email_service.render_password_changed_email()
-                email_service.send_email(email, subject, html, text)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Password changed notification error: %s", type(exc).__name__)
-
-        threading.Thread(target=_work, name="pwchanged", daemon=True).start()
 
     def _post_change_password(self, body: Dict[str, Any], client_ip: str) -> None:
         sess = self._require_auth(require_approved=False, check_csrf=True)
@@ -3245,15 +3138,11 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             return
         _clear_auth_failures(client_ip, email)
         db.execute("UPDATE web_accounts SET password_hash = %s WHERE user_id = %s", (_hash_password_secure(new_pw), int(sess["user_id"])))
+        self._safe_invalidate_temp(int(sess["user_id"]))
         # Politique : la session courante est conservée, toutes les autres sont révoquées.
         revoked = authsec.revoke_all_sessions(db, sess["user_id"], except_token_hash=sess["token_hash"])
-        db.execute(
-            "UPDATE password_reset_tokens SET invalidated_at = %s WHERE user_id = %s AND used_at = 0 AND invalidated_at = 0",
-            (time.time(), int(sess["user_id"])),
-        )
         log_security_event("PASSWORD_CHANGED", severity="info", user_id=sess["user_id"], email=email, ip_address=client_ip,
                            details=f"Mot de passe modifié ; {revoked} autre(s) session(s) révoquée(s).")
-        self._notify_password_changed(email)
         self._send_json(200, {"ok": True, "revoked_sessions": revoked,
                               "message": "Mot de passe modifié. Vos autres appareils ont été déconnectés."})
 
@@ -3299,6 +3188,196 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                            ip_address=client_ip, details=f"{revoked} autre(s) session(s) révoquée(s) (conserve la session courante).")
         self._send_json(200, {"ok": True, "revoked_sessions": revoked,
                               "message": "Tous les autres appareils ont été déconnectés."})
+
+    # ------------------------------------------------------------------
+    # Récupération de compte interne (demande -> examen admin -> mot de passe temporaire)
+    # ------------------------------------------------------------------
+
+    def _safe_invalidate_temp(self, user_id: int) -> None:
+        try:
+            recovery.invalidate_temp_for_user(get_db(), user_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Recovery temp invalidation skipped: %s", type(exc).__name__)
+
+    def _request_session_hash(self) -> str:
+        token = _extract_session_token(self.headers)
+        return _hash_session_token(token) if token else ""
+
+    def _post_recovery_request(self, body: Dict[str, Any], client_ip: str) -> None:
+        email = (body.get("email") or "").strip().lower()
+        if not email or len(email) > 254 or not self._EMAIL_RE.match(email):
+            self._send_json(400, {"ok": False, "code": "INVALID_EMAIL", "error": "Veuillez saisir une adresse email valide."})
+            return
+        raw_device = self._device_cookie_raw()
+        device_hash = authsec.hash_device_id(raw_device) if raw_device else ""
+        allowed, wait = recovery.check_request_allowed(client_ip, email, device_hash)
+        if not allowed:
+            log_security_event("RECOVERY_RATE_LIMITED", severity="warning", ip_address=client_ip,
+                               details="Demande de récupération limitée (trop de demandes).")
+            self._send_json(429, {"ok": False, "code": "RATE_LIMITED", "retry_after": wait,
+                                  "error": "Trop de demandes de récupération. Veuillez réessayer plus tard."})
+            return
+        result = recovery.create_request(
+            get_db(), email, client_ip, self.headers.get("User-Agent", ""), device_hash,
+            self._request_session_hash(), str(body.get("note") or ""),
+        )
+        if result.get("created") and not result.get("orphan"):
+            log_security_event("RECOVERY_REQUESTED", user_id=result.get("user_id"), ip_address=client_ip,
+                               details=f"Demande de récupération {result['request_id']} créée.")
+        # Réponse identique que le compte existe ou non (anti-énumération).
+        self._send_json(200, {
+            "ok": True,
+            "request_id": result["request_id"],
+            "tracking_token": result["tracking_token"],
+            "message": "Votre demande de récupération a été transmise à l'administration de Bitsure.",
+        })
+
+    def _post_recovery_status(self, body: Dict[str, Any], client_ip: str) -> None:
+        allowed, wait = recovery.status_ip_limiter.check_and_record(f"s:{client_ip}")
+        if not allowed:
+            self._send_json(429, {"ok": False, "code": "RATE_LIMITED", "retry_after": wait, "error": "Trop de requêtes. Veuillez patienter."})
+            return
+        status = recovery.get_public_status(get_db(), str(body.get("token") or ""))
+        if not status:
+            self._send_json(404, {"ok": False, "code": "REQUEST_NOT_FOUND", "error": "Demande introuvable."})
+            return
+        self._send_json(200, {"ok": True, "request": status})
+
+    def _post_recovery_message(self, body: Dict[str, Any], client_ip: str) -> None:
+        allowed, wait = recovery.message_ip_limiter.check_and_record(f"m:{client_ip}")
+        if not allowed:
+            self._send_json(429, {"ok": False, "code": "RATE_LIMITED", "retry_after": wait, "error": "Trop de messages. Veuillez patienter."})
+            return
+        outcome = recovery.user_add_message(get_db(), str(body.get("token") or ""), str(body.get("body") or ""))
+        if outcome == "ok":
+            self._send_json(200, {"ok": True})
+        elif outcome == "closed":
+            self._send_json(409, {"ok": False, "code": "REQUEST_CLOSED", "error": "Cette demande est clôturée."})
+        elif outcome == "not_found":
+            self._send_json(404, {"ok": False, "code": "REQUEST_NOT_FOUND", "error": "Demande introuvable."})
+        else:
+            self._send_json(400, {"ok": False, "code": "INVALID_MESSAGE", "error": "Message invalide (vide ou trop long)."})
+
+    def _post_force_change(self, body: Dict[str, Any], client_ip: str) -> None:
+        sess = self._require_auth(require_approved=False, check_csrf=True)
+        if not sess:
+            return
+        if not sess.get("must_change_password"):
+            self._send_json(400, {"ok": False, "code": "NOT_REQUIRED", "error": "Aucun changement obligatoire en cours."})
+            return
+        email = (sess.get("email") or "").strip().lower()
+        new_pw = str(body.get("new_password") or "")
+        confirm = str(body.get("confirm_password") or "")
+        if new_pw != confirm:
+            self._send_json(400, {"ok": False, "code": "PASSWORD_MISMATCH", "error": "Les deux mots de passe ne correspondent pas."})
+            return
+        rules = authsec.validate_password(new_pw, email)
+        if rules:
+            payload = {"ok": False, "code": "PASSWORD_WEAK", "error": "Le mot de passe ne respecte pas les règles de sécurité."}
+            payload.update(self._password_rule_payload(rules))
+            self._send_json(400, payload)
+            return
+        db = get_db()
+        req = db.execute(
+            "SELECT temp_hash FROM password_recovery_requests WHERE user_id = %s AND status = %s ORDER BY reviewed_at DESC LIMIT 1",
+            (int(sess["user_id"]), recovery.ST_APPROVED),
+        ).fetchone()
+        if req and req["temp_hash"] and _verify_password_secure(new_pw, req["temp_hash"]):
+            self._send_json(400, {"ok": False, "code": "PASSWORD_UNCHANGED",
+                                  "error": "Le nouveau mot de passe doit être différent du mot de passe temporaire."})
+            return
+        result = recovery.complete_recovery(db, int(sess["user_id"]), _hash_password_secure(new_pw), sess["token_hash"])
+        log_security_event("RECOVERY_PASSWORD_CHANGED", severity="info", user_id=sess["user_id"], email=email, ip_address=client_ip,
+                           details=f"Mot de passe définitif choisi (demande {result['request_id']}) ; mot de passe temporaire invalidé ; "
+                                   f"{result['revoked_sessions']} autre(s) session(s) révoquée(s).")
+        self._send_json(200, {"ok": True, "revoked_sessions": result["revoked_sessions"],
+                              "message": "Mot de passe modifié. Vous pouvez continuer."})
+
+    # --- Administration (routes /api/admin/recovery/*, déjà protégées par require_admin) ---
+
+    def _handle_recovery_admin_get(self, path: str, query: Dict[str, str], sess: Dict[str, Any]) -> None:
+        db = get_db()
+        if path == "/api/admin/recovery/requests":
+            self._send_json(200, {"ok": True, "requests": recovery.list_requests(db, query.get("status", ""))})
+            return
+        if path == "/api/admin/recovery/request":
+            detail = recovery.get_request_detail(db, query.get("id", ""))
+            if not detail:
+                self._send_json(404, {"ok": False, "code": "REQUEST_NOT_FOUND", "error": "Demande introuvable."})
+                return
+            self._send_json(200, {"ok": True, "request": detail})
+            return
+        self._send_json(404, {"ok": False, "error": "Route introuvable."})
+
+    def _handle_recovery_admin_post(self, path: str, body: Dict[str, Any], sess: Dict[str, Any], client_ip: str) -> None:
+        try:
+            self._recovery_admin_post(path, body, sess, client_ip)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Recovery admin %s error: %s\n%s", path, type(exc).__name__, traceback.format_exc())
+            self._send_json(500, {"ok": False, "code": "SERVER_ERROR", "error": "Une erreur interne est survenue. Aucune modification n'a été confirmée."})
+
+    def _recovery_admin_post(self, path: str, body: Dict[str, Any], sess: Dict[str, Any], client_ip: str) -> None:
+        db = get_db()
+        admin_id = int(sess["user_id"])
+        rid = str(body.get("id") or "")
+        detail = recovery.get_request_detail(db, rid)
+        if not detail:
+            self._send_json(404, {"ok": False, "code": "REQUEST_NOT_FOUND", "error": "Demande introuvable."})
+            return
+        target_uid = int(detail["user"]["user_id"])
+        action = path.rsplit("/", 1)[-1]
+
+        if action == "message":
+            ok = recovery.add_message(db, rid, "admin", str(body.get("body") or ""))
+            self._send_json(200 if ok else 400, {"ok": ok, **({} if ok else {"code": "INVALID_MESSAGE", "error": "Message invalide ou limite atteinte."})})
+            return
+        if action == "review":
+            ok = recovery.mark_review(db, rid, admin_id)
+            if ok:
+                log_security_event("RECOVERY_REVIEWED", user_id=admin_id, email=sess.get("email"), ip_address=client_ip,
+                                   details=f"Demande {rid} prise en examen.")
+            self._send_json(200, {"ok": True, "changed": ok})
+            return
+
+        # Actions sensibles : confirmation explicite obligatoire côté serveur.
+        if body.get("confirm") is not True:
+            self._send_json(400, {"ok": False, "code": "CONFIRMATION_REQUIRED", "error": "Confirmation requise pour cette action."})
+            return
+
+        if action == "approve":
+            result = recovery.approve_request(db, rid, admin_id, _hash_password_secure, revoke_sessions=bool(body.get("revoke_sessions", True)))
+            if not result:
+                self._send_json(409, {"ok": False, "code": "NOT_APPROVABLE", "error": "Cette demande n'est plus approuvable (déjà traitée ou expirée)."})
+                return
+            # Le mot de passe temporaire n'est ni journalisé ni stocké en clair : il est renvoyé UNE seule fois.
+            log_security_event("RECOVERY_APPROVED", severity="warning", user_id=admin_id, email=sess.get("email"), ip_address=client_ip,
+                               details=f"Demande {rid} approuvée ; mot de passe temporaire généré (valide jusqu'à {int(result['expires_at'])}).")
+            self._send_json(200, {"ok": True, "temp_password": result["temp_password"], "expires_at": result["expires_at"],
+                                  "message": "Mot de passe temporaire généré. Il ne sera plus affichable."})
+            return
+        if action == "reject":
+            if not recovery.reject_request(db, rid, admin_id, str(body.get("reason") or "")):
+                self._send_json(409, {"ok": False, "code": "NOT_REJECTABLE", "error": "Cette demande ne peut plus être refusée."})
+                return
+            log_security_event("RECOVERY_REJECTED", user_id=admin_id, email=sess.get("email"), ip_address=client_ip,
+                               details=f"Demande {rid} refusée.")
+            self._send_json(200, {"ok": True})
+            return
+        if action == "request-info":
+            if not recovery.request_more_info(db, rid, admin_id, str(body.get("message") or "")):
+                self._send_json(409, {"ok": False, "code": "NOT_UPDATABLE", "error": "Message vide ou demande déjà clôturée."})
+                return
+            log_security_event("RECOVERY_INFO_REQUESTED", user_id=admin_id, email=sess.get("email"), ip_address=client_ip,
+                               details=f"Vérification supplémentaire demandée pour {rid}.")
+            self._send_json(200, {"ok": True})
+            return
+        if action == "revoke-sessions":
+            n = authsec.revoke_all_sessions(db, target_uid)
+            log_security_event("RECOVERY_SESSIONS_REVOKED", severity="warning", user_id=admin_id, email=sess.get("email"), ip_address=client_ip,
+                               details=f"{n} session(s) du compte concerné par {rid} révoquée(s) par l'administrateur.")
+            self._send_json(200, {"ok": True, "revoked_sessions": n})
+            return
+        self._send_json(404, {"ok": False, "error": "Action inconnue."})
 
     def do_POST(self):
         ensure_web_schema_initialized()
@@ -3358,7 +3437,15 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     return
 
                 row = db.execute("SELECT * FROM web_accounts WHERE LOWER(email) = %s", (email,)).fetchone()
-                if not row or not _verify_password_secure(password, row["password_hash"] or ""):
+                temp_login = None
+                if row and not _verify_password_secure(password, row["password_hash"] or ""):
+                    # Mot de passe temporaire issu d'une récupération approuvée par l'administration (si valide et non expiré)
+                    try:
+                        temp_login = recovery.verify_temp_login(db, int(row["user_id"]), password, _verify_password_secure)
+                    except Exception as exc:  # la récupération ne doit jamais empêcher un login normal
+                        logger.warning("Recovery temp-password check unavailable: %s", type(exc).__name__)
+                        temp_login = None
+                if not row or (temp_login is None and not _verify_password_secure(password, row["password_hash"] or "")):
                     _record_auth_failure(client_ip, email)
                     log_security_event(
                         "LOGIN_FAILED",
@@ -3372,8 +3459,19 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
                 _clear_auth_failures(client_ip, email)
                 uid = int(row["user_id"])
+                if temp_login is None:
+                    # Connexion normale réussie : un éventuel mot de passe temporaire en attente n'a plus lieu d'être.
+                    try:
+                        recovery.invalidate_temp_for_user(db, uid)
+                    except Exception:
+                        pass
+                else:
+                    log_security_event(
+                        "RECOVERY_TEMP_LOGIN", severity="warning", user_id=uid, email=row["email"], ip_address=client_ip,
+                        details=f"Connexion avec le mot de passe temporaire de la demande {temp_login['id']} ; changement obligatoire.",
+                    )
                 # Upgrade legacy SHA-256 hash to PBKDF2-HMAC-SHA256 transparently on valid login
-                if not str(row["password_hash"] or "").startswith("pbkdf2_sha256$"):
+                if temp_login is None and not str(row["password_hash"] or "").startswith("pbkdf2_sha256$"):
                     db.execute(
                         "UPDATE web_accounts SET password_hash = %s WHERE LOWER(email) = %s",
                         (_hash_password_secure(password), email),
@@ -3387,7 +3485,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 else:
                     db.execute("UPDATE web_accounts SET last_login_at = %s WHERE LOWER(email) = %s", (time.time(), email))
 
-                issued = self._issue_login_session(uid, row["email"], client_ip)
+                issued = self._issue_login_session(uid, row["email"], client_ip, must_change_password=temp_login is not None)
                 token, csrf_token = issued["token"], issued["csrf_token"]
                 _upsert_user_telemetry(
                     user_id=uid,
@@ -3413,6 +3511,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         "user": _build_user_profile(uid, csrf_token=csrf_token),
                         "session_type": issued["session_type"],
                         "device_choice_required": issued["device_choice_required"],
+                        "must_change_password": issued["must_change_password"],
                     },
                     extra_headers=issued["headers"],
                 )
@@ -4255,6 +4354,10 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 db = get_db()
                 db.execute("UPDATE web_notifications SET is_read = 1 WHERE user_id = %s", (user_id,))
                 self._send_json(200, {"ok": True})
+                return
+
+            if path.startswith("/api/admin/recovery/"):
+                self._handle_recovery_admin_post(path, body, sess, client_ip)
                 return
 
             # 7. Admin Operations (already verified require_admin=True above)

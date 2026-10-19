@@ -4,8 +4,7 @@ import { apiFetch, ApiError } from '../api';
 import { tr } from '../i18n';
 
 /**
- * Parcours d'authentification complémentaires : mot de passe oublié, réinitialisation,
- * choix d'appareil (personnel / partagé), session verrouillée, sessions actives et changement de mot de passe.
+ * Parcours d'authentification complémentaires : choix d'appareil (personnel / partagé), session verrouillée, sessions actives et changement de mot de passe.
  * Les styles reprennent ceux de la modale de connexion existante (mêmes couleurs, bordures, boutons).
  * Toute validation affichée ici est une aide : le backend valide systématiquement.
  */
@@ -14,16 +13,16 @@ type Lang = string;
 
 const EMAIL_RE = /^[^@\s]{1,64}@[^@\s]+\.[^@\s]{2,}$/;
 
-const inputCls =
+export const inputCls =
   'w-full px-3 py-3 sm:py-2 text-base sm:text-sm bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2] focus:outline-none focus:border-[#20C997]/60';
-const primaryBtn =
+export const primaryBtn =
   'w-full py-3 sm:py-2.5 bg-[#20C997] hover:bg-[#1AA67D] disabled:opacity-50 disabled:cursor-not-allowed text-[#080C0F] font-semibold rounded-lg transition-colors flex items-center justify-center gap-2';
-const secondaryBtn =
+export const secondaryBtn =
   'w-full py-3 sm:py-2.5 bg-[#172129] hover:bg-[#202A32] disabled:opacity-50 disabled:cursor-not-allowed border border-white/15 text-[#E8EEF2] text-sm font-semibold rounded-lg transition-colors';
-const linkBtn = 'text-xs text-[#8B98A4] hover:text-[#E8EEF2] underline-offset-2 hover:underline';
+export const linkBtn = 'text-xs text-[#8B98A4] hover:text-[#E8EEF2] underline-offset-2 hover:underline';
 
 /** Message utilisateur sûr à partir d'une erreur d'API (jamais de détails internes). */
-function friendlyError(lang: Lang, err: unknown, fallbackFr: string, fallbackEn: string): string {
+export function friendlyError(lang: Lang, err: unknown, fallbackFr: string, fallbackEn: string): string {
   if (err instanceof ApiError) {
     if (err.code === 'NETWORK_ERROR' || err.code === 'TIMEOUT') {
       return tr(
@@ -43,7 +42,7 @@ function friendlyError(lang: Lang, err: unknown, fallbackFr: string, fallbackEn:
 
 /* ------------------------------------------------------------------ Enveloppe commune */
 
-const AuthShell: React.FC<{
+export const AuthShell: React.FC<{
   lang: Lang;
   title: string;
   subtitle?: string;
@@ -66,7 +65,7 @@ const AuthShell: React.FC<{
   </div>
 );
 
-const ErrorBox: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+export const ErrorBox: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div
     role="alert"
     className="p-3 rounded-lg bg-[#F04438]/15 border border-[#F04438]/40 text-xs text-[#F97066] flex items-start gap-2"
@@ -76,7 +75,7 @@ const ErrorBox: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   </div>
 );
 
-const SuccessBox: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+export const SuccessBox: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div
     role="status"
     className="p-3 rounded-lg bg-[#20C997]/15 border border-[#20C997]/40 text-xs text-[#32D583] flex items-start gap-2"
@@ -104,9 +103,9 @@ export function checkPassword(pw: string): PasswordChecks {
   };
 }
 
-const isPasswordValid = (c: PasswordChecks) => c.length && c.letter && c.digit && !c.tooLong;
+export const isPasswordValid = (c: PasswordChecks) => c.length && c.letter && c.digit && !c.tooLong;
 
-const PasswordRules: React.FC<{ lang: Lang; checks: PasswordChecks; touched: boolean }> = ({ lang, checks, touched }) => {
+export const PasswordRules: React.FC<{ lang: Lang; checks: PasswordChecks; touched: boolean }> = ({ lang, checks, touched }) => {
   const rules: Array<[boolean, string, string]> = [
     [checks.length, 'Au moins 8 caractères', 'At least 8 characters'],
     [checks.letter, 'Au moins une lettre', 'At least one letter'],
@@ -124,7 +123,7 @@ const PasswordRules: React.FC<{ lang: Lang; checks: PasswordChecks; touched: boo
   );
 };
 
-const PasswordField: React.FC<{
+export const PasswordField: React.FC<{
   lang: Lang;
   label: string;
   value: string;
@@ -163,379 +162,6 @@ const PasswordField: React.FC<{
     </div>
   </div>
 );
-
-/* ------------------------------------------------------------------ 1. Mot de passe oublié */
-
-export const ForgotPasswordView: React.FC<{
-  lang: Lang;
-  initialEmail?: string;
-  onBackToLogin: () => void;
-  embedded?: boolean;
-}> = ({ lang, initialEmail = '', onBackToLogin, embedded }) => {
-  const [email, setEmail] = useState(initialEmail);
-  const [step, setStep] = useState<'form' | 'sent'>('form');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [cooldown, setCooldown] = useState(0);
-  const [sentTo, setSentTo] = useState('');
-
-  useEffect(() => {
-    if (cooldown <= 0) return;
-    const t = setTimeout(() => setCooldown((c) => Math.max(0, c - 1)), 1000);
-    return () => clearTimeout(t);
-  }, [cooldown]);
-
-  const emailValid = EMAIL_RE.test(email.trim());
-
-  const submit = useCallback(
-    async (target: string) => {
-      setError(null);
-      setLoading(true);
-      try {
-        const res = await apiFetch('/api/auth/forgot-password', {
-          method: 'POST',
-          body: JSON.stringify({ email: target.trim(), lang: String(lang).startsWith('en') ? 'en' : 'fr' }),
-        });
-        setSentTo(target.trim());
-        setStep('sent');
-        setCooldown(Number(res?.cooldown_seconds) || 60);
-      } catch (err) {
-        if (err instanceof ApiError && err.code === 'RATE_LIMITED') {
-          setCooldown(Number(err.payload?.retry_after) || 60);
-        }
-        setError(
-          friendlyError(
-            lang,
-            err,
-            "Impossible d'envoyer la demande pour le moment. Réessayez dans quelques instants.",
-            'Unable to send the request right now. Please try again in a moment.'
-          )
-        );
-      } finally {
-        setLoading(false);
-      }
-    },
-    [lang]
-  );
-
-  if (step === 'sent') {
-    return (
-      <AuthShell lang={lang} embedded={embedded} title={tr(lang, 'Vérifiez votre boîte mail', 'Check your inbox')}>
-        <p className="text-sm text-[#B6C0C9] leading-relaxed">
-          {tr(
-            lang,
-            'Si un compte correspond à l’adresse fournie, un email de récupération vient d’être envoyé. Pensez à vérifier vos courriers indésirables.',
-            'If an account matches the address you provided, a recovery email has just been sent. Remember to check your spam folder.'
-          )}
-        </p>
-        <p className="text-[11px] text-[#6E7B88]">
-          {tr(lang, 'Adresse saisie : ', 'Address entered: ')}
-          <span className="text-[#8B98A4] break-all">{sentTo}</span>
-        </p>
-        {error && <ErrorBox>{error}</ErrorBox>}
-        <button type="button" onClick={() => submit(sentTo)} disabled={loading || cooldown > 0} className={secondaryBtn}>
-          {loading ? (
-            <span className="inline-flex items-center gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin" />
-              {tr(lang, 'Envoi…', 'Sending…')}
-            </span>
-          ) : cooldown > 0 ? (
-            tr(lang, `Renvoyer l’email (${cooldown} s)`, `Resend email (${cooldown} s)`)
-          ) : (
-            tr(lang, 'Renvoyer l’email', 'Resend email')
-          )}
-        </button>
-        <div className="flex items-center justify-between gap-3">
-          <button type="button" onClick={() => { setStep('form'); setError(null); }} className={linkBtn}>
-            {tr(lang, 'Changer d’adresse', 'Use another address')}
-          </button>
-          <button type="button" onClick={onBackToLogin} className={linkBtn}>
-            ← {tr(lang, 'Retour à la connexion', 'Back to sign in')}
-          </button>
-        </div>
-      </AuthShell>
-    );
-  }
-
-  return (
-    <AuthShell lang={lang} embedded={embedded} title={tr(lang, 'Réinitialiser votre mot de passe', 'Reset your password')}>
-      <p className="text-sm text-[#B6C0C9] leading-relaxed">
-        {tr(
-          lang,
-          'Saisissez l’adresse email de votre compte Bitsure. Nous vous enverrons un lien sécurisé pour choisir un nouveau mot de passe.',
-          'Enter the email address of your Bitsure account. We will send you a secure link to choose a new password.'
-        )}
-      </p>
-      {error && <ErrorBox>{error}</ErrorBox>}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (emailValid && !loading) submit(email);
-        }}
-        className="space-y-4"
-        noValidate
-      >
-        <div>
-          <label htmlFor="forgot-email" className="block text-xs text-[#8B98A4] mb-1">
-            {tr(lang, 'Adresse email', 'Email address')}
-          </label>
-          <input
-            id="forgot-email"
-            type="email"
-            inputMode="email"
-            autoComplete="email"
-            autoFocus
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder={tr(lang, 'votre@email.com', 'you@email.com')}
-            className={inputCls}
-            disabled={loading}
-          />
-          {email.length > 0 && !emailValid && (
-            <p className="mt-1 text-[11px] text-[#F97066]">{tr(lang, 'Adresse email invalide.', 'Invalid email address.')}</p>
-          )}
-        </div>
-        <button type="submit" disabled={!emailValid || loading} className={primaryBtn}>
-          {loading ? (
-            <>
-              <RefreshCw className="w-4 h-4 animate-spin" />
-              {tr(lang, 'Envoi…', 'Sending…')}
-            </>
-          ) : (
-            tr(lang, 'Envoyer le lien', 'Send link')
-          )}
-        </button>
-      </form>
-      <button type="button" onClick={onBackToLogin} className={linkBtn}>
-        ← {tr(lang, 'Retour à la connexion', 'Back to sign in')}
-      </button>
-    </AuthShell>
-  );
-};
-
-/* ------------------------------------------------------------------ 2. Nouveau mot de passe */
-
-type ResetPhase = 'checking' | 'form' | 'invalid' | 'expired' | 'used' | 'success' | 'failure';
-
-export const ResetPasswordView: React.FC<{
-  lang: Lang;
-  token: string;
-  onGoLogin: () => void;
-  onRequestNewLink: () => void;
-}> = ({ lang, token, onGoLogin, onRequestNewLink }) => {
-  const [phase, setPhase] = useState<ResetPhase>(token ? 'checking' : 'invalid');
-  const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
-  const [show, setShow] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [serverRules, setServerRules] = useState<string[]>([]);
-  const [attempt, setAttempt] = useState(0);
-
-  // Vérification du lien à l'ouverture (et au rechargement de la page).
-  useEffect(() => {
-    if (!token) {
-      setPhase('invalid');
-      return;
-    }
-    let cancelled = false;
-    setPhase('checking');
-    apiFetch('/api/auth/reset-password/validate', { method: 'POST', body: JSON.stringify({ token }) })
-      .then(() => {
-        if (!cancelled) setPhase('form');
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        if (err instanceof ApiError && err.code === 'TOKEN_EXPIRED') setPhase('expired');
-        else if (err instanceof ApiError && err.code === 'TOKEN_USED') setPhase('used');
-        else if (err instanceof ApiError && err.code === 'TOKEN_INVALID') setPhase('invalid');
-        else {
-          setError(
-            friendlyError(
-              lang,
-              err,
-              'Impossible de vérifier le lien pour le moment.',
-              'Unable to verify the link right now.'
-            )
-          );
-          setPhase('failure');
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [token, lang, attempt]);
-
-  const checks = useMemo(() => checkPassword(password), [password]);
-  const mismatch = confirm.length > 0 && confirm !== password;
-  const canSubmit = isPasswordValid(checks) && confirm === password && !submitting;
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!canSubmit) return;
-    setSubmitting(true);
-    setError(null);
-    setServerRules([]);
-    try {
-      await apiFetch('/api/auth/reset-password', {
-        method: 'POST',
-        body: JSON.stringify({ token, password, confirm_password: confirm }),
-      });
-      setPassword('');
-      setConfirm('');
-      setPhase('success');
-    } catch (err) {
-      if (err instanceof ApiError && err.code === 'TOKEN_EXPIRED') setPhase('expired');
-      else if (err instanceof ApiError && err.code === 'TOKEN_USED') setPhase('used');
-      else if (err instanceof ApiError && err.code === 'TOKEN_INVALID') setPhase('invalid');
-      else {
-        const rules = err instanceof ApiError ? err.payload?.rule_messages : undefined;
-        if (err instanceof ApiError && err.code === 'PASSWORD_WEAK') {
-          setError(tr(lang, 'Ce mot de passe ne respecte pas les règles de sécurité.', 'This password does not meet the security rules.'));
-        } else if (err instanceof ApiError && err.code === 'PASSWORD_MISMATCH') {
-          setError(tr(lang, 'Les deux mots de passe ne correspondent pas.', 'The two passwords do not match.'));
-        } else {
-          setError(
-            friendlyError(
-              lang,
-              err,
-              'Une erreur est survenue. Votre mot de passe n’a pas été modifié, vous pouvez réessayer.',
-              'Something went wrong. Your password was not changed, you can try again.'
-            )
-          );
-        }
-        if (Array.isArray(rules)) setServerRules(rules);
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  if (phase === 'checking') {
-    return (
-      <AuthShell lang={lang} title={tr(lang, 'Vérification du lien…', 'Checking your link…')}>
-        <div className="flex items-center gap-3 text-sm text-[#8B98A4]" role="status">
-          <RefreshCw className="w-4 h-4 animate-spin text-[#20C997]" />
-          {tr(lang, 'Un instant, nous vérifions votre lien sécurisé.', 'One moment, we are verifying your secure link.')}
-        </div>
-      </AuthShell>
-    );
-  }
-
-  if (phase === 'expired' || phase === 'invalid' || phase === 'used') {
-    const content = {
-      expired: {
-        title: tr(lang, 'Ce lien a expiré', 'This link has expired'),
-        text: tr(lang, 'Pour votre sécurité, les liens de réinitialisation ne sont valables que peu de temps.', 'For your security, reset links are only valid for a short time.'),
-      },
-      invalid: {
-        title: tr(lang, 'Lien de réinitialisation invalide', 'Invalid reset link'),
-        text: tr(lang, 'Ce lien est incorrect ou a été remplacé par un lien plus récent.', 'This link is incorrect or has been replaced by a more recent one.'),
-      },
-      used: {
-        title: tr(lang, 'Ce lien a déjà été utilisé', 'This link has already been used'),
-        text: tr(lang, 'Chaque lien ne peut servir qu’une seule fois. Si besoin, demandez-en un nouveau.', 'Each link can only be used once. If needed, request a new one.'),
-      },
-    }[phase];
-    return (
-      <AuthShell lang={lang} title={content.title}>
-        <p className="text-sm text-[#B6C0C9] leading-relaxed">{content.text}</p>
-        <button type="button" onClick={onRequestNewLink} className={primaryBtn}>
-          {tr(lang, 'Demander un nouveau lien', 'Request a new link')}
-        </button>
-        <button type="button" onClick={onGoLogin} className={linkBtn}>
-          ← {tr(lang, 'Retour à la connexion', 'Back to sign in')}
-        </button>
-      </AuthShell>
-    );
-  }
-
-  if (phase === 'failure') {
-    return (
-      <AuthShell lang={lang} title={tr(lang, 'Un problème est survenu', 'Something went wrong')}>
-        {error && <ErrorBox>{error}</ErrorBox>}
-        <button type="button" onClick={() => setAttempt((n) => n + 1)} className={primaryBtn}>
-          <RefreshCw className="w-4 h-4" />
-          {tr(lang, 'Réessayer', 'Try again')}
-        </button>
-        <button type="button" onClick={onGoLogin} className={linkBtn}>
-          ← {tr(lang, 'Retour à la connexion', 'Back to sign in')}
-        </button>
-      </AuthShell>
-    );
-  }
-
-  if (phase === 'success') {
-    return (
-      <AuthShell lang={lang} title={tr(lang, 'Mot de passe réinitialisé', 'Password reset')}>
-        <SuccessBox>
-          {tr(
-            lang,
-            'Votre mot de passe a été modifié avec succès. Vous pouvez maintenant vous connecter à votre compte Bitsure.',
-            'Your password was changed successfully. You can now sign in to your Bitsure account.'
-          )}
-        </SuccessBox>
-        <button type="button" onClick={onGoLogin} className={primaryBtn}>
-          {tr(lang, 'Se connecter', 'Sign in')}
-        </button>
-      </AuthShell>
-    );
-  }
-
-  return (
-    <AuthShell lang={lang} title={tr(lang, 'Créer un nouveau mot de passe', 'Create a new password')}>
-      {error && <ErrorBox>{error}</ErrorBox>}
-      <form onSubmit={submit} className="space-y-4" noValidate>
-        <PasswordField
-          lang={lang}
-          id="reset-password"
-          label={tr(lang, 'Nouveau mot de passe', 'New password')}
-          value={password}
-          onChange={setPassword}
-          show={show}
-          onToggleShow={() => setShow((s) => !s)}
-          autoComplete="new-password"
-          disabled={submitting}
-        />
-        <PasswordRules lang={lang} checks={checks} touched={password.length > 0} />
-        <PasswordField
-          lang={lang}
-          id="reset-confirm"
-          label={tr(lang, 'Confirmer le nouveau mot de passe', 'Confirm new password')}
-          value={confirm}
-          onChange={setConfirm}
-          show={show}
-          onToggleShow={() => setShow((s) => !s)}
-          autoComplete="new-password"
-          disabled={submitting}
-          invalid={mismatch}
-        />
-        {mismatch && (
-          <p className="text-[11px] text-[#F97066]" role="alert">
-            {tr(lang, 'Les deux mots de passe ne correspondent pas.', 'The two passwords do not match.')}
-          </p>
-        )}
-        {serverRules.length > 0 && (
-          <ul className="text-[11px] text-[#F97066] list-disc pl-4 space-y-0.5">
-            {serverRules.map((m) => (
-              <li key={m}>{m}</li>
-            ))}
-          </ul>
-        )}
-        <button type="submit" disabled={!canSubmit} className={primaryBtn}>
-          {submitting ? (
-            <>
-              <RefreshCw className="w-4 h-4 animate-spin" />
-              {tr(lang, 'Enregistrement…', 'Saving…')}
-            </>
-          ) : (
-            tr(lang, 'Réinitialiser le mot de passe', 'Reset password')
-          )}
-        </button>
-      </form>
-    </AuthShell>
-  );
-};
 
 /* ------------------------------------------------------------------ 3. Appareil personnel ou partagé */
 
@@ -626,7 +252,7 @@ interface SessionItem {
   locked: boolean;
 }
 
-function relativeTime(lang: Lang, tsSeconds: number): string {
+export function relativeTime(lang: Lang, tsSeconds: number): string {
   const diff = Math.max(0, Math.floor(Date.now() / 1000 - tsSeconds));
   if (diff < 120) return tr(lang, 'Actif maintenant', 'Active now');
   const min = Math.floor(diff / 60);
