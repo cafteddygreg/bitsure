@@ -12,6 +12,7 @@ STRICT ISOLATION GUARANTEE:
 """
 
 import os
+import re
 import copy
 import json
 import time
@@ -1359,8 +1360,23 @@ def generate_external_ai_prompt(
     }
 
 
-# Nombre maximal de bougies simulées sur une période explicite (protège le temps de calcul)
+# Nombre maximal de bougies simulées sur une période explicite par le Strategy Lab (protège le temps de calcul).
 LAB_MAX_PERIOD_CANDLES = 12000
+# Profondeur maximale de l'Optimization Lab (nombre de bougies d'une période explicite). Le chargement est paginé et
+# mis en cache PostgreSQL ; la vraie contrainte est le temps de calcul (~0,14 ms / bougie / backtest) et la RAM.
+# Ajustable par variable d'environnement. Au-delà, l'optimisation est REFUSÉE avec un message clair (jamais tronquée).
+OPT_MAX_PERIOD_CANDLES = int(os.getenv("OPT_MAX_PERIOD_CANDLES", "600000") or 600000)
+_KLINE_PAGE_LIMIT = 1000
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _parse_end_date_to_ms(end_date: Optional[str], default_ms: int) -> int:
+    """Date de fin : une date seule (YYYY-MM-DD) est INCLUSIVE (jusqu'à 23:59:59.999 UTC de ce jour)."""
+    if end_date and _DATE_ONLY_RE.match(str(end_date).strip()):
+        base = _parse_date_to_ms(end_date, 0)
+        if base:
+            return base + 86_400_000 - 1
+    return _parse_date_to_ms(end_date, default_ms)
 
 
 def _parse_date_to_ms(date_str: Optional[str], default_ms: int) -> int:
@@ -1442,56 +1458,90 @@ def validate_and_clean_ohlcv(
     valid_indices = []
     invalid_ohlc_removed = 0
 
-    ts_list = list(work.index)
-    for idx_pos, ts in enumerate(ts_list):
-        row = work.iloc[idx_pos]
-        o = float(row["Open"])
-        h = float(row["High"])
-        l = float(row["Low"])
-        c = float(row["Close"])
-        v = float(row["Volume"]) if not pd.isna(row["Volume"]) else 0.0
+    if isinstance(work.index, pd.DatetimeIndex) and len(work):
+        # Version vectorisée (mêmes règles que la boucle d'origine, des millions de bougies en quelques secondes).
+        idx_utc = work.index.tz_convert("UTC") if work.index.tz is not None else work.index.tz_localize("UTC")
+        open_ms_arr = ((idx_utc - pd.Timestamp("1970-01-01", tz="UTC")) // pd.Timedelta(milliseconds=1)).to_numpy(dtype="int64")
+        o_a, h_a, l_a, c_a = (work[k].to_numpy(dtype="float64") for k in ("Open", "High", "Low", "Close"))
+        v_a = work["Volume"].to_numpy(dtype="float64")
+        v_a = np.where(np.isnan(v_a), 0.0, v_a)
+        unclosed = (open_ms_arr > 0) & ((open_ms_arr + tf_ms) > now_ms)
+        bad_price = (o_a <= 0) | (h_a <= 0) | (l_a <= 0) | (c_a <= 0) | (v_a < 0)
+        bad_shape = (h_a < np.maximum(o_a, c_a) - 1e-8) | (l_a > np.minimum(o_a, c_a) + 1e-8) | (h_a < l_a)
+        unclosed_excluded = int(unclosed.sum())
+        invalid_mask = (~unclosed) & (bad_price | bad_shape)
+        invalid_ohlc_removed = int(invalid_mask.sum())
+        valid_indices = np.nonzero(~unclosed & ~invalid_mask)[0].tolist() if (unclosed_excluded or invalid_ohlc_removed) else list(range(len(work)))
+    else:
+        ts_list = list(work.index)
+        for idx_pos, ts in enumerate(ts_list):
+            row = work.iloc[idx_pos]
+            o = float(row["Open"])
+            h = float(row["High"])
+            l = float(row["Low"])
+            c = float(row["Close"])
+            v = float(row["Volume"]) if not pd.isna(row["Volume"]) else 0.0
 
-        # Check timestamp ms
-        if hasattr(ts, "timestamp"):
-            open_ms = int(ts.timestamp() * 1000)
-        else:
-            open_ms = _parse_date_to_ms(str(ts), 0)
+            # Check timestamp ms
+            if hasattr(ts, "timestamp"):
+                open_ms = int(ts.timestamp() * 1000)
+            else:
+                open_ms = _parse_date_to_ms(str(ts), 0)
 
-        if open_ms > 0 and (open_ms + tf_ms) > now_ms:
-            unclosed_excluded += 1
-            continue
+            if open_ms > 0 and (open_ms + tf_ms) > now_ms:
+                unclosed_excluded += 1
+                continue
 
-        # OHLC & price validity check
-        if o <= 0 or h <= 0 or l <= 0 or c <= 0 or v < 0:
-            invalid_ohlc_removed += 1
-            continue
-        if h < max(o, c) - 1e-8 or l > min(o, c) + 1e-8 or h < l:
-            invalid_ohlc_removed += 1
-            continue
+            # OHLC & price validity check
+            if o <= 0 or h <= 0 or l <= 0 or c <= 0 or v < 0:
+                invalid_ohlc_removed += 1
+                continue
+            if h < max(o, c) - 1e-8 or l > min(o, c) + 1e-8 or h < l:
+                invalid_ohlc_removed += 1
+                continue
 
-        valid_indices.append(idx_pos)
+            valid_indices.append(idx_pos)
+
 
     cleaned = work.iloc[valid_indices].copy() if len(valid_indices) < len(work) else work
 
     # Detect gaps (missing intervals) without interpolating
     missing_intervals = 0
     gaps_sample: List[Dict[str, Any]] = []
-    clean_ts = list(cleaned.index)
-    for k in range(1, len(clean_ts)):
-        t_prev = clean_ts[k - 1]
-        t_cur = clean_ts[k]
-        ms_prev = int(t_prev.timestamp() * 1000) if hasattr(t_prev, "timestamp") else _parse_date_to_ms(str(t_prev), 0)
-        ms_cur = int(t_cur.timestamp() * 1000) if hasattr(t_cur, "timestamp") else _parse_date_to_ms(str(t_cur), 0)
-        diff_ms = ms_cur - ms_prev
-        if diff_ms > int(tf_ms * 1.5):
-            missed = max(1, int(round(diff_ms / tf_ms)) - 1)
+    if isinstance(cleaned.index, pd.DatetimeIndex) and len(cleaned):
+        c_idx = cleaned.index.tz_convert("UTC") if cleaned.index.tz is not None else cleaned.index.tz_localize("UTC")
+        c_ms = ((c_idx - pd.Timestamp("1970-01-01", tz="UTC")) // pd.Timedelta(milliseconds=1)).to_numpy(dtype="int64")
+        diffs = np.diff(c_ms)
+        big = np.nonzero(diffs > int(tf_ms * 1.5))[0]
+        for k in big:
+            missed = max(1, int(round(diffs[k] / tf_ms)) - 1)
             missing_intervals += missed
             if len(gaps_sample) < 10:
                 gaps_sample.append({
-                    "from": t_prev.isoformat() if hasattr(t_prev, "isoformat") else str(t_prev),
-                    "to": t_cur.isoformat() if hasattr(t_cur, "isoformat") else str(t_cur),
+                    "from": cleaned.index[k].isoformat(),
+                    "to": cleaned.index[k + 1].isoformat(),
                     "missing_candles": missed,
                 })
+        first_ts, last_ts = cleaned.index[0], cleaned.index[-1]
+    else:
+        clean_ts = list(cleaned.index)
+        for k in range(1, len(clean_ts)):
+            t_prev = clean_ts[k - 1]
+            t_cur = clean_ts[k]
+            ms_prev = int(t_prev.timestamp() * 1000) if hasattr(t_prev, "timestamp") else _parse_date_to_ms(str(t_prev), 0)
+            ms_cur = int(t_cur.timestamp() * 1000) if hasattr(t_cur, "timestamp") else _parse_date_to_ms(str(t_cur), 0)
+            diff_ms = ms_cur - ms_prev
+            if diff_ms > int(tf_ms * 1.5):
+                missed = max(1, int(round(diff_ms / tf_ms)) - 1)
+                missing_intervals += missed
+                if len(gaps_sample) < 10:
+                    gaps_sample.append({
+                        "from": t_prev.isoformat() if hasattr(t_prev, "isoformat") else str(t_prev),
+                        "to": t_cur.isoformat() if hasattr(t_cur, "isoformat") else str(t_cur),
+                        "missing_candles": missed,
+                    })
+        first_ts = clean_ts[0] if clean_ts else None
+        last_ts = clean_ts[-1] if clean_ts else None
 
     total_expected = len(cleaned) + missing_intervals
     gap_ratio_pct = round((missing_intervals / total_expected * 100.0), 2) if total_expected > 0 else 0.0
@@ -1527,11 +1577,111 @@ def validate_and_clean_ohlcv(
         "gap_ratio_pct": gap_ratio_pct,
         "gaps_sample": gaps_sample,
         "data_source": data_source,
-        "first_candle_utc": clean_ts[0].isoformat() if clean_ts and hasattr(clean_ts[0], "isoformat") else "",
-        "last_candle_utc": clean_ts[-1].isoformat() if clean_ts and hasattr(clean_ts[-1], "isoformat") else "",
+        "first_candle_utc": first_ts.isoformat() if first_ts is not None and hasattr(first_ts, "isoformat") else "",
+        "last_candle_utc": last_ts.isoformat() if last_ts is not None and hasattr(last_ts, "isoformat") else "",
         "warnings": warnings,
     }
     return cleaned, quality_report
+
+
+_OHLCV_COLS = ("Open", "High", "Low", "Close", "Volume")
+
+
+def _read_cached_ohlcv(db, market_type: str, symbol: str, timeframe: str, start_ms: int, end_ms: int, tf_ms: int) -> np.ndarray:
+    """Lit le cache PostgreSQL par tranches (mémoire bornée) -> tableau float64 [open_ms, close_ms, O, H, L, C, V]."""
+    parts: List[np.ndarray] = []
+    chunk_ms = tf_ms * 50_000
+    cur = start_ms
+    while cur <= end_ms:
+        hi = min(end_ms, cur + chunk_ms - 1)
+        rows = db.execute(
+            """
+            SELECT open_time_ms, close_time_ms, open, high, low, close, volume
+            FROM strategy_lab_ohlcv
+            WHERE market_type = %s AND symbol = %s AND timeframe = %s
+              AND open_time_ms >= %s AND open_time_ms <= %s
+            ORDER BY open_time_ms ASC
+            """,
+            (market_type, symbol, timeframe, cur, hi),
+        ).fetchall()
+        if rows:
+            parts.append(np.array(
+                [[r["open_time_ms"], r["close_time_ms"], r["open"], r["high"], r["low"], r["close"], r["volume"]] for r in rows],
+                dtype="float64",
+            ))
+        cur = hi + 1
+    return np.vstack(parts) if parts else np.empty((0, 7), dtype="float64")
+
+
+def _missing_segments(open_ms: np.ndarray, start_ms: int, end_ms: int, tf_ms: int, now_ms: int) -> List[Tuple[int, int]]:
+    """Plages [debut, fin] (ms) sans bougie en cache : avant la première, entre deux bougies, après la dernière."""
+    segs: List[Tuple[int, int]] = []
+
+    def closed_possible(a: int) -> bool:
+        return a + tf_ms - 1 <= now_ms
+
+    if len(open_ms) == 0:
+        return [(start_ms, end_ms)] if closed_possible(start_ms) else []
+    first, last = int(open_ms[0]), int(open_ms[-1])
+    if first > start_ms + tf_ms - 1:
+        segs.append((start_ms, first - 1))
+    if len(open_ms) > 1:
+        diffs = np.diff(open_ms)
+        for k in np.nonzero(diffs > tf_ms)[0]:
+            segs.append((int(open_ms[k]) + tf_ms, int(open_ms[k + 1]) - 1))
+    nxt = last + tf_ms
+    if nxt <= end_ms and closed_possible(nxt):
+        segs.append((nxt, end_ms))
+    return segs
+
+
+def _http_klines(requests_mod, url: str, symbol: str, interval: str, start_ms: int, end_ms: int) -> Tuple[List[list], Optional[str]]:
+    """Une page de klines avec nouvelles tentatives (429/418/5xx/réseau). Retourne (lignes, erreur)."""
+    last_err = "inconnue"
+    for attempt in range(4):
+        try:
+            resp = requests_mod.get(
+                url,
+                params={"symbol": symbol, "interval": interval, "startTime": start_ms, "endTime": end_ms, "limit": _KLINE_PAGE_LIMIT},
+                timeout=15,
+            )
+        except Exception as exc:  # réseau indisponible / timeout
+            last_err = f"réseau ({type(exc).__name__})"
+            time.sleep(min(2.0, 0.5 * (attempt + 1)))
+            if attempt >= 1:
+                break
+            continue
+        if resp.status_code == 200:
+            data = resp.json()
+            return (data if isinstance(data, list) else []), None
+        last_err = f"HTTP {resp.status_code}"
+        if resp.status_code in (418, 429) or 500 <= resp.status_code < 600:
+            try:
+                wait = float(resp.headers.get("Retry-After", 0))
+            except Exception:
+                wait = 0.0
+            time.sleep(min(30.0, wait or (2 ** attempt)))
+            continue
+        break  # erreur non récupérable (symbole invalide, etc.)
+    return [], last_err
+
+
+def _persist_ohlcv(db, market_type: str, symbol: str, timeframe: str, arr: np.ndarray, label: str) -> None:
+    """Insertion en masse (2000 bougies par requête) dans le cache ; ON CONFLICT DO NOTHING."""
+    if len(arr) == 0:
+        return
+    now_ts = time.time()
+    row_ph = "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+    for i in range(0, len(arr), 2000):
+        chunk = arr[i:i + 2000]
+        params: List[Any] = []
+        for r in chunk:
+            params.extend((market_type, symbol, timeframe, int(r[0]), int(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5]), float(r[6]), label, now_ts))
+        db.execute(
+            "INSERT INTO strategy_lab_ohlcv (market_type, symbol, timeframe, open_time_ms, close_time_ms, open, high, low, close, volume, source, fetched_at) "
+            f"VALUES {','.join([row_ph] * len(chunk))} ON CONFLICT (market_type, symbol, timeframe, open_time_ms) DO NOTHING",
+            params,
+        )
 
 
 def load_historical_candles(
@@ -1542,16 +1692,19 @@ def load_historical_candles(
     end_date: Optional[str] = None,
     max_candles: int = 1000,
     warmup_candles: int = 0,
-) -> Tuple[pd.DataFrame, str, Dict[str, int]]:
+    max_period_candles: Optional[int] = None,
+) -> Tuple[pd.DataFrame, str, Dict[str, Any]]:
     """
-    Loads real historical OHLCV candles for the Strategy Lab with incremental PostgreSQL caching:
-    1. Queries `strategy_lab_ohlcv` for already stored candles matching (market_type, symbol, timeframe) in [query_start_ms, end_ms],
-       including `warmup_candles` prior to `start_date` so the slow SMA, MACD and support/resistance windows are fully formed before the simulation window.
-    2. Identifies missing time ranges and fetches ONLY missing candles from official Binance Spot (`/api/v3/klines`)
-       or USD-M Futures (`/fapi/v1/klines`) endpoints with pagination and deduplication.
-    3. Persists newly fetched closed candles into `strategy_lab_ohlcv` (`ON CONFLICT DO NOTHING`).
-    4. Falls back to local CSV archive (`/scratch/btc_15m.csv`) only if network is unreachable in sandbox.
-    Returns (DataFrame, data_source_label, stats_dict).
+    Loads real historical OHLCV candles for the Strategy Lab / Optimization Lab with incremental PostgreSQL caching:
+    1. Reads `strategy_lab_ohlcv` (par tranches) for (market_type, symbol, timeframe) in [query_start_ms, end_ms],
+       including `warmup_candles` prior to `start_date` so slow indicators are formed before the simulation window.
+    2. Detects the MISSING ranges (before / between / after cached candles) and downloads only those from Binance
+       (Spot `/api/v3/klines` or USD-M `/fapi/v1/klines`) with 1000-candle pagination, retries and rate-limit back-off.
+    3. Persists newly fetched CLOSED candles in bulk (`ON CONFLICT DO NOTHING`).
+    4. Falls back to the local CSV archive / DataFetcher only if Binance is unreachable (flagged in the stats).
+    `max_period_candles` : profondeur maximale d'une période explicite (défaut : LAB_MAX_PERIOD_CANDLES).
+    Returns (DataFrame, data_source_label, stats_dict). The stats expose requested/loaded boundaries so callers can
+    report exactly what was loaded (never silently truncated: clamping and incomplete downloads are flagged).
     """
     symbol = _normalize_lab_symbol(symbol or "BTCUSDT")
     binance_query_symbol = symbol
@@ -1562,83 +1715,60 @@ def load_historical_candles(
         market_type = "spot" if str(market_type).lower() == "spot" else "futures"
     if timeframe not in SUPPORTED_LAB_TIMEFRAMES:
         timeframe = "15m"
-    max_candles = max(80, min(2500, int(max_candles or 800)))
-    warmup_extra = max(0, min(2000, int(warmup_candles or 0)))
+    period_limit = int(max_period_candles) if max_period_candles else LAB_MAX_PERIOD_CANDLES
+    depth_cap = period_limit if max_period_candles else 2500
+    max_candles = max(80, min(depth_cap, int(max_candles or 800)))
+    warmup_extra = max(0, min(10000, int(warmup_candles or 0)))
 
     now_ms = int(time.time() * 1000)
     tf_ms = TIMEFRAME_SECONDS.get(timeframe, 900) * 1000
     # Align end_ms to last closed candle boundary
     aligned_now_ms = (now_ms // tf_ms) * tf_ms
-    end_ms = min(_parse_date_to_ms(end_date, aligned_now_ms), aligned_now_ms)
+    end_ms = min(_parse_end_date_to_ms(end_date, aligned_now_ms), aligned_now_ms)
     default_start_ms = end_ms - (max_candles * tf_ms)
     start_ms = _parse_date_to_ms(start_date, default_start_ms)
     if start_ms >= end_ms:
         start_ms = end_ms - (300 * tf_ms)
+    requested_start_ms = start_ms if start_date else None
 
     period_clamped = False
     if start_date:
-        # Période explicite : le nombre de bougies est dicté par la plage [start, end],
-        # et non plus plafonné par la « profondeur » (sinon la date de début était ignorée
-        # dès que la plage dépassait max_candles).
+        # Période explicite : le nombre de bougies est dicté par la plage [start, end].
         span_candles = max(80, int((end_ms - start_ms) // tf_ms) + 1)
-        if span_candles > LAB_MAX_PERIOD_CANDLES:
+        if span_candles > period_limit:
             period_clamped = True
-            span_candles = LAB_MAX_PERIOD_CANDLES
+            span_candles = period_limit
             start_ms = end_ms - (span_candles * tf_ms)
         max_candles = span_candles
     total_limit = max_candles + warmup_extra
     query_start_ms = start_ms - (warmup_extra * tf_ms)
 
+    stats: Dict[str, Any] = {
+        "cached": 0, "fetched": 0, "period_clamped": period_clamped, "max_period_candles": period_limit,
+        "requested_start_ms": requested_start_ms, "requested_end_ms": end_ms, "effective_start_ms": start_ms,
+        "query_start_ms": query_start_ms, "warmup_requested": warmup_extra, "tf_ms": tf_ms,
+        "fetch_incomplete": False, "fetch_issues": [], "segments_fetched": 0, "persist_failed": False, "source_fallback": None,
+    }
+
     db = get_db()
-    cached_rows = []
+    cached = np.empty((0, 7), dtype="float64")
     try:
-        cached_rows = db.execute(
-            """
-            SELECT open_time_ms, close_time_ms, open, high, low, close, volume, source
-            FROM strategy_lab_ohlcv
-            WHERE market_type = %s AND symbol = %s AND timeframe = %s
-              AND open_time_ms >= %s AND open_time_ms <= %s
-            ORDER BY open_time_ms ASC
-            """,
-            (market_type, symbol, timeframe, query_start_ms, end_ms),
-        ).fetchall()
+        cached = _read_cached_ohlcv(db, market_type, symbol, timeframe, query_start_ms, end_ms, tf_ms)
     except Exception as e:
         logger.debug("strategy_lab_ohlcv read skipped: %s", e)
+    cached_count = len(cached)
+    stats["cached"] = cached_count
 
-    cached_by_open_ms: Dict[int, Dict[str, Any]] = {}
-    for r in cached_rows:
-        oms = int(r["open_time_ms"])
-        cached_by_open_ms[oms] = {
-            "open_time_ms": oms,
-            "close_time_ms": int(r["close_time_ms"]),
-            "Open": float(r["open"]),
-            "High": float(r["high"]),
-            "Low": float(r["low"]),
-            "Close": float(r["close"]),
-            "Volume": float(r["volume"]),
-            "source": r.get("source") or f"Binance {market_type.capitalize()}",
-        }
-
-    cached_count = len(cached_by_open_ms)
-    expected_candles = max(1, min(total_limit, int((end_ms - query_start_ms) // tf_ms)))
-
-    # Determine if we need to fetch missing ranges from Binance
-    newly_fetched_count = 0
+    fetched_parts: List[np.ndarray] = []
     source_used = f"PostgreSQL Cache ({market_type.upper()})"
+    label_used: Optional[str] = None
 
-    if cached_count < int(expected_candles * 0.92):
-        # Determine missing window [fetch_start_ms, end_ms]
-        if cached_by_open_ms:
-            max_cached_ms = max(cached_by_open_ms.keys())
-            min_cached_ms = min(cached_by_open_ms.keys())
-            # If we are missing recent candles after max_cached_ms, fetch only from max_cached_ms + tf_ms
-            if min_cached_ms <= query_start_ms + tf_ms * 2 and max_cached_ms < end_ms - tf_ms:
-                fetch_start_ms = max_cached_ms + tf_ms
-            else:
-                fetch_start_ms = query_start_ms
-        else:
-            fetch_start_ms = query_start_ms
-
+    segments = _missing_segments(cached[:, 0], query_start_ms, end_ms, tf_ms, now_ms)
+    if len(segments) > 500:
+        stats["fetch_issues"].append(f"{len(segments)} plages manquantes : seules les 500 premières ont été téléchargées.")
+        stats["fetch_incomplete"] = True
+        segments = segments[:500]
+    if segments:
         import requests
         if market_type == "futures":
             endpoints = [
@@ -1646,115 +1776,98 @@ def load_historical_candles(
                 ("https://data-api.binance.vision/api/v3/klines", "Binance Vision Archive"),
                 ("https://api.binance.com/api/v3/klines", "Binance Spot API (Fallback)"),
             ]
+            throttle = 0.15  # poids des klines USD-M plus élevé : on reste sous la limite de débit
         else:
             endpoints = [
                 ("https://data-api.binance.vision/api/v3/klines", "Binance Spot Vision Archive"),
                 ("https://api.binance.com/api/v3/klines", "Binance Spot API"),
                 ("https://fapi.binance.com/fapi/v1/klines", "Binance USD-M Futures API (Fallback)"),
             ]
-
-        for url, label in endpoints:
-            try:
-                cursor_ms = fetch_start_ms
-                fetched_batches = []
-                while cursor_ms < end_ms and sum(len(b) for b in fetched_batches) < total_limit:
-                    needed = min(1000, total_limit - sum(len(b) for b in fetched_batches))
-                    resp = requests.get(
-                        url,
-                        params={
-                            "symbol": binance_query_symbol,
-                            "interval": timeframe,
-                            "startTime": cursor_ms,
-                            "endTime": end_ms,
-                            "limit": needed,
-                        },
-                        timeout=6,
-                    )
-                    if resp.status_code == 429:
-                        logger.warning("Binance rate limit 429 hit on %s, backing off", url)
+            throttle = 0.05
+        dead_endpoints: set = set()
+        for seg_start, seg_end in segments:
+            cursor = seg_start
+            seg_rows: List[list] = []
+            seg_label: Optional[str] = None
+            reached_end = False
+            had_error: Optional[str] = None
+            for url, label in endpoints:
+                if url in dead_endpoints:
+                    continue
+                ep_rows: List[list] = []
+                while cursor <= seg_end:
+                    batch, err = _http_klines(requests, url, binance_query_symbol, timeframe, cursor, seg_end)
+                    if err:
+                        had_error = f"{label}: {err}"
+                        if err.startswith("réseau"):
+                            dead_endpoints.add(url)
                         break
-                    if resp.status_code != 200:
+                    if not batch:
+                        reached_end = True  # rien de plus à cette date (avant cotation, maintenance…)
                         break
-                    batch = resp.json()
-                    if not isinstance(batch, list) or not batch:
-                        break
-                    fetched_batches.append(batch)
+                    ep_rows.extend(batch)
                     last_open = int(batch[-1][0])
-                    if last_open <= cursor_ms or len(batch) < needed:
+                    if last_open < cursor:
+                        reached_end = True
                         break
-                    cursor_ms = last_open + tf_ms
-
-                flat = [item for sub in fetched_batches for item in sub]
-                if flat:
-                    source_used = label if cached_count == 0 else f"{label} + Cache PostgreSQL"
-                    now_ts = time.time()
-                    for k in flat:
-                        oms = int(k[0])
-                        cms = int(k[6]) if len(k) > 6 else (oms + tf_ms - 1)
-                        # Only persist closed candles
-                        if cms > now_ms:
-                            continue
-                        if oms not in cached_by_open_ms:
-                            newly_fetched_count += 1
-                        cached_by_open_ms[oms] = {
-                            "open_time_ms": oms,
-                            "close_time_ms": cms,
-                            "Open": float(k[1]),
-                            "High": float(k[2]),
-                            "Low": float(k[3]),
-                            "Close": float(k[4]),
-                            "Volume": float(k[5]),
-                            "source": label,
-                        }
-                        try:
-                            db.execute(
-                                """
-                                INSERT INTO strategy_lab_ohlcv
-                                (market_type, symbol, timeframe, open_time_ms, close_time_ms, open, high, low, close, volume, source, fetched_at)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                ON CONFLICT (market_type, symbol, timeframe, open_time_ms) DO NOTHING
-                                """,
-                                (
-                                    market_type,
-                                    symbol,
-                                    timeframe,
-                                    oms,
-                                    cms,
-                                    float(k[1]),
-                                    float(k[2]),
-                                    float(k[3]),
-                                    float(k[4]),
-                                    float(k[5]),
-                                    label,
-                                    now_ts,
-                                ),
-                            )
-                        except Exception:
-                            pass
-                    break
-            except Exception as e:
-                logger.debug("Endpoint %s failed: %s", url, e)
-
-    if cached_by_open_ms:
-        sorted_oms = sorted(cached_by_open_ms.keys())[-total_limit:]
-        rows = []
-        for oms in sorted_oms:
-            item = cached_by_open_ms[oms]
-            ts_iso = datetime.fromtimestamp(oms / 1000.0, tz=timezone.utc).isoformat()
-            rows.append(
-                {
-                    "timestamp": ts_iso,
-                    "Open": item["Open"],
-                    "High": item["High"],
-                    "Low": item["Low"],
-                    "Close": item["Close"],
-                    "Volume": item["Volume"],
-                }
+                    cursor = last_open + tf_ms
+                    if len(batch) < _KLINE_PAGE_LIMIT:
+                        reached_end = True
+                        break
+                    time.sleep(throttle)
+                if ep_rows:
+                    seg_rows.extend(ep_rows)
+                    seg_label = seg_label or label
+                if cursor > seg_end:
+                    reached_end = True
+                if (reached_end or cursor > seg_end) and seg_rows:
+                    break  # segment couvert ; sans donnée on essaie l'endpoint suivant (comportement historique)
+            stats["segments_fetched"] += 1
+            if had_error and not reached_end and cursor <= seg_end:
+                stats["fetch_incomplete"] = True
+                stats["fetch_issues"].append(f"Téléchargement incomplet ({had_error}).")
+            if not seg_rows:
+                continue
+            arr = np.array(
+                [[int(k[0]), int(k[6]) if len(k) > 6 else int(k[0]) + tf_ms - 1, k[1], k[2], k[3], k[4], k[5]] for k in seg_rows],
+                dtype="float64",
             )
-        df = pd.DataFrame(rows)
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-        df.set_index("timestamp", inplace=True)
-        return df, source_used, {"cached": cached_count, "fetched": newly_fetched_count, "period_clamped": period_clamped, "max_period_candles": LAB_MAX_PERIOD_CANDLES}
+            arr = arr[arr[:, 1] <= now_ms]  # uniquement des bougies CLÔTURÉES
+            if len(arr) == 0:
+                continue
+            fetched_parts.append(arr)
+            label_used = label_used or seg_label
+            try:
+                _persist_ohlcv(db, market_type, symbol, timeframe, arr, seg_label or "Binance")
+            except Exception as e:
+                stats["persist_failed"] = True
+                logger.warning("strategy_lab_ohlcv write failed: %s", e)
+
+    if cached_count or fetched_parts:
+        merged = np.vstack([cached] + fetched_parts) if fetched_parts else cached
+        order = np.argsort(merged[:, 0], kind="stable")
+        merged = merged[order]
+        keep = np.ones(len(merged), dtype=bool)
+        keep[:-1] = merged[1:, 0] != merged[:-1, 0]  # doublons : on garde la dernière occurrence (donnée la plus récente)
+        merged = merged[keep]
+        merged = merged[(merged[:, 0] >= query_start_ms) & (merged[:, 0] <= end_ms)]
+        if fetched_parts:
+            fetched_opens = np.unique(np.concatenate([p[:, 0] for p in fetched_parts]))
+            cached_opens = cached[:, 0] if cached_count else np.empty(0)
+            stats["fetched"] = int(len(np.setdiff1d(fetched_opens, cached_opens)))
+            source_used = label_used if cached_count == 0 else f"{label_used} + Cache PostgreSQL"
+        if not start_date:
+            merged = merged[-total_limit:]
+        if len(merged):
+            idx = pd.to_datetime(merged[:, 0].astype("int64"), unit="ms", utc=True)
+            df = pd.DataFrame(merged[:, 2:7], columns=list(_OHLCV_COLS), index=idx)
+            df.index.name = "timestamp"
+            stats["loaded_start_ms"] = int(merged[0, 0])
+            stats["loaded_end_ms"] = int(merged[-1, 0])
+            stats["loaded_candles"] = int(len(merged))
+            if requested_start_ms is not None and stats["loaded_start_ms"] > requested_start_ms + 2 * tf_ms and not stats["fetch_incomplete"]:
+                stats["history_unavailable_before_ms"] = stats["loaded_start_ms"]
+            return df, source_used, stats
 
     # Fallback to local CSV archive (/scratch/btc_15m.csv)
     candidate_csvs = [
@@ -1773,7 +1886,8 @@ def load_historical_candles(
                     df[col] = pd.to_numeric(df[col], errors="coerce")
                 df.dropna(subset=["Open", "High", "Low", "Close"], inplace=True)
                 if len(df) >= 50:
-                    return df, "Archive Locale Bitsure (btc_15m.csv)", {"cached": len(df), "fetched": 0}
+                    stats.update({"cached": len(df), "fetched": 0, "source_fallback": "csv", "loaded_candles": len(df)})
+                    return df, "Archive Locale Bitsure (btc_15m.csv)", stats
             except Exception as e:
                 logger.warning("Fallback CSV read error: %s", e)
 
@@ -1791,7 +1905,8 @@ def load_historical_candles(
         if df is not None and not df.empty:
             if getattr(df.index, "tz", None) is None and hasattr(df.index, "tz_localize"):
                 df.index = df.index.tz_localize("UTC")
-            return df.tail(total_limit), f"{src} ({market_type.upper()})", {"cached": 0, "fetched": len(df)}
+            stats.update({"cached": 0, "fetched": len(df), "source_fallback": "data_fetcher", "loaded_candles": min(len(df), total_limit)})
+            return df.tail(total_limit), f"{src} ({market_type.upper()})", stats
     except Exception as e:
         logger.error("DataFetcher fallback failed in Strategy Lab: %s", e)
 
@@ -2254,7 +2369,11 @@ def run_backtest_experiment(
         df = _ind_store.get(_ind_key)
         if df is None:
             df = _compute_lab_indicators(cleaned_df, params)
-            while len(_ind_store) >= 48:  # borne mémoire : on évince la plus ancienne combinaison
+            # borne mémoire : au plus 48 combinaisons ET au plus OPT_INDICATOR_CACHE_MB (les séries longues sont lourdes)
+            _frame_bytes = max(1, int(df.memory_usage(deep=False).sum()))
+            _budget = int(float(os.getenv("OPT_INDICATOR_CACHE_MB", "1200") or 1200) * 1_048_576)
+            _max_entries = max(1, min(48, _budget // _frame_bytes))
+            while len(_ind_store) >= _max_entries:  # on évince la plus ancienne combinaison
                 _ind_store.pop(next(iter(_ind_store)))
             _ind_store[_ind_key] = df
     else:
