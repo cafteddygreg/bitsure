@@ -1,0 +1,5 @@
+Remplace trading_safety.py (racine du projet) par ce fichier, puis redemarre le bot.
+Seules les notifications "AVERTISSEMENT SECURITE TEMPORAIRE" changent : aucune logique d'ordre, SL/TP, safe mode ou execution n'est modifiee.
+Reglages optionnels (variables d'environnement) :
+  SAFETY_WARN_NOTIFY_COOLDOWN_SECONDS=1800   (defaut 30 min, incidents normaux)
+  SAFETY_WARN_LOCK_COOLDOWN_SECONDS=21600    (defaut 6 h, SL bloque par le Safe Mode)

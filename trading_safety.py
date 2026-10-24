@@ -8,6 +8,8 @@ or sends user Telegram notifications.
 
 import asyncio
 import os
+import re
+import threading
 import time
 from collections import deque
 from contextlib import contextmanager
@@ -99,40 +101,129 @@ def engage_safe_mode(
     return cfg
 
 
+# ── Anti-spam des avertissements temporaires (notification uniquement) ────────────────────────
+# Un même problème ne doit produire qu'un message Telegram par fenêtre, même si le texte d'erreur varie
+# ou si un autre cycle réussi efface le flag persistant entre-temps.
+SAFETY_WARN_NOTIFY_COOLDOWN_SECONDS = int(os.getenv("SAFETY_WARN_NOTIFY_COOLDOWN_SECONDS", "1800"))   # 30 min
+SAFETY_WARN_LOCK_COOLDOWN_SECONDS = int(os.getenv("SAFETY_WARN_LOCK_COOLDOWN_SECONDS", "21600"))      # 6 h (verrou manuel déjà connu)
+_warn_notify_state: dict[tuple[int, str], dict] = {}
+_warn_notify_lock = threading.Lock()
+
+
+def _classify_warn(reason: str) -> tuple[str, str, Optional[str]]:
+    """Retourne (clé_de_déduplication, type, symbole) à partir du texte de raison."""
+    text = reason or ""
+    m = re.search(r"\(([A-Z0-9]{5,20})\)", text)
+    symbol = m.group(1) if m else None
+    low = text.lower()
+    if "safe mode actif" in low or "safe mode" in low and "refusé" in low:
+        kind = "lock_blocked"
+    elif "déplacement sl" in low or "mise à jour sl" in low:
+        kind = "sl_move_failed"
+    elif "absent côté binance" in low or "ordre protecteur" in low:
+        kind = "protective_missing"
+    elif "réseau" in low or "api" in low or "rate" in low or "timeout" in low:
+        kind = "network"
+    else:
+        kind = "other"
+    if kind == "other":
+        # Sans catégorie connue : on neutralise les chiffres variables pour ne pas contourner la déduplication.
+        key = "other:" + re.sub(r"[0-9.]+", "#", low)[:120]
+    else:
+        key = f"{kind}:{symbol or '*'}"
+    return key, kind, symbol
+
+
+def _should_notify_warn(user_id: int, key: str, kind: str) -> tuple[bool, int]:
+    """(envoyer ?, nombre d'avertissements identiques supprimés depuis le dernier envoi)."""
+    now = time.time()
+    cooldown = SAFETY_WARN_LOCK_COOLDOWN_SECONDS if kind == "lock_blocked" else SAFETY_WARN_NOTIFY_COOLDOWN_SECONDS
+    with _warn_notify_lock:
+        st = _warn_notify_state.get((int(user_id), key))
+        if st is not None and (now - st["sent_at"]) < cooldown:
+            st["suppressed"] += 1
+            return False, 0
+        suppressed = st["suppressed"] if st else 0
+        _warn_notify_state[(int(user_id), key)] = {"sent_at": now, "suppressed": 0}
+        if len(_warn_notify_state) > 500:   # borne mémoire
+            for k in sorted(_warn_notify_state, key=lambda k: _warn_notify_state[k]["sent_at"])[:100]:
+                _warn_notify_state.pop(k, None)
+        return True, suppressed
+
+
+def _build_warn_message(kind: str, symbol: Optional[str], reason: str, suppressed: int) -> str:
+    """Message en 3 blocs : ce qui s'est passé / conséquence / action concrète."""
+    sym = f" sur {symbol}" if symbol else ""
+    if kind == "lock_blocked":
+        what = f"Le stop-loss{sym} n'a pas pu être déplacé : le Safe Mode est actif (verrouillage manuel)."
+        impact = ("Aucun ordre n'a été envoyé à Binance. Les ordres déjà placés ne sont pas modifiés, "
+                  "mais le stop-loss ne suit plus le prix tant que le verrou reste actif.")
+        action = ("Rien à faire si le verrou est voulu. Pour reprendre la gestion automatique : "
+                  "/clearsafe <code_securite>. État détaillé : /safestatus. "
+                  "Ce message n'est plus répété pendant 6 h.")
+    elif kind == "sl_move_failed":
+        what = f"Le déplacement du stop-loss{sym} a échoué côté Binance."
+        impact = "L'ancien stop-loss reste en place. Nouvelle tentative automatique au prochain cycle."
+        action = "Aucune action immédiate. Si cela persiste, vérifie /safestatus. Ce message n'est pas répété avant 30 min."
+    elif kind == "protective_missing":
+        what = f"Un ordre protecteur (SL/TP){sym} est introuvable sur Binance."
+        impact = "La position peut être insuffisamment protégée. Le bot tente de le reposer au prochain cycle."
+        action = "Vérifie la position dans Binance et /safestatus. Ce message n'est pas répété avant 30 min."
+    elif kind == "network":
+        what = "Erreur réseau ou limite d'appels (rate-limit) avec l'API Binance."
+        impact = "Incident généralement passager. Nouvelle tentative automatique au prochain cycle."
+        action = "Aucune action nécessaire. Si cela dure, consulte /safestatus. Ce message n'est pas répété avant 30 min."
+    else:
+        what = "Un incident temporaire a été détecté par la surveillance."
+        impact = "Surveillance accrue. L'avertissement est levé automatiquement au prochain cycle réussi."
+        action = "Consulte /safestatus ou acquitte avec /clearsafe <code_securite>. Ce message n'est pas répété avant 30 min."
+    extra = f"\n\n({suppressed} avertissement(s) identique(s) regroupé(s) depuis le dernier message.)" if suppressed else ""
+    return (
+        "⚠️ AVERTISSEMENT SÉCURITÉ TEMPORAIRE\n\n"
+        f"• Quoi : {what}\n"
+        f"• Conséquence : {impact}\n"
+        f"• Action : {action}\n\n"
+        f"Détail technique : {reason[:300]}"
+        f"{extra}"
+    )
+
+
 def engage_safety_warn(user_id: int, reason: str, context=None) -> TradingConfig:
     """Active un avertissement temporaire (safety_warn) auto-effacé au prochain succès.
-    Évite d'envoyer en boucle la même notification Telegram toutes les 10s si le même avertissement est déjà actif.
+
+    L'état persistant (safety_warn, raison, horodatage) est inchangé. Seule la notification Telegram est
+    dédupliquée par (utilisateur, type de problème, symbole) avec un délai de grâce, pour éviter les rafales.
     """
     now = time.time()
     logger.warning("SAFETY_WARN_ENGAGED user=%s reason=%s", user_id, reason)
-    already_notified = False
+    current_cfg = None
     try:
         from trading_config import get_config
         current_cfg = get_config(user_id)
-        if (
-            getattr(current_cfg, "safety_warn", False)
-            and getattr(current_cfg, "safety_warn_reason", None) == reason
-            and (now - float(getattr(current_cfg, "safety_warn_at", 0.0) or 0.0)) < 900
-        ):
-            already_notified = True
     except Exception:
         pass
+    already_active_same = bool(
+        current_cfg is not None
+        and getattr(current_cfg, "safety_warn", False)
+        and getattr(current_cfg, "safety_warn_reason", None) == reason
+        and (now - float(getattr(current_cfg, "safety_warn_at", 0.0) or 0.0)) < 900
+    )
 
     cfg = update_config(
         user_id,
         safety_warn=True,
         safety_warn_reason=reason,
-        safety_warn_at=now if not already_notified else (getattr(current_cfg, "safety_warn_at", now) or now),
+        safety_warn_at=(
+            (getattr(current_cfg, "safety_warn_at", now) or now) if already_active_same else now
+        ),
     )
-    if not already_notified:
-        msg = (
-            "⚠️ AVERTISSEMENT SÉCURITÉ TEMPORAIRE (safety_warn)\n\n"
-            f"• Raison : {reason}\n"
-            "• Impact : Surveillance accrue suite à un incident transitoire (réseau / rate-limit / ordre protecteur). "
-            "Sera levé automatiquement au prochain cycle réussi.\n"
-            "• Étapes : Consulte /safestatus ou utilise /clearsafe <code_securite> pour acquitter immédiatement."
-        )
-        _dispatch_or_queue_notification(user_id, msg, context=context)
+
+    key, kind, symbol = _classify_warn(reason)
+    send, suppressed = _should_notify_warn(user_id, key, kind)
+    if send:
+        _dispatch_or_queue_notification(user_id, _build_warn_message(kind, symbol, reason, suppressed), context=context)
+    else:
+        logger.info("SAFETY_WARN_NOTIFY_SUPPRESSED user=%s key=%s", user_id, key)
     return cfg
 
 
