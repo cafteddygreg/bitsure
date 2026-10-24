@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './index.css';
 import {
   apiFetch,
+  getStoredToken,
   setStoredSession,
   clearStoredSession,
   ApiError,
@@ -31,6 +32,8 @@ import {
 } from './types';
 import { PriceChart } from './components/PriceChart';
 import { LandingPage } from './components/LandingPage';
+import { DemoMode } from './components/DemoMode';
+import { BeginnerPath } from './components/BeginnerPath';
 import { StrategyLabView } from './components/StrategyLabView';
 import { TermsOfUsePage } from './components/TermsOfUsePage';
 import { AdminUsersIntelligenceTab } from './components/AdminUsersIntelligenceTab';
@@ -97,6 +100,9 @@ const SYMBOLS = [
 ];
 
 const TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d'];
+// Set VITE_APPROVAL_ETA (e.g. "24 h") to show an estimated approval time on the sign-up form.
+const APPROVAL_ETA: string = String((import.meta as any).env?.VITE_APPROVAL_ETA || '').trim();
+
 const STYLES = [
   { id: 'scalping', label: 'Scalping (5m)' },
   { id: 'scalping_15m', label: 'Scalping (15m)' },
@@ -106,7 +112,14 @@ const STYLES = [
 ];
 
 export function App() {
-  const [viewMode, setViewMode] = useState<'landing' | 'workspace' | 'terms'>('workspace');
+  // Visitors without a stored session land on the public page; returning users go straight to the app.
+  const [viewMode, setViewMode] = useState<'landing' | 'workspace' | 'terms' | 'demo'>(() => {
+    try {
+      return getStoredToken() ? 'workspace' : 'landing';
+    } catch {
+      return 'landing';
+    }
+  });
   const [returnToRegisterAfterTerms, setReturnToRegisterAfterTerms] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>('intelligence');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -270,6 +283,22 @@ export function App() {
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
   const [selectedTimeframe, setSelectedTimeframe] = useState('1h');
   const [selectedStyle, setSelectedStyle] = useState('day');
+  // Progressive disclosure: advanced tools stay one click away, never removed.
+  const [advancedRevealed, setAdvancedRevealed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('bitsure_show_advanced') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const revealAdvanced = () => {
+    setAdvancedRevealed(true);
+    try {
+      localStorage.setItem('bitsure_show_advanced', '1');
+    } catch {
+      /* ignore */
+    }
+  };
   const [analysis, setAnalysis] = useState<MarketAnalysis | null>(null);
   const [multiScans, setMultiScans] = useState<MarketAnalysis[]>([]);
   const [lastScannedAt, setLastScannedAt] = useState<number | null>(null);
@@ -492,7 +521,11 @@ export function App() {
       setAuthChecking(false);
       if (err instanceof ApiError && err.status === 401) {
         setUser(null);
-        if (err.code === 'SESSION_LOCKED') setSessionLocked(true);
+        if (err.code === 'SESSION_LOCKED') {
+          setSessionLocked(true);
+        } else {
+          setViewMode((v) => (v === 'workspace' ? 'landing' : v));
+        }
       }
     }
   }, []);
@@ -1675,6 +1708,13 @@ export function App() {
       <form onSubmit={(e) => handleAuthSubmit(e, mode)} className="space-y-3.5 text-sm">
         {mode === 'register' && (
           <>
+            <div className="p-3 rounded-lg bg-[#20C997]/10 border border-[#20C997]/30 text-[11px] text-[#E8EEF2] leading-relaxed">
+              {tr(
+                lang,
+                `Chaque inscription est examinée manuellement par l'administrateur${APPROVAL_ETA ? ` (délai estimé : ${APPROVAL_ETA})` : ''}. Vous ne pourrez pas utiliser le terminal avant l'approbation.`,
+                `Every sign-up is reviewed manually by the administrator${APPROVAL_ETA ? ` (estimated time: ${APPROVAL_ETA})` : ''}. You cannot use the terminal until you are approved.`
+              )}
+            </div>
             <div>
               <label className="block text-xs text-[#8B98A4] mb-1">{tr(lang, 'Nom ou Pseudonyme')}</label>
               <input
@@ -1685,6 +1725,7 @@ export function App() {
                 className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2]"
                 required
               />
+              <p className="text-[10px] text-[#6E7B88] mt-1">{tr(lang, "Affiché sur votre profil et à l'administrateur qui examine votre demande.", 'Shown on your profile and to the administrator reviewing your request.')}</p>
             </div>
             <div>
               <label className="block text-xs text-[#8B98A4] mb-1">{tr(lang, 'Identifiant Telegram (optionnel)')}</label>
@@ -1695,6 +1736,7 @@ export function App() {
                 placeholder={tr(lang, '@votre_pseudo')}
                 className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg text-[#E8EEF2]"
               />
+              <p className="text-[10px] text-[#6E7B88] mt-1">{tr(lang, 'Facultatif : sert à relier votre compte au bot Telegram officiel.', 'Optional: used to link your account to the official Telegram bot.')}</p>
             </div>
           </>
         )}
@@ -1711,11 +1753,14 @@ export function App() {
             }`}
             required
           />
+          {mode === 'register' && (
+            <p className="text-[10px] text-[#6E7B88] mt-1">{tr(lang, 'Sert à vous connecter et à récupérer votre compte si vous perdez votre mot de passe.', 'Used to sign in and to recover your account if you lose your password.')}</p>
+          )}
         </div>
         <div>
           <label className="block text-xs text-[#8B98A4] mb-1">
             {tr(lang, 'Mot de passe')}{' '}
-            {mode === 'register' && <span className="text-[#6E7B88]">{tr(lang, '(min. 8 caractères)')}</span>}{' '}
+            {mode === 'register' && <span className="text-[#6E7B88]">{tr(lang, '(min. 8 caractères, stocké sous forme chiffrée)', '(min. 8 characters, stored hashed)')}</span>}{' '}
             <span className="text-[#20C997] font-semibold">*</span>
           </label>
           <div className="relative">
@@ -1907,7 +1952,9 @@ export function App() {
     const isPendingLegacyConsent = Boolean(user && !user.terms_accepted);
     return (
       <TermsOfUsePage
-        showAcceptButton={returnToRegisterAfterTerms || authModal === 'register' || !user || isPendingLegacyConsent}
+        lang={lang}
+        // Reading never accepts: the accept button only exists during sign-up or for a pending legacy consent.
+        showAcceptButton={returnToRegisterAfterTerms || isPendingLegacyConsent}
         isAccepted={user ? Boolean(user.terms_accepted) : authTermsAccepted}
         onBack={() => {
           if (returnToRegisterAfterTerms) {
@@ -1954,6 +2001,27 @@ export function App() {
     );
   }
 
+  if (viewMode === 'demo') {
+    return (
+      <>
+        <DemoMode
+          lang={lang}
+          onBack={() => setViewMode('landing')}
+          onCreateAccount={() => {
+            setAuthError(null);
+            setAuthModal('register');
+            setViewMode('landing');
+          }}
+          onLogin={() => {
+            setAuthError(null);
+            setAuthModal('login');
+            setViewMode('landing');
+          }}
+        />
+      </>
+    );
+  }
+
   if (viewMode === 'landing') {
     return (
       <>
@@ -1965,11 +2033,8 @@ export function App() {
             setViewMode('terms');
           }}
           onEnterWorkspace={() => {
-            if (user) {
-              setViewMode('workspace');
-            } else {
-              setAuthModal('login');
-            }
+            // Signed-in users open the app; visitors open the demo, never the login wall.
+            setViewMode(user ? 'workspace' : 'demo');
           }}
           onOpenAuthModal={(m) => {
             setAuthError(null);
@@ -2541,6 +2606,15 @@ export function App() {
     return { entryVal, currVal, slVal, tpVal, marginVal, upnl, upnlPct };
   };
 
+  // Beginners (no paper activity, no Binance keys, no AutoTrade, not admin) see Labs/Auto-Trade after one click.
+  const hideAdvancedTabs =
+    !advancedRevealed &&
+    !isAdminUser &&
+    openPaper.length + closedPaper.length === 0 &&
+    !tradingCfg?.credentials_valid &&
+    !tradingCfg?.auto_trade;
+  const ADVANCED_TAB_IDS = ['safety', 'strategy_lab'];
+
   const navItems = [
     { id: 'intelligence', label: tr(lang, 'Market Intelligence'), icon: Activity, group: 'overview' },
     { id: 'paper', label: tr(lang, 'Paper Trading'), icon: Layers, count: openPaper.length, group: 'trading' },
@@ -2575,7 +2649,12 @@ export function App() {
     { id: 'admin', label: 'Admin' },
   ];
   const navGroups = navGroupDefs
-    .map((g) => ({ ...g, items: navItems.filter((it: any) => it.group === g.id) }))
+    .map((g) => ({
+      ...g,
+      items: navItems.filter(
+        (it: any) => it.group === g.id && !(hideAdvancedTabs && ADVANCED_TAB_IDS.includes(it.id) && activeTab !== it.id)
+      ),
+    }))
     .filter((g) => g.items.length > 0);
 
   // Grouped Mobile Hub structure (4 primary tabs on mobile + sub-switcher strip)
@@ -2643,6 +2722,11 @@ export function App() {
           },
         ]),
   ];
+  if (hideAdvancedTabs) {
+    mobileHubGroups.forEach((hub) => {
+      hub.tabs = hub.tabs.filter((t) => !ADVANCED_TAB_IDS.includes(t.id) || t.id === activeTab);
+    });
+  }
   const currentMobileHub =
     mobileHubGroups.find((g) => g.tabs.some((t) => t.id === activeTab)) || mobileHubGroups[0];
   lastTabByHubRef.current[currentMobileHub.hubId] = activeTab;
@@ -3276,6 +3360,20 @@ export function App() {
              ========================================================= */}
           {activeTab === 'intelligence' && (
             <>
+              {hideAdvancedTabs && (
+                <BeginnerPath
+                  lang={lang}
+                  selectedSymbol={selectedSymbol}
+                  signal={analysis?.signal}
+                  score={analysis?.teddy_score}
+                  loading={loadingAnalysis}
+                  onPickAsset={(sym) => setSelectedSymbol(sym)}
+                  onAnalyze={() => runAnalysis(selectedSymbol, selectedTimeframe, selectedStyle)}
+                  onOpenPaper={() => setActiveTab('paper')}
+                  onShowAdvanced={revealAdvanced}
+                  onDismiss={revealAdvanced}
+                />
+              )}
               {/* État du système : uniquement des états réels (flux WS, config AutoTrade, positions Paper, alertes) */}
               <div className="flex flex-wrap items-center gap-2 -mt-2" aria-label={tr(lang, 'État du système', 'System status')}>
                 <StatusBadge tone={wsConnected ? 'positive' : 'warning'} dot>

@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { TermsOfUseEn } from "./TermsOfUseEn";
 import {
   Shield,
   ArrowLeft,
@@ -20,6 +21,7 @@ interface TermsOfUsePageProps {
   onAcceptAndReturnToRegister?: () => void;
   showAcceptButton?: boolean;
   isAccepted?: boolean;
+  lang?: string;
 }
 
 export const TERMS_VERSION = "2.2.0";
@@ -29,8 +31,21 @@ export function TermsOfUsePage({
   onAcceptAndReturnToRegister,
   showAcceptButton = false,
   isAccepted = false,
+  lang = "fr",
 }: TermsOfUsePageProps) {
   const [activeSection, setActiveSection] = useState<string>("all");
+
+  if (lang === "en") {
+    return (
+      <TermsOfUseEn
+        version={TERMS_VERSION}
+        onBack={onBack}
+        onAcceptAndReturnToRegister={onAcceptAndReturnToRegister}
+        showAcceptButton={showAcceptButton}
+        isAccepted={isAccepted}
+      />
+    );
+  }
 
   const sections = [
     { id: "all", label: "Contrat complet (Intégral)" },

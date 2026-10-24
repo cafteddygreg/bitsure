@@ -1,0 +1,15 @@
+BITSURE - changed files (landing + demo + learn + beginner path + EN terms + sign-up + pricing)
+
+HOW TO USE
+1. Back up your project folder first (or commit what you have).
+2. Unzip this archive INTO your project root (the folder that contains src/ and web_api_server.py).
+   Say yes to overwrite. Paths are already correct.
+3. npm install
+4. npm run build
+5. python scripts/gen_frontend_bundle.py
+
+NEW files:      src/components/DemoMode.tsx, LearnSection.tsx, BeginnerPath.tsx, TermsOfUseEn.tsx
+MODIFIED files: src/App.tsx, src/components/LandingPage.tsx, src/components/TermsOfUsePage.tsx, web_api_server.py
+
+OPTIONAL: set VITE_APPROVAL_ETA (e.g. "24 h") at build time to show an approval time on the sign-up form.
+CHECK: backend TRIAL_DAYS is 30 but the landing says 14 days.

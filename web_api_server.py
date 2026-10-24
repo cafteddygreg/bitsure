@@ -1890,6 +1890,95 @@ def _analyze_symbol_complete(user_id: int, symbol: str, timeframe: str = "1h", s
     }
 
 
+
+# =====================================================================
+# DEMO MODE (public, no account) — read-only analysis, nothing persisted
+# =====================================================================
+DEMO_SYMBOLS = ("BTCUSDT", "ETHUSDT", "XAUUSDT")
+DEMO_TIMEFRAMES = ("15m", "1h", "4h", "1d")
+DEMO_SESSION_LIMIT = 3      # analyses per demo session (browser tab session)
+DEMO_IP_DAILY_LIMIT = 12    # hard cap per IP / 24h so resetting the session id does not bypass the limit
+_DEMO_WINDOW_SECONDS = 24 * 3600
+_demo_usage: Dict[str, List[float]] = {}
+_demo_usage_lock = threading.Lock()
+
+
+def _demo_consume(ip: str, session_id: str) -> Tuple[bool, int, str]:
+    """Return (allowed, session_used, reason). Counts only when allowed."""
+    now = time.time()
+    sid = re.sub(r"[^A-Za-z0-9_-]", "", session_id or "")[:64]
+    with _demo_usage_lock:
+        # drop expired entries so the dict cannot grow without bound
+        for key in [k for k, v in _demo_usage.items() if not v or now - v[-1] > _DEMO_WINDOW_SECONDS]:
+            _demo_usage.pop(key, None)
+        ip_hits = [t for t in _demo_usage.get(f"ip:{ip}", []) if now - t <= _DEMO_WINDOW_SECONDS]
+        ses_hits = [t for t in _demo_usage.get(f"ses:{sid}", []) if now - t <= _DEMO_WINDOW_SECONDS] if sid else []
+        if len(ip_hits) >= DEMO_IP_DAILY_LIMIT:
+            return False, len(ses_hits), "ip_limit"
+        if not sid or len(ses_hits) >= DEMO_SESSION_LIMIT:
+            return False, len(ses_hits), "session_limit" if sid else "missing_session"
+        ip_hits.append(now)
+        ses_hits.append(now)
+        _demo_usage[f"ip:{ip}"] = ip_hits
+        _demo_usage[f"ses:{sid}"] = ses_hits
+        return True, len(ses_hits), ""
+
+
+def _analyze_symbol_demo(symbol: str, timeframe: str, lang: str = "fr") -> Dict[str, Any]:
+    """Pure read-only analysis for visitors: no user id, no trading_config row, no PaperTrader,
+    no alerts, no history, no notifications and no exchange credentials."""
+    norm_sym = normalize_symbol(symbol)
+    fetcher = DataFetcher.get_instance()
+    df = None
+    data_source = "live_api"
+    try:
+        if norm_sym in ("BTCUSDT", "ETHUSDT"):
+            df = get_klines_dataframe(norm_sym, timeframe, "spot", 500)
+    except Exception:
+        df = None
+    if df is None or df.empty:
+        try:
+            df = run_coro(fetcher.get_historical_data(norm_sym, timeframe))
+        except Exception:
+            df = None
+    if df is None or df.empty:
+        df = _load_fallback_csv(norm_sym)
+        data_source = "historical_csv_cache"
+
+    tf_min_map = {"15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+    analysis = SignalEngine.analyze(
+        df,
+        lang=lang,
+        symbol=norm_sym,
+        style="day",
+        htf_data=None,
+        timeframe_minutes=float(tf_min_map.get(timeframe, 60)),
+    )
+    ind = analysis.get("indicators") or {}
+    last_price = ind.get("price") or (float(df["Close"].iloc[-1]) if df is not None and not df.empty else 0.0)
+    clean_ind = {}
+    for k in ("price", "rsi", "atr", "adx", "sma20", "sma50", "macd", "macd_signal", "macd_hist"):
+        v = ind.get(k)
+        if isinstance(v, (int, float)):
+            clean_ind[k] = None if v != v else v
+    return {
+        "symbol": norm_sym,
+        "timeframe": timeframe,
+        "data_source": data_source,
+        "signal": analysis.get("signal", "WAIT"),
+        "teddy_score": analysis.get("teddy_score", 0),
+        "confidence": analysis.get("confidence", "LOW"),
+        "reason": analysis.get("reason", ""),
+        "rejection_reason": analysis.get("rejection_reason", ""),
+        "current_price": last_price,
+        "sl": analysis.get("sl"),
+        "tp": analysis.get("tp"),
+        "rr_ratio": analysis.get("rr_ratio"),
+        "indicators": clean_ind,
+        "simulated": True,
+    }
+
+
 # =====================================================================
 # HTTP REQUEST HANDLER
 # =====================================================================
@@ -2459,6 +2548,29 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             # Public auth configuration / Google OAuth URL endpoint
+            # Public demo analysis: no account, no persistence, hard-limited per session and per IP.
+            if path == "/api/demo/analyze":
+                symbol = (query.get("symbol") or "BTCUSDT").upper()
+                timeframe = query.get("timeframe") or "1h"
+                if symbol not in DEMO_SYMBOLS or timeframe not in DEMO_TIMEFRAMES:
+                    self._send_json(400, {"ok": False, "code": "DEMO_BAD_REQUEST", "error": "Actif ou timeframe non disponible en démo."})
+                    return
+                allowed, used, reason = _demo_consume(self._client_ip(), self.headers.get("X-Demo-Session", ""))
+                if not allowed:
+                    self._send_json(429, {
+                        "ok": False,
+                        "code": "DEMO_LIMIT_REACHED",
+                        "reason": reason,
+                        "quota": {"used": used, "limit": DEMO_SESSION_LIMIT},
+                        "error": "Limite de la démo atteinte : créez un compte pour continuer.",
+                    })
+                    return
+                lang = "en" if query.get("lang") == "en" else "fr"
+                result = _analyze_symbol_demo(symbol, timeframe, lang=lang)
+                self._send_json(200, {"ok": True, "demo": True, "analysis": result,
+                                      "quota": {"used": used, "limit": DEMO_SESSION_LIMIT}})
+                return
+
             if path == "/api/auth/google/url":
                 if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
                     self._send_json(400, {

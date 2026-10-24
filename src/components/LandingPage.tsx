@@ -8,6 +8,7 @@ import {
   Globe,
 } from 'lucide-react';
 import { AppLang, tr } from '../i18n';
+import { LearnSection } from './LearnSection';
 
 interface LandingPageProps {
   onEnterWorkspace: () => void;
@@ -49,6 +50,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </a>
             <a href="#safety" className="hover:text-[#E8EEF2] transition-colors">
               {tr(lang, 'Architecture Safety', 'Safety Architecture')}
+            </a>
+            <a href="#learn" className="hover:text-[#E8EEF2] transition-colors">
+              {tr(lang, 'Apprendre', 'Learn')}
             </a>
             <a href="#pricing" className="hover:text-[#E8EEF2] transition-colors">
               {tr(lang, 'Plans & Accès', 'Plans & Access')}
@@ -95,7 +99,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               onClick={onEnterWorkspace}
               className="px-4 py-2 text-xs font-semibold bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] rounded-lg transition-colors flex items-center gap-1.5"
             >
-              <span>{tr(lang, 'Ouvrir le Terminal', 'Open Terminal')}</span>
+              <span>{tr(lang, 'Essayer la démo', 'Try the demo')}</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -117,24 +121,24 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               <div className="inline-flex items-center gap-2 text-xs font-mono-tabular uppercase tracking-wider text-[#20C997] border-l-2 border-[#20C997] pl-3">
                 {tr(
                   lang,
-                  'Architecture Quantitative Multi-Timeframe • BTC • ETH • XAU/USDT',
-                  'Multi-Timeframe Quantitative Architecture • BTC • ETH • XAU/USDT'
+                  'Analyse multi-échelles de temps (lecture du marché sur plusieurs durées) • BTC • ETH • Or',
+                  'Multi-timeframe analysis (reading the market over several time spans) • BTC • ETH • Gold'
                 )}
               </div>
 
               <h1 className="font-display text-4xl sm:text-5xl lg:text-[54px] font-bold tracking-tight leading-[1.08] text-[#E8EEF2]">
                 {tr(
                   lang,
-                  'Analyse de marché explicable, gestion du risque ATR et exécution sécurisée.',
-                  'Explainable market intelligence, ATR risk management, and secure execution.'
+                  "Analysez des stratégies crypto et or, entraînez-vous avec de l'argent virtuel, puis automatisez sur Binance.",
+                  'Analyze crypto and gold strategies, practice with virtual money, then automate on Binance.'
                 )}
               </h1>
 
               <p className="text-base sm:text-lg text-[#8B98A4] max-w-[64ch] leading-relaxed">
                 {tr(
                   lang,
-                  'Bitsure Teddy combine un moteur de confluence technique à 5 conditions, un score de confiance transparent sur 100 points, un simulateur Paper Trading réaliste (frais et slippage inclus) et une machine à états de sécurité pour Binance Spot et Futures.',
-                  'Bitsure Teddy combines a 5-condition technical confluence engine, a transparent 100-point confidence score, a realistic Paper Trading simulator (fees and slippage included), and a safety state machine for Binance Spot and Futures.'
+                  "Un score de 0 à 100 vous dit si les indicateurs techniques sont alignés. Vous testez d'abord en simulation (frais et glissement de prix inclus), sans risque.",
+                  'A 0–100 score tells you whether the technical indicators agree. You test in simulation first (fees and price slippage included), with no risk.'
                 )}
               </p>
 
@@ -143,7 +147,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   onClick={onEnterWorkspace}
                   className="px-6 py-3.5 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold text-sm rounded-lg transition-all flex items-center gap-2 shadow-xl shadow-[#20C997]/20"
                 >
-                  <span>{tr(lang, 'Lancer le Terminal Live', 'Launch Live Terminal')}</span>
+                  <span>{tr(lang, 'Essayer la démo gratuite', 'Try the free demo')}</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
                 <button
@@ -152,7 +156,20 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 >
                   {tr(lang, 'Créer un compte', 'Create Account')}
                 </button>
+                <button
+                  onClick={() => onOpenAuthModal('login')}
+                  className="px-2 py-3.5 text-sm text-[#8B98A4] hover:text-[#E8EEF2] underline underline-offset-4"
+                >
+                  {tr(lang, 'Se connecter', 'Log in')}
+                </button>
               </div>
+              <p className="text-xs text-[#6E7B88]">
+                {tr(
+                  lang,
+                  'Démo : 100 % simulée, sans compte, sans clé API, sans connexion à un exchange.',
+                  'Demo: fully simulated, no account, no API key, no exchange connection.'
+                )}
+              </p>
             </div>
 
             {/* Right Visual Architectural Card */}
@@ -172,57 +189,30 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   </span>
                 </div>
 
-                <div className="space-y-2.5 text-xs">
-                  <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] flex items-center justify-between">
-                    <div>
-                      <div className="font-medium text-[#E8EEF2]">
-                        {tr(lang, '1. Alignement Tendance SMA 20 / SMA 50', '1. SMA 20 / SMA 50 Trend Alignment')}
-                      </div>
-                      <div className="text-[#6E7B88]">
-                        {tr(lang, 'Hiérarchie Multi-Timeframe (1H • 4H • 1D)', 'Multi-Timeframe Hierarchy (1H • 4H • 1D)')}
-                      </div>
-                    </div>
-                    <span className="font-mono-tabular text-[#20C997] font-semibold">25 pts + Bonus +15</span>
+                <div className="space-y-2 text-xs">
+                  <div className="text-[#6E7B88]">
+                    {tr(lang, '7 lignes groupées = 100 points maximum', '7 grouped rows = 100 points maximum')}
                   </div>
-
-                  <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] flex items-center justify-between">
-                    <div>
-                      <div className="font-medium text-[#E8EEF2]">
-                        {tr(lang, '2. Fenêtre RSI(14) & Momentum MACD(12,26,9)', '2. RSI(14) Window & MACD(12,26,9) Momentum')}
-                      </div>
-                      <div className="text-[#6E7B88]">
-                        {tr(lang, 'Filtrage des zones de surachat / survente', 'Overbought / oversold zone filtering')}
-                      </div>
+                  {[
+                    ['Tendance SMA + retour vers la SMA 20', 'SMA trend + pullback to SMA 20', 25],
+                    ['Momentum MACD', 'MACD momentum', 20],
+                    ['Force de tendance ADX', 'ADX trend strength', 15],
+                    ['Support / résistance (S/R)', 'Support / resistance (S/R)', 15],
+                    ['RSI', 'RSI', 10],
+                    ['Gain/risque (R:R)', 'Reward/risk (R:R)', 10],
+                    ['Volume', 'Volume', 5],
+                  ].map(([fr, en, pts]) => (
+                    <div key={String(fr)} className="px-3 py-2 rounded-lg bg-[#080C0F] border border-white/[0.06] flex items-center justify-between">
+                      <span className="text-[#E8EEF2]">{tr(lang, String(fr), String(en))}</span>
+                      <span className="font-mono-tabular text-[#20C997] font-semibold">{pts}</span>
                     </div>
-                    <span className="font-mono-tabular text-[#4EA1FF] font-semibold">
-                      {tr(lang, '40 pts cumulés', '40 pts combined')}
-                    </span>
-                  </div>
-
-                  <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] flex items-center justify-between">
-                    <div>
-                      <div className="font-medium text-[#E8EEF2]">
-                        {tr(lang, '3. Force Directionnelle ADX(14) & DI+/DI-', '3. Directional Strength ADX(14) & DI+/DI-')}
-                      </div>
-                      <div className="text-[#6E7B88]">
-                        {tr(lang, 'Rejet strict des marchés sans tendance (< 22 ADX)', 'Strict rejection of trendless markets (< 22 ADX)')}
-                      </div>
-                    </div>
-                    <span className="font-mono-tabular text-[#D6A84F] font-semibold">20 pts</span>
-                  </div>
-
-                  <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] flex items-center justify-between">
-                    <div>
-                      <div className="font-medium text-[#E8EEF2]">
-                        {tr(lang, '4. Volatilité ATR(14) & Ratio Risque/Rendement', '4. ATR(14) Volatility & Risk/Reward Ratio')}
-                      </div>
-                      <div className="text-[#6E7B88]">
-                        {tr(lang, 'Stop-Loss dynamique ATR + filtrage S/R (≥ 1:2.00 R:R)', 'Dynamic ATR Stop-Loss + S/R filter (≥ 1:2.00 R:R)')}
-                      </div>
-                    </div>
-                    <span className="font-mono-tabular text-[#20C997] font-semibold">
-                      {tr(lang, '15 pts + Garde-fous', '15 pts + Guardrails')}
-                    </span>
+                  ))}
+                  <div className="px-3 py-2 rounded-lg bg-[#D6A84F]/10 border border-[#D6A84F]/30 text-[#E2BC6A]">
+                    {tr(
+                      lang,
+                      'Ensuite : bonus multi-timeframes +15 (ou +5, 0, −15). Score final limité à 100.',
+                      'Then: multi-timeframe bonus +15 (or +5, 0, −15). Final score capped at 100.'
+                    )}
                   </div>
                 </div>
 
@@ -315,6 +305,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       </section>
 
       {/* Plans & Access Tiers */}
+      <LearnSection lang={lang} onStartDemo={onEnterWorkspace} onCreateAccount={() => onOpenAuthModal('register')} />
+
       <section id="pricing" className="py-16">
         <div className="max-w-[1400px] mx-auto px-6 space-y-10">
           <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
@@ -364,6 +356,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   </li>
                 </ul>
               </div>
+              <p className="mt-4 text-[11px] leading-relaxed text-[#6E7B88]">
+                {tr(lang, "L'essai gratuit court dès la création du compte ; l'approbation par l'administrateur est une étape distincte, nécessaire avant toute utilisation.", 'The free trial runs from account creation; administrator approval is a separate step, required before you can use anything.')}
+              </p>
               <button
                 onClick={() => onOpenAuthModal('register')}
                 className="mt-6 w-full py-2.5 text-xs font-semibold border border-white/15 rounded-lg hover:bg-white/[0.05] text-[#E8EEF2] transition-colors"
@@ -404,11 +399,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   </li>
                 </ul>
               </div>
+              <p className="mt-4 text-[11px] leading-relaxed text-[#6E7B88]">
+                {tr(lang, 'Activation = paiement reçu : 19 USDT (Binance Pay) ou 1 000 Stars Telegram donnent les mêmes 30 jours, sans renouvellement automatique.', 'Activation = payment received: 19 USDT (Binance Pay) or 1,000 Telegram Stars buy the same 30 days, with no automatic renewal.')}
+              </p>
               <button
-                onClick={onEnterWorkspace}
+                onClick={() => onOpenAuthModal('register')}
                 className="mt-6 w-full py-2.5 text-xs font-semibold bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] rounded-lg transition-colors"
               >
-                {tr(lang, 'Accéder à Bitsure PRO', 'Access Bitsure PRO')}
+                {tr(lang, 'Créer un compte pour le plan Pro', 'Create an account for Pro')}
               </button>
             </div>
 
@@ -444,11 +442,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   </li>
                 </ul>
               </div>
+              <p className="mt-4 text-[11px] leading-relaxed text-[#6E7B88]">
+                {tr(lang, "49 USDT ou 2 500 Stars pour 30 jours ; renouveler avant l'échéance ajoute 30 jours au temps restant.", '49 USDT or 2,500 Stars for 30 days; renewing early adds 30 days on top of the time remaining.')}
+              </p>
               <button
-                onClick={onEnterWorkspace}
+                onClick={() => onOpenAuthModal('register')}
                 className="mt-6 w-full py-2.5 text-xs font-semibold bg-[#D6A84F]/15 hover:bg-[#D6A84F]/25 border border-[#D6A84F]/40 text-[#E2BC6A] rounded-lg transition-colors"
               >
-                {tr(lang, 'Accéder à Bitsure VIP', 'Access Bitsure VIP')}
+                {tr(lang, 'Créer un compte pour le plan VIP', 'Create an account for VIP')}
               </button>
             </div>
           </div>
