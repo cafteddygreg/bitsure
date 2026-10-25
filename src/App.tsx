@@ -143,7 +143,16 @@ export function App() {
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // Lock the page behind the modal so scrolling only moves the modal (restored on close).
+    const prevBody = document.body.style.overflow;
+    const prevHtml = document.documentElement.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevBody;
+      document.documentElement.style.overflow = prevHtml;
+    };
   }, [authModal]);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -1607,10 +1616,10 @@ export function App() {
       className={
         isFullPage
           ? 'bg-[#0D1318] border border-white/15 rounded-lg max-w-md w-full p-6 sm:p-8 space-y-5'
-          : 'bg-[#0D1318] border border-white/15 rounded-xl max-w-md w-full p-6 space-y-5'
+          : 'bg-[#0D1318] border border-white/15 rounded-t-2xl sm:rounded-xl max-w-md w-full p-4 sm:p-6 space-y-3 sm:space-y-5 max-h-[100dvh] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain'
       }
     >
-      <div className="flex items-center justify-between">
+      <div className={`flex items-center justify-between ${isFullPage ? '' : 'sticky top-0 z-10 bg-[#0D1318] pb-2'}`}>
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-[#20C997]/15 border border-[#20C997]/40 flex items-center justify-center text-[#20C997] font-display font-bold">
             B
@@ -2054,7 +2063,7 @@ export function App() {
         />
         {authModal && (
           <div
-            className="fixed inset-0 z-50 bg-black/75 overflow-y-auto overscroll-contain"
+            className="fixed inset-0 z-50 bg-black/75 flex items-end sm:items-center justify-center sm:p-4 overscroll-contain"
             onMouseDown={(e) => {
               // Click on the dark backdrop (not inside the card) closes the modal.
               if (e.target === e.currentTarget) {
@@ -2063,18 +2072,7 @@ export function App() {
               }
             }}
           >
-            {/* min-h-full + items-center: centred when it fits, scrollable from the top when the window is short */}
-            <div
-              className="min-h-full flex items-center justify-center p-4"
-              onMouseDown={(e) => {
-                if (e.target === e.currentTarget) {
-                  setAuthModal(null);
-                  setAuthError(null);
-                }
-              }}
-            >
-              {authFormModal(authModal, false)}
-            </div>
+            {authFormModal(authModal, false)}
           </div>
         )}
       </>
