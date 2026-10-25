@@ -37,7 +37,7 @@ class TestLogDoctor(unittest.TestCase):
 
     def test_memory_ring_buffer_captures_and_redacts_secrets(self):
         logger = logging.getLogger("trading_test_doc")
-        secret_key = "wTKgkH0mkEre1MKPjDfZ5Re09YNhPV6BLdRReGbTRIM9gnu3aDHloAPat6VvJEFl"
+        secret_key = "FAKEKEYfakekeyFAKEKEYfakekeyFAKEKEYfakekeyFAKEKEYfakekey0000AAAA"
         logger.error(f"Binance failure with key {secret_key} code=-2015")
 
         recent = log_doctor.get_recent_logs(max_lines=20)

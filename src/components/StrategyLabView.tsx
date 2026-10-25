@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { apiFetch } from '../api';
 import { OptimizationLabPanel } from './OptimizationLabPanel';
+import { updateGlobalStrategyConfig, getGlobalStrategyConfig } from '../strategyConfigStore';
 import { InfoTip } from './ui';
 import { AppLang, tr } from '../i18n';
 import { isSymbolUnavailable, unavailableSymbolMessage, unavailableSuffix } from '../symbolAvailability';
@@ -1110,7 +1111,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
   // Active Experiment Configuration
   const [symbol, setSymbol] = useState<string>('BTCUSDT');
   const [timeframe, setTimeframe] = useState<string>('15m');
-  const [tradingStyle, setTradingStyle] = useState<string>('day');
+  const [tradingStyle, setTradingStyle] = useState<string>(() => getGlobalStrategyConfig()?.tradingStyle || 'day');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
   // Période de backtest : 'auto' = profondeur en bougies, sinon fenêtre glissante ou dates personnalisées
@@ -1138,8 +1139,15 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
     return { start: from.toISOString(), end: now.toISOString(), invalid: false };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [periodPreset, startDate, endDate]);
-  const [params, setParams] = useState<StrategyLabParams>(DEFAULT_PARAMS);
-  const [baselineParams, setBaselineParams] = useState<StrategyLabParams>(DEFAULT_PARAMS);
+  // Source de Vérité : au montage, on repart de la configuration globale persistée (si elle existe).
+  const [params, setParams] = useState<StrategyLabParams>(() => {
+    const g = getGlobalStrategyConfig();
+    return g ? ({ ...DEFAULT_PARAMS, ...g.params } as StrategyLabParams) : DEFAULT_PARAMS;
+  });
+  const [baselineParams, setBaselineParams] = useState<StrategyLabParams>(() => {
+    const g = getGlobalStrategyConfig();
+    return g ? ({ ...DEFAULT_PARAMS, ...g.params } as StrategyLabParams) : DEFAULT_PARAMS;
+  });
 
   // Active Backtest Run & Comparison State
   const [activeRun, setActiveRun] = useState<StrategyLabRun | null>(null);
@@ -1277,7 +1285,10 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
         setRawConfigErrors([]);
         setRawConfigDiff(res.changes || []);
         if (res.params) {
-          setParams({ ...DEFAULT_PARAMS, ...res.params });
+          const validated = { ...DEFAULT_PARAMS, ...res.params };
+          setParams(validated);
+          // Config validée = nouvelle Source de Vérité (état global + localStorage).
+          updateGlobalStrategyConfig(validated, { tradingStyle, symbol, timeframe, source: 'raw_config' });
         }
         if (!silent) {
           onShowToast(
@@ -1300,7 +1311,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
         setValidatingRawConfig(false);
       }
     },
-    [rawConfigText, baselineParams, selectedModels, tradingStyle, onShowToast, lang]
+    [rawConfigText, baselineParams, selectedModels, tradingStyle, symbol, timeframe, onShowToast, lang]
   );
 
   const handleGenerateAiPrompt = useCallback(async () => {
@@ -1360,7 +1371,8 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
       }
       if (res.presets) {
         setPresets(res.presets);
-        if (res.presets.length > 0 && !activeRun) {
+        // La config globale persistée prime sur le premier preset de la liste.
+        if (res.presets.length > 0 && !activeRun && !getGlobalStrategyConfig()) {
           const firstPreset = res.presets[0];
           const merged = { ...DEFAULT_PARAMS, ...firstPreset.params };
           setParams(merged);
@@ -1517,7 +1529,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
   // Run initial backtest on mount so the Lab is immediately populated with real data
   useEffect(() => {
     loadLabOverview();
-    executeBacktest(DEFAULT_PARAMS, false);
+    executeBacktest(params, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1634,6 +1646,14 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
         }),
       });
       if (res.presets) setPresets(res.presets);
+      // Preset sauvegardé = configuration active de référence pour toute l'application.
+      updateGlobalStrategyConfig(params as Record<string, any>, {
+        tradingStyle,
+        symbol,
+        timeframe,
+        presetName: presetNameInput.trim(),
+        source: 'preset',
+      });
       setShowSavePresetModal(false);
       setPresetNameInput('');
       setPresetDescInput('');

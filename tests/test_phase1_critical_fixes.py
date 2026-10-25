@@ -1003,6 +1003,32 @@ class Phase1CriticalFixesTests(unittest.TestCase):
             creds = tc.get_binance_credentials(99, market_type="futures")
             self.assertIsNone(creds)
 
+    def test_new_account_without_keys_never_gets_shared_testnet_keys(self):
+        """Un compte sans clés propres (testnet ou live) ne doit JAMAIS recevoir de clés partagées."""
+        tc = self.trading_config_mod
+
+        class EmptyCursor:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def execute(self, *args, **kwargs): pass
+            def fetchone(self): return None
+
+        class EmptyConn:
+            def cursor(self): return EmptyCursor()
+            def close(self): pass
+
+        for testnet in (True, False):
+            for market in ("futures", "spot"):
+                cfg = tc.TradingConfig(user_id=123, market_type=market, testnet=testnet)
+                with patch.object(tc, "get_connection", return_value=EmptyConn()), \
+                     patch.object(tc, "get_config", return_value=cfg), \
+                     patch.object(tc, "BINANCE_TESTNET", True), \
+                     patch.object(tc, "DEFAULT_BINANCE_TESTNET_API_KEY", "shared_key"), \
+                     patch.object(tc, "DEFAULT_BINANCE_TESTNET_API_SECRET", "shared_secret"), \
+                     patch.object(tc, "DEFAULT_BINANCE_SPOT_TESTNET_API_KEY", "shared_spot_key"), \
+                     patch.object(tc, "DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET", "shared_spot_secret"):
+                    self.assertIsNone(tc.get_binance_credentials(123, market_type=market))
+
     def test_ensure_config_row_does_not_overwrite_user_settings(self):
         """ensure_config_row must only INSERT ON CONFLICT DO NOTHING and never execute a blanket UPDATE."""
         tc = self.trading_config_mod

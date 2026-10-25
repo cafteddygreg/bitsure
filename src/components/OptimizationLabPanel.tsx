@@ -3,6 +3,7 @@ import { Play, XCircle, Download, Eye, CheckCircle2, AlertTriangle, FlaskConical
 import { apiFetch } from '../api';
 import { AppLang, tr } from '../i18n';
 import { InfoTip, StatusBadge, EmptyState } from './ui';
+import { useGlobalStrategyConfig } from '../strategyConfigStore';
 
 const API = '/api/admin/strategy-lab/optimization';
 
@@ -131,7 +132,10 @@ export const OptimizationLabPanel: React.FC<Props> = ({
   const [topK, setTopK] = useState<string>('20');
   const [seed, setSeed] = useState<string>('42');
   const [maxCandles, setMaxCandles] = useState<string>('4000');
-  const [baseSource, setBaseSource] = useState<'official' | 'editor'>('official');
+  // Source de Vérité : configuration validée / sauvegardée dans le Strategy Lab (état global + localStorage).
+  const globalCfg = useGlobalStrategyConfig();
+  const globalApplies = !!globalCfg && globalCfg.tradingStyle === tradingStyle;
+  const [baseSource, setBaseSource] = useState<'global' | 'official' | 'editor'>(() => (globalApplies ? 'global' : 'official'));
   const [plan, setPlan] = useState<any | null>(null);
   const [planError, setPlanError] = useState<string>('');
   const [lastDelta, setLastDelta] = useState<{ text: string; tone: 'add' | 'remove' } | null>(null);
@@ -245,6 +249,21 @@ export const OptimizationLabPanel: React.FC<Props> = ({
     };
   }, [needsPolling, loadOverview, refreshActiveJob]);
 
+  // Paramètres de référence effectifs (clé → valeur) selon la source choisie ; {} = preset officiel du backend.
+  const resolvedBase = useMemo<Record<string, any>>(() => {
+    if (baseSource === 'global') return globalApplies && globalCfg ? globalCfg.params : {};
+    if (baseSource === 'editor') return baseParams;
+    return {};
+  }, [baseSource, globalApplies, globalCfg, baseParams]);
+  const baseValue = (p: OptParam) => (resolvedBase[p.key] !== undefined ? resolvedBase[p.key] : p.current);
+
+  // À chaque nouvelle config globale (ou changement de style) : on la reprend comme point de départ des tests.
+  const globalStamp = globalApplies && globalCfg ? globalCfg.updatedAt : 0;
+  useEffect(() => {
+    setPlan(null);
+    setBaseSource((cur) => (globalStamp ? 'global' : cur === 'global' ? 'official' : cur));
+  }, [globalStamp]);
+
   const toggleParam = (p: OptParam) => {
     setPlan(null);
     setSelected((prev) => {
@@ -259,7 +278,7 @@ export const OptimizationLabPanel: React.FC<Props> = ({
       if (p.type === 'bool') return { ...prev, [p.key]: { min: '', max: '', step: '', values: [true, false] } };
       if (p.type === 'enum') return { ...prev, [p.key]: { min: '', max: '', step: '', values: [...(p.choices || [])] } };
       const step = p.suggested_step || 1;
-      const cur = Number(baseSource === 'editor' && baseParams[p.key] !== undefined ? baseParams[p.key] : p.current ?? 0);
+      const cur = Number(baseValue(p) ?? 0);
       let lo = Math.max(Number(p.min ?? cur - 3 * step), cur - 3 * step);
       let hi = Math.min(Number(p.max ?? cur + 3 * step), cur + 3 * step);
       if (p.type === 'int') {
@@ -288,7 +307,7 @@ export const OptimizationLabPanel: React.FC<Props> = ({
     seed: Number(seed) || 42,
     min_trades: Number(minTrades) || 20,
     top_k: Number(topK) || 20,
-    params: baseSource === 'editor' ? baseParams : {},
+    params: resolvedBase,
     parameters: (Object.entries(selected) as [string, RangeSel][]).map(([key, s]) =>
       s.values ? { key, values: s.values } : { key, min: Number(s.min), max: Number(s.max), step: Number(s.step) }
     ),
@@ -319,7 +338,7 @@ export const OptimizationLabPanel: React.FC<Props> = ({
   const liveTotal: number | null = gridTotal === null ? null : method === 'random' ? Math.min(requested, gridTotal) : gridTotal;
   const overLimit = method === 'grid' && gridTotal !== null && gridTotal > (limits.max_configs || 20000);
   const overWarn = liveTotal !== null && liveTotal > (limits.warn_configs || 1000);
-  const planKey = JSON.stringify([selected, method, maxConfigs, maxCandles, minTrades, topK, seed, baseSource, symbol, timeframe, tradingStyle, startDate, endDate]);
+  const planKey = JSON.stringify([selected, method, maxConfigs, maxCandles, minTrades, topK, seed, baseSource, globalStamp, symbol, timeframe, tradingStyle, startDate, endDate]);
   useEffect(() => {
     if (Object.keys(selected).length === 0) {
       planReq.current += 1;
@@ -788,9 +807,24 @@ export const OptimizationLabPanel: React.FC<Props> = ({
           <div className="col-span-2">
             <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Configuration de base / référence', 'Base / reference configuration')}</label>
             <select value={baseSource} onChange={(e) => { setBaseSource(e.target.value as any); setPlan(null); setSelected({}); }} className={inputCls}>
+              {globalApplies && (
+                <option value="global">{tr(lang, 'Configuration active du Strategy Lab (validée / sauvegardée)', 'Active Strategy Lab configuration (validated / saved)')}</option>
+              )}
               <option value="official">{tr(lang, 'Preset officiel Bitsure du style (configuration actuelle)', 'Official Bitsure preset for the style (current configuration)')}</option>
               <option value="editor">{tr(lang, "Paramètres actuels de l'éditeur du Lab", 'Current Lab editor parameters')}</option>
             </select>
+            {baseSource === 'global' && globalCfg && (
+              <div className="mt-1 text-[10px] text-[#20C997]">
+                {tr(lang, 'Source de vérité : ', 'Source of truth: ')}
+                {globalCfg.presetName ? `${tr(lang, 'preset', 'preset')} « ${globalCfg.presetName} »` : tr(lang, 'Raw Config validée', 'validated Raw Config')}
+                {' · '}{new Date(globalCfg.updatedAt).toLocaleString()}
+              </div>
+            )}
+            {!globalApplies && (
+              <div className="mt-1 text-[10px] text-[#6E7B88]">
+                {tr(lang, 'Aucune configuration validée pour ce style : référence = preset officiel. Validez la Raw Config dans le Strategy Lab pour la définir.', 'No validated configuration for this style: reference = official preset. Validate the Raw Config in Strategy Lab to set one.')}
+              </div>
+            )}
           </div>
         </div>
 
@@ -836,7 +870,7 @@ export const OptimizationLabPanel: React.FC<Props> = ({
           <div className="space-y-2">
             {catalog.filter((p) => selected[p.key]).map((p) => {
               const s = selected[p.key];
-              const cur = baseSource === 'editor' && baseParams[p.key] !== undefined ? baseParams[p.key] : p.current;
+              const cur = baseValue(p);
               return (
                 <div key={p.key} className="bg-[#0D1318] border border-white/[0.08] rounded-lg p-3 space-y-2">
                   <div className="flex items-center justify-between gap-2">
@@ -864,7 +898,7 @@ export const OptimizationLabPanel: React.FC<Props> = ({
                       ))}
                     </div>
                   )}
-                  {p.active_when && String(baseParams[p.active_when.param] ?? '') !== '' && baseSource === 'editor' && baseParams[p.active_when.param] !== p.active_when.equals && (
+                  {p.active_when && String(resolvedBase[p.active_when.param] ?? '') !== '' && baseSource !== 'official' && resolvedBase[p.active_when.param] !== p.active_when.equals && (
                     <div className="text-[11px] text-[#D6A84F]">
                       {tr(lang, `Sans effet tant que ${p.active_when.param} ≠ ${String(p.active_when.equals)}.`, `No effect unless ${p.active_when.param} = ${String(p.active_when.equals)}.`)}
                     </div>

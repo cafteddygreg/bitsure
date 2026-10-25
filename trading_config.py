@@ -51,10 +51,10 @@ from config import (
     DEFAULT_ANALYSIS_INTERVAL_MINUTES,
     BINANCE_TESTNET,
     DEFAULT_SAFETY_LOCK_TTL_SECONDS,
-    DEFAULT_BINANCE_TESTNET_API_KEY,
-    DEFAULT_BINANCE_TESTNET_API_SECRET,
-    DEFAULT_BINANCE_SPOT_TESTNET_API_KEY,
-    DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET,
+    DEFAULT_BINANCE_TESTNET_API_KEY,  # noqa: F401 (conservé vide ; non utilisé comme repli)
+    DEFAULT_BINANCE_TESTNET_API_SECRET,  # noqa: F401
+    DEFAULT_BINANCE_SPOT_TESTNET_API_KEY,  # noqa: F401
+    DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET,  # noqa: F401
     DOCUMENTED_SYMBOLS,
 )
 
@@ -314,45 +314,14 @@ def get_binance_credentials(user_id: int, market_type: Optional[str] = None) -> 
         if not effective_market:
             effective_market = DEFAULT_MARKET_TYPE
 
+    # SÉCURITÉ : jamais de clés partagées/par défaut. Pas de clés enregistrées par CET utilisateur => None.
     if not row:
-        effective_testnet = BINANCE_TESTNET if cfg_testnet is None else cfg_testnet
-        if not effective_testnet:
-            return None
-        if effective_market == "spot" and DEFAULT_BINANCE_SPOT_TESTNET_API_KEY and DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET:
-            return {
-                "api_key": DEFAULT_BINANCE_SPOT_TESTNET_API_KEY,
-                "api_secret": DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET,
-                "testnet": True,
-                "is_valid": True,
-            }
-        if DEFAULT_BINANCE_TESTNET_API_KEY and DEFAULT_BINANCE_TESTNET_API_SECRET:
-            return {
-                "api_key": DEFAULT_BINANCE_TESTNET_API_KEY,
-                "api_secret": DEFAULT_BINANCE_TESTNET_API_SECRET,
-                "testnet": True,
-                "is_valid": True,
-            }
         return None
 
     stored_testnet = bool(row[2])
     if cfg_testnet is not None and stored_testnet != cfg_testnet:
-        # Si l'utilisateur est en mode Testnet mais que la ligne stockée est Live (ou inversement),
-        # ne jamais utiliser des clés d'un autre environnement.
-        if cfg_testnet:
-            if effective_market == "spot" and DEFAULT_BINANCE_SPOT_TESTNET_API_KEY and DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET:
-                return {
-                    "api_key": DEFAULT_BINANCE_SPOT_TESTNET_API_KEY,
-                    "api_secret": DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET,
-                    "testnet": True,
-                    "is_valid": True,
-                }
-            if DEFAULT_BINANCE_TESTNET_API_KEY and DEFAULT_BINANCE_TESTNET_API_SECRET:
-                return {
-                    "api_key": DEFAULT_BINANCE_TESTNET_API_KEY,
-                    "api_secret": DEFAULT_BINANCE_TESTNET_API_SECRET,
-                    "testnet": True,
-                    "is_valid": True,
-                }
+        # Mode (testnet/live) de la config différent de celui des clés stockées : on n'utilise jamais
+        # les clés d'un autre environnement, et aucun repli n'est fourni.
         return None
 
     return {

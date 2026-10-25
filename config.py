@@ -71,25 +71,13 @@ DEFAULT_MAX_PAPER_TRADES_LIMIT = int(os.environ.get("DEFAULT_MAX_PAPER_TRADES_LI
 # Mode Testnet par défaut (False = Argent réel sur Binance, True = Testnet)
 BINANCE_TESTNET = True
 
-# Clés Binance Futures Testnet par défaut (https://testnet.binancefuture.com)
-DEFAULT_BINANCE_TESTNET_API_KEY = os.environ.get(
-    "BINANCE_TESTNET_API_KEY",
-    "QNdiAbB7f2k4GRhnRdztYBP67ZhRheBV8TneqgAA0aXUGGJ7krr4CiJlIvnDGufr",
-)
-DEFAULT_BINANCE_TESTNET_API_SECRET = os.environ.get(
-    "BINANCE_TESTNET_API_SECRET",
-    "OGzSc3BkNUZoSs754hfXWUeJRSIfK5vsKJxECbdzgO540jyKkdaVAmNKVnFAa5u7",
-)
-
-# Clés Binance Spot Testnet par défaut (https://testnet.binance.vision)
-DEFAULT_BINANCE_SPOT_TESTNET_API_KEY = os.environ.get(
-    "BINANCE_SPOT_TESTNET_API_KEY",
-    "wTKgkH0mkEre1MKPjDfZ5Re09YNhPV6BLdRReGbTRIM9gnu3aDHloAPat6VvJEFl",
-)
-DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET = os.environ.get(
-    "BINANCE_SPOT_TESTNET_API_SECRET",
-    "SgEARZTSzEMOZ1VHorVQrY9JX0RHisGi4GUDApkJl1LEgd6JOvqLLkC4JOK7iFVd",
-)
+# SÉCURITÉ : plus aucune clé Binance par défaut. Chaque compte utilise UNIQUEMENT ses propres clés
+# (table binance_credentials). Ces constantes restent vides et ne sont plus utilisées comme repli pour
+# les utilisateurs : un compte sans clés n'a pas accès à Binance (testnet ou live).
+DEFAULT_BINANCE_TESTNET_API_KEY = ""
+DEFAULT_BINANCE_TESTNET_API_SECRET = ""
+DEFAULT_BINANCE_SPOT_TESTNET_API_KEY = ""
+DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET = ""
 
 # Symboles officiellement documentés dans le bot (aucun autre symbole ne doit apparaître ni être analysé en analyse périodique)
 # SOURCE DE VÉRITÉ UNIQUE de l'univers : toute liste de symboles du projet doit dériver de ces constantes.
