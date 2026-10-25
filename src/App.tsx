@@ -134,6 +134,17 @@ export function App() {
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authModal, setAuthModal] = useState<'login' | 'register' | null>(null);
+  useEffect(() => {
+    if (!authModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setAuthModal(null);
+        setAuthError(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [authModal]);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authName, setAuthName] = useState('');
@@ -2042,8 +2053,28 @@ export function App() {
           }}
         />
         {authModal && (
-          <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
-            {authFormModal(authModal, false)}
+          <div
+            className="fixed inset-0 z-50 bg-black/75 overflow-y-auto overscroll-contain"
+            onMouseDown={(e) => {
+              // Click on the dark backdrop (not inside the card) closes the modal.
+              if (e.target === e.currentTarget) {
+                setAuthModal(null);
+                setAuthError(null);
+              }
+            }}
+          >
+            {/* min-h-full + items-center: centred when it fits, scrollable from the top when the window is short */}
+            <div
+              className="min-h-full flex items-center justify-center p-4"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) {
+                  setAuthModal(null);
+                  setAuthError(null);
+                }
+              }}
+            >
+              {authFormModal(authModal, false)}
+            </div>
           </div>
         )}
       </>

@@ -134,7 +134,7 @@ class UserManager:
             """,
             (
                 user_id,
-                now,
+                0.0,  # trial_start: la période d'essai démarre à l'approbation, pas à l'inscription
                 now,
                 ACCOUNT_STATUS_PENDING,
                 f"@{username.lstrip('@')}" if username else None,
@@ -246,15 +246,17 @@ class UserManager:
             return False
         self.get_user(user_id)
         approved_int = 1 if norm == ACCOUNT_STATUS_APPROVED else 0
+        # À l'approbation, l'essai démarre maintenant s'il n'a jamais démarré (jamais de remise à zéro d'un essai en cours).
         self.conn.execute(
             """
             UPDATE users
             SET account_status = %s,
                 approved = %s,
-                terms_accepted = CASE WHEN %s = 1 THEN 1 ELSE terms_accepted END
+                terms_accepted = CASE WHEN %s = 1 THEN 1 ELSE terms_accepted END,
+                trial_start = CASE WHEN %s = 1 THEN COALESCE(NULLIF(trial_start, 0), %s) ELSE trial_start END
             WHERE user_id = %s
             """,
-            (norm, approved_int, approved_int, int(user_id)),
+            (norm, approved_int, approved_int, approved_int, time.time(), int(user_id)),
         )
         self.conn.commit()
         return True
@@ -395,6 +397,9 @@ class UserManager:
         except (TypeError, ValueError):
             start = 0.0
         if start <= 0:
+            # Essai pas encore démarré : tant que le compte n'est pas approuvé, aucun jour n'est décompté.
+            if not self.is_approved(user_id):
+                return False
             start = time.time()
             self.conn.execute(
                 "UPDATE users SET trial_start = %s WHERE user_id = %s",

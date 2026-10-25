@@ -848,7 +848,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_mgr.get_role(user_id) == "free" and user_mgr.is_trial_valid(user_id):
         from config import TRIAL_DAYS
         user = user_mgr.get_user(user_id)
-        trial_start = user.get("joined", time.time())
+        trial_start = float(user.get("trial_start") or time.time())
         trial_end = trial_start + (TRIAL_DAYS * 24 * 3600)
         trial_days = max(0, int((trial_end - time.time()) / 86400))
         trial_msg = "\n\n" + get_text(lang, "trial_days_left", days=trial_days)

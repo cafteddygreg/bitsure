@@ -1,0 +1,18 @@
+CORRECTIFS COMBINES : fenetre d'inscription + essai a l'approbation + essai de 14 jours
+
+FICHIERS (a dezipper a la racine du projet, en ecrasant) :
+  src/App.tsx       -> fenetre connexion/inscription defilable, fermeture par clic sur le fond et touche Echap
+  user_manager.py   -> l'essai demarre a l'approbation, pas a l'inscription
+  bot_handlers.py   -> /help affiche les vrais jours d'essai restants
+  config.py         -> TRIAL_DAYS = 14 (aligne sur la page publique)
+
+APRES COPIE :
+  1) npm run build
+  2) py scripts\gen_frontend_bundle.py
+  3) git add -A ; git commit ; git push   (puis redeploiement Railway)
+
+NOTES :
+  - Un essai deja en cours depuis plus de 14 jours sera considere comme termine.
+  - OPTIONNEL (comptes deja en attente, n'affecte que l'affichage avant approbation) :
+    UPDATE users SET trial_start = 0
+    WHERE approved = 0 AND account_status = 'PENDING_APPROVAL' AND role NOT IN ('pro','vip','admin');
