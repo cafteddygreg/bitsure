@@ -6,6 +6,7 @@ le routeur de callbacks pour les boutons (menu_autotrade, menu_positions, etc.)
 et la confirmation des signaux en mode semi-automatique.
 """
 
+from config import DOCUMENTED_SYMBOLS as _DOC_SYMS
 import time
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -1057,7 +1058,7 @@ async def trading_callback_router(update: Update, context: ContextTypes.DEFAULT_
             f"• Style de stratégie : *{style}*\n"
             f"• Score minimum exigé : *{config.min_score}/100*\n"
             f"• Symboles ciblés ({req_source_str}) : `{req_symbols_str}`\n\n"
-            f"💡 _Seuls les symboles documentés dans le bot (`BTCUSDT`, `ETHUSDT`, `XAUUSDT`) sont analysés._",
+            f"💡 _Seuls les symboles documentés dans le bot ({', '.join(chr(96) + _s + chr(96) for _s in _DOC_SYMS)}) sont analysés._",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
         )

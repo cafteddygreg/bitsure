@@ -22,6 +22,7 @@ from config import (
     DEFAULT_DAILY_SCAN_LIMIT,
     DEFAULT_MAX_ALERTS_LIMIT,
     DEFAULT_MAX_PAPER_TRADES_LIMIT,
+    DOCUMENTED_SYMBOLS_SQL,
 )
 
 from i18n import get_text
@@ -611,7 +612,7 @@ class UserManager:
                 (user_id,),
             )
             self.conn.execute(
-                "DELETE FROM watchlist WHERE user_id = %s AND UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'XAUUSDT')",
+                f"DELETE FROM watchlist WHERE user_id = %s AND UPPER(symbol) NOT IN ({DOCUMENTED_SYMBOLS_SQL})",
                 (user_id,),
             )
             self.conn.commit()

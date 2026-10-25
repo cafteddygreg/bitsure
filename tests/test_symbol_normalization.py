@@ -76,6 +76,15 @@ VALID_CASES = [
     ("XAUUSDT",   "XAUUSDT"),
     ("xau-usdt",  "XAUUSDT"),
     ("XAU",       "XAUUSDT"),
+    # Univers étendu (10 cryptos Binance) : formes canoniques, séparateurs et tickers courts
+    ("SOLUSDT",   "SOLUSDT"),
+    ("xrp/usdt",  "XRPUSDT"),
+    ("DOGE-USDT", "DOGEUSDT"),
+    ("ada usdt",  "ADAUSDT"),
+    ("LINK",      "LINKUSDT"),
+    ("sui",       "SUIUSDT"),
+    ("BNBUSDT",   "BNBUSDT"),
+    ("zec/usdt",  "ZECUSDT"),
     # Leading / trailing whitespace
     ("  BTCUSDT  ", "BTCUSDT"),
     ("  eth/usdt  ", "ETHUSDT"),
@@ -97,7 +106,8 @@ INVALID_CASES = [
     "!!!",
     "@#$%",
     "VERYLONGSYMBOLNAME123456",   # >20 chars after strip
-    "SOLUSDT",                    # undocumented symbol
+    "PEPEUSDT",                   # undocumented symbol (SOLUSDT est désormais documenté)
+    "AVAXUSDT",                   # paire de recherche Strategy Lab, hors univers de trading
     "PAXGUSDT",                   # undocumented symbol
     "MOCAUSDT",                   # undocumented symbol
     "NOTUSDT",                    # undocumented symbol
@@ -122,7 +132,8 @@ IS_VALID_CASES = [
     ("XAU/USD",  True),
     ("",         False),
     ("!!!",      False),
-    ("SOLUSDT",  False),
+    ("SOLUSDT",  True),
+    ("PEPEUSDT", False),
     ("PAXGUSDT", False),
     ("VERYLONGSYMBOLNAME123456", False),
 ]
@@ -138,7 +149,8 @@ def test_is_valid_symbol(raw, expected):
 # ---------------------------------------------------------------------------
 
 IDEMPOTENT_CASES = [
-    "BTCUSDT", "ETHUSDT", "XAUUSDT",
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT",
+    "LINKUSDT", "SUIUSDT", "BNBUSDT", "ZECUSDT", "XAUUSDT",
 ]
 
 

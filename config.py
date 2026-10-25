@@ -92,11 +92,32 @@ DEFAULT_BINANCE_SPOT_TESTNET_API_SECRET = os.environ.get(
 )
 
 # Symboles officiellement documentés dans le bot (aucun autre symbole ne doit apparaître ni être analysé en analyse périodique)
-DOCUMENTED_SYMBOLS = (
+# SOURCE DE VÉRITÉ UNIQUE de l'univers : toute liste de symboles du projet doit dériver de ces constantes.
+# Marchés crypto Binance (Spot + USD-M Futures). Ajouter un symbole = l'ajouter ICI (+ éventuellement un override
+# dans SYMBOL_PARAM_OVERRIDES plus bas), pas dans d'autres fichiers.
+BINANCE_CRYPTO_SYMBOLS = (
     "BTCUSDT",
     "ETHUSDT",
-    "XAUUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "LINKUSDT",
+    "SUIUSDT",
+    "BNBUSDT",
+    "ZECUSDT",
 )
+# Or (perpétuel TradFi, Futures uniquement) : conserve son propre flux.
+DOCUMENTED_SYMBOLS = BINANCE_CRYPTO_SYMBOLS + ("XAUUSDT",)
+
+# Fragment SQL « 'A', 'B', ... » généré depuis l'univers (valeurs issues du code uniquement, jamais d'une saisie utilisateur).
+DOCUMENTED_SYMBOLS_SQL = ", ".join("'%s'" % _s for _s in DOCUMENTED_SYMBOLS)
+
+# Symboles autorisés à utiliser les REPLIS historiques (filtres Binance lot/tick de secours, données locales de secours)
+# quand l'API est injoignable. Les nouveaux symboles n'y figurent PAS volontairement : un tick/step ou des bougies
+# inventés seraient faux (DOGE/XRP/ADA ont des ticks très fins) -> on refuse l'ordre / on renvoie WAIT plutôt que
+# d'agir sur des données erronées.
+LEGACY_FALLBACK_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT", "XAUUSDT"})
 
 # Symboles qui n'existent que sur Binance USD-M Futures (pas de marché Spot) : TradFi Perpetual (or).
 # Leurs prix/historiques doivent être lus sur /fapi, jamais sur /api/v3.
@@ -178,11 +199,41 @@ ATR_PERIOD = 14
 ATR_MULTIPLIER_SL = 1.60                 # Stop-Loss calibré (1.60x ATR) pour éviter les mèches intra-bougie tout en maîtrisant le risque
 RR_RATIO_TARGET = 2.10                   # Objectif Risk/Reward calibré à 2.10R par validation walk-forward hors échantillon
 
-SYMBOL_CONFIGS = {
-    "BTCUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.5, "min_cond": 4},
-    "ETHUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 4.8, "min_cond": 4},
-    "XAUUSDT": {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "atr_max_pct": 2.5, "min_cond": 4},
+# Paramètres de stratégie par symbole.
+#  1. Les valeurs historiques BTC/ETH/XAU sont conservées À L'IDENTIQUE (aucune modification de seuil).
+#  2. Les autres symboles héritent des valeurs globales déjà communes à BTC/ETH/XAU (ADX, fenêtres RSI, min_cond).
+#  3. Seul le plafond de volatilité (atr_max_pct) est un réglage par symbole. Valeur initiale de COMPATIBILITÉ avec la
+#     stratégie existante (même ordre de grandeur que ETH), PAS une valeur optimisée ni validée par backtest.
+DEFAULT_SYMBOL_PARAMS = {"adx_min": 22, "rsi_buy_low": 48, "rsi_buy_high": 66, "rsi_sell_low": 34, "rsi_sell_high": 52, "min_cond": 4}
+DEFAULT_ATR_MAX_PCT = 4.8  # plafond d'ATR% pour tout symbole sans override explicite
+
+SYMBOL_PARAM_OVERRIDES = {
+    "BTCUSDT": {"atr_max_pct": 4.5},
+    "ETHUSDT": {"atr_max_pct": 4.8},
+    "XAUUSDT": {"atr_max_pct": 2.5},
+    # Nouveaux symboles : valeurs initiales explicites et faciles à modifier (voir note ci-dessus).
+    "SOLUSDT": {"atr_max_pct": 4.8},
+    "XRPUSDT": {"atr_max_pct": 4.8},
+    "DOGEUSDT": {"atr_max_pct": 4.8},
+    "ADAUSDT": {"atr_max_pct": 4.8},
+    "LINKUSDT": {"atr_max_pct": 4.8},
+    "SUIUSDT": {"atr_max_pct": 4.8},
+    "BNBUSDT": {"atr_max_pct": 4.8},
+    "ZECUSDT": {"atr_max_pct": 4.8},
 }
+
+
+def _build_symbol_configs() -> dict:
+    out = {}
+    for sym in DOCUMENTED_SYMBOLS:
+        cfg = dict(DEFAULT_SYMBOL_PARAMS)
+        cfg["atr_max_pct"] = DEFAULT_ATR_MAX_PCT
+        cfg.update(SYMBOL_PARAM_OVERRIDES.get(sym, {}))
+        out[sym] = cfg
+    return out
+
+
+SYMBOL_CONFIGS = _build_symbol_configs()
 
 DATA_DIR = "data"
 TWELVEDATA_WS_URL = "wss://ws.twelvedata.com/v1/quotes/price"

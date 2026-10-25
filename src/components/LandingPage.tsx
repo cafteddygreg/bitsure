@@ -121,16 +121,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               <div className="inline-flex items-center gap-2 text-xs font-mono-tabular uppercase tracking-wider text-[#20C997] border-l-2 border-[#20C997] pl-3">
                 {tr(
                   lang,
-                  'Analyse multi-échelles de temps (lecture du marché sur plusieurs durées) • BTC • ETH • Or',
-                  'Multi-timeframe analysis (reading the market over several time spans) • BTC • ETH • Gold'
+                  'Analyse multi-échelles de temps (lecture du marché sur plusieurs durées) • 10 cryptos Binance',
+                  'Multi-timeframe analysis (reading the market over several time spans) • 10 Binance cryptos'
                 )}
               </div>
 
               <h1 className="font-display text-4xl sm:text-5xl lg:text-[54px] font-bold tracking-tight leading-[1.08] text-[#E8EEF2]">
                 {tr(
                   lang,
-                  "Analysez des stratégies crypto et or, entraînez-vous avec de l'argent virtuel, puis automatisez sur Binance.",
-                  'Analyze crypto and gold strategies, practice with virtual money, then automate on Binance.'
+                  "Analysez des stratégies crypto, entraînez-vous avec de l'argent virtuel, puis automatisez sur Binance.",
+                  'Analyze crypto strategies, practice with virtual money, then automate on Binance.'
                 )}
               </h1>
 

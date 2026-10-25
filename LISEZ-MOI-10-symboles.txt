@@ -1,0 +1,23 @@
+UNIVERS 10 CRYPTOS BINANCE + MESSAGE "XAUUSDT INDISPONIBLE" (v2, remplace la v1)
+
+COPIER a la racine du projet (ecraser), puis :
+  1) npm run build
+  2) py scripts\gen_frontend_bundle.py
+  3) git add -A ; git commit ; git push ; redeploiement
+
+NOUVEAU DANS CETTE VERSION
+  - Chaque clic/selection sur XAUUSDT affiche "XAUUSDT n'est pas disponible pour le moment."
+    (menu lateral, barres de prix, listes deroulantes, alertes, ordres, liste blanche/noire, Strategy Lab)
+    -> src/symbolAvailability.ts : un seul endroit pour retirer/ajouter un symbole indisponible.
+  - README, docs/UI_MAP.md, textes de la page d'accueil, textes du bot et listes par defaut mis a jour.
+  - Demo, parcours debutant et watchlist par defaut des nouveaux comptes : SOL remplace l'or.
+
+NON COUVERT : le bot Telegram et l'API acceptent toujours XAUUSDT (seule l'interface web le bloque).
+
+SOURCE DE VERITE : config.py (BINANCE_CRYPTO_SYMBOLS / DOCUMENTED_SYMBOLS / SYMBOL_PARAM_OVERRIDES)
+REGLAGE OPTIONNEL : KLINES_CACHE_TTL_SECONDS (defaut 15, 0 = desactive)
+
+A VERIFIER APRES DEPLOIEMENT (pas de reseau ni PostgreSQL ici) :
+  - SUIUSDT et ZECUSDT existent sur Binance Spot ET Futures
+  - une analyse par symbole depuis l'interface
+  - en Testnet : un ordre d'essai par symbole avant tout usage reel

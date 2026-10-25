@@ -28,6 +28,8 @@ class DataFetcher:
     def __init__(self):
         self.price_cache = {}
         self.history_cache = {}
+        # Abonnements du WebSocket Twelve Data (limité volontairement à ces 3 symboles : plafond du plan Twelve Data).
+        # Les autres cryptos de config.DOCUMENTED_SYMBOLS sont lues via Binance REST (get_binance_prices_batch).
         self.subscribed_symbols = set([
             "BTCUSDT", "ETHUSDT", "XAUUSDT"
         ])
@@ -126,6 +128,54 @@ class DataFetcher:
             if time.time() - self.price_cache[symbol]["timestamp"] < PRICE_CACHE_TTL:
                 return self.price_cache[symbol]
         return None
+
+    _BATCH_TTL_SECONDS = 2.0
+
+    def get_binance_prices_batch(self, symbols) -> Dict[str, Dict]:
+        """Prix (bid/ask/mid) de plusieurs symboles Binance Spot en UNE requête, avec micro-cache de 2 s.
+
+        Réservé à l'affichage (bandeau de cours) : les décisions de trading continuent d'utiliser get_realtime_price()
+        (toujours frais, sans cache). Les symboles absents de la réponse sont simplement omis (l'appelant gère le repli).
+        """
+        wanted = [s for s in dict.fromkeys(symbols) if s.endswith("USDT") and s not in FUTURES_ONLY_SYMBOLS]
+        if not wanted:
+            return {}
+        now = time.time()
+        cache = getattr(self, "_batch_cache", None)
+        if cache and now - cache["ts"] < self._BATCH_TTL_SECONDS and set(wanted) <= set(cache["data"]):
+            return {s: cache["data"][s] for s in wanted}
+
+        payload = json.dumps(wanted, separators=(",", ":"))
+        bases = ("https://data-api.binance.vision", "https://api.binance.com", "https://api1.binance.com")
+        rows = None
+        for base in bases:
+            for params in ({"symbols": payload}, None):  # 2e essai : tous les symboles (plus lourd) si un symbole est refusé
+                try:
+                    r = requests.get(f"{base}/api/v3/ticker/bookTicker", params=params, timeout=5)
+                    if r.status_code == 200:
+                        rows = r.json()
+                        break
+                except Exception as e:
+                    logger.debug(f"Binance batch price error ({base}): {e}")
+            if rows is not None:
+                break
+
+        out: Dict[str, Dict] = {}
+        for row in rows or []:
+            sym = row.get("symbol")
+            if sym not in wanted:
+                continue
+            try:
+                bid = float(row.get("bidPrice", 0) or 0)
+                ask = float(row.get("askPrice", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if bid > 0 or ask > 0:
+                price = (bid + ask) / 2.0 if (bid and ask) else (bid or ask)
+                out[sym] = {"price": price, "bid": bid or price, "ask": ask or price, "timestamp": now}
+        if out:
+            self._batch_cache = {"ts": now, "data": {**(cache["data"] if cache else {}), **out}}
+        return out
 
     async def get_realtime_price(self, symbol: str, force_fresh: bool = False) -> Optional[Dict]:
         symbol = normalize_symbol(symbol)

@@ -34,6 +34,7 @@ import { PriceChart } from './components/PriceChart';
 import { LandingPage } from './components/LandingPage';
 import { DemoMode } from './components/DemoMode';
 import { BeginnerPath } from './components/BeginnerPath';
+import { isSymbolUnavailable, unavailableSymbolMessage, unavailableSuffix } from './symbolAvailability';
 import { StrategyLabView } from './components/StrategyLabView';
 import { TermsOfUsePage } from './components/TermsOfUsePage';
 import { AdminUsersIntelligenceTab } from './components/AdminUsersIntelligenceTab';
@@ -96,6 +97,14 @@ type ActiveTab =
 const SYMBOLS = [
   { id: 'BTCUSDT', label: 'BTC / USDT', category: 'Crypto Spot/Perp' },
   { id: 'ETHUSDT', label: 'ETH / USDT', category: 'Crypto Spot/Perp' },
+  { id: 'SOLUSDT', label: 'SOL / USDT', category: 'Crypto Spot/Perp' },
+  { id: 'XRPUSDT', label: 'XRP / USDT', category: 'Crypto Spot/Perp' },
+  { id: 'DOGEUSDT', label: 'DOGE / USDT', category: 'Crypto Spot/Perp' },
+  { id: 'ADAUSDT', label: 'ADA / USDT', category: 'Crypto Spot/Perp' },
+  { id: 'LINKUSDT', label: 'LINK / USDT', category: 'Crypto Spot/Perp' },
+  { id: 'SUIUSDT', label: 'SUI / USDT', category: 'Crypto Spot/Perp' },
+  { id: 'BNBUSDT', label: 'BNB / USDT', category: 'Crypto Spot/Perp' },
+  { id: 'ZECUSDT', label: 'ZEC / USDT', category: 'Crypto Spot/Perp' },
   { id: 'XAUUSDT', label: 'XAU / USDT (Or)', labelEn: 'XAU / USDT (Gold)', category: 'Matières Premières' },
 ];
 
@@ -443,6 +452,13 @@ export function App() {
     }, duration);
   }, []);
 
+  // Returns true (and shows a message on EVERY click) when the symbol is temporarily unavailable.
+  const guardSymbol = (sym: string): boolean => {
+    if (!isSymbolUnavailable(sym)) return false;
+    showToast(unavailableSymbolMessage(lang, sym), 'info');
+    return true;
+  };
+
   // Actions asynchrones en cours (clé -> libellé affiché). Sert au bandeau « Traitement… »,
   // à la désactivation des boutons et au blocage des doubles soumissions.
   const [pendingActions, setPendingActions] = useState<Record<string, string>>({});
@@ -723,15 +739,22 @@ export function App() {
     }
   }, []);
 
-  // 1. Direct Binance WebSocket real-time stream (BTCUSDT & ETHUSDT) + auto-reconnect
+  // 1. Direct Binance WebSocket real-time stream (all Binance crypto symbols) + auto-reconnect
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let unmounted = false;
 
+    // One combined stream for every Binance crypto symbol of the universe (free, no REST calls);
+    // order-book ticks stay limited to BTC/ETH as before.
+    const streamList = [
+      ...SYMBOLS.filter((s) => s.id !== 'XAUUSDT').map((s) => `${s.id.toLowerCase()}@miniTicker`),
+      'btcusdt@bookTicker',
+      'ethusdt@bookTicker',
+    ].join('/');
     const endpoints = [
-      'wss://data-stream.binance.vision/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker/btcusdt@bookTicker/ethusdt@bookTicker',
-      'wss://stream.binance.com:9443/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker/btcusdt@bookTicker/ethusdt@bookTicker',
+      `wss://data-stream.binance.vision/stream?streams=${streamList}`,
+      `wss://stream.binance.com:9443/stream?streams=${streamList}`,
     ];
     let epIndex = 0;
 
@@ -2936,6 +2959,7 @@ export function App() {
                   <button
                     key={s.id}
                     onClick={() => {
+                      if (guardSymbol(s.id)) return;
                       setSelectedSymbol(s.id);
                       setActiveTab('intelligence');
                       setMobileMenuOpen(false);
@@ -3039,6 +3063,7 @@ export function App() {
             <select
               value={selectedSymbol}
               onChange={(e) => {
+                if (guardSymbol(e.target.value)) return;
                 setSelectedSymbol(e.target.value);
                 runAnalysis(e.target.value, selectedTimeframe, selectedStyle);
               }}
@@ -3046,7 +3071,7 @@ export function App() {
             >
               {SYMBOLS.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {lang === 'en' && s.labelEn ? s.labelEn : s.label}
+                  {(lang === 'en' && s.labelEn ? s.labelEn : s.label) + unavailableSuffix(lang, s.id)}
                 </option>
               ))}
             </select>
@@ -3126,6 +3151,7 @@ export function App() {
                     key={symObj.id}
                     type="button"
                     onClick={() => {
+                      if (guardSymbol(symObj.id)) return;
                       setSelectedSymbol(symObj.id);
                       runAnalysis(symObj.id, selectedTimeframe, selectedStyle);
                     }}
@@ -3254,6 +3280,7 @@ export function App() {
                   key={symObj.id}
                   type="button"
                   onClick={() => {
+                    if (guardSymbol(symObj.id)) return;
                     setSelectedSymbol(symObj.id);
                     setActiveTab('intelligence');
                     runAnalysis(symObj.id, selectedTimeframe, selectedStyle);
@@ -3894,7 +3921,7 @@ export function App() {
                   <div>
                     <div className="flex items-center gap-2.5">
                       <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
-                        {tr(lang, 'Scanner Multi-Marchés (BTCUSDT • ETHUSDT • XAUUSDT)')}
+                        {tr(lang, 'Scanner Multi-Marchés (10 cryptos • XAUUSDT)')}
                       </h3>
                       {lastScannedAt && (
                         <span className="text-[11px] font-mono-tabular text-[#20C997] bg-[#20C997]/10 border border-[#20C997]/30 px-2 py-0.5 rounded">
@@ -4358,12 +4385,15 @@ export function App() {
                     <label className="block text-[#8B98A4] mb-1">{tr(lang, 'Symbole')}</label>
                     <select
                       value={newAlertSymbol}
-                      onChange={(e) => setNewAlertSymbol(e.target.value)}
+                      onChange={(e) => {
+                        if (guardSymbol(e.target.value)) return;
+                        setNewAlertSymbol(e.target.value);
+                      }}
                       className="w-full px-3 py-2 bg-[#080C0F] border border-white/10 rounded-lg font-mono-tabular text-[#E8EEF2]"
                     >
                       {SYMBOLS.map((s) => (
                         <option key={s.id} value={s.id}>
-                          {lang === 'en' && s.labelEn ? s.labelEn : s.label}
+                          {(lang === 'en' && s.labelEn ? s.labelEn : s.label) + unavailableSuffix(lang, s.id)}
                         </option>
                       ))}
                     </select>
@@ -5197,6 +5227,7 @@ export function App() {
                                 key={s.id}
                                 type="button"
                                 onClick={() => {
+                                  if (guardSymbol(s.id)) return;
                                   const cur = tradingCfg.symbol_whitelist || [];
                                   const next = active ? cur.filter((x) => x !== s.id) : [...cur, s.id];
                                   handleUpdateTradingConfig({ symbol_whitelist: next });
@@ -5242,6 +5273,7 @@ export function App() {
                                 key={s.id}
                                 type="button"
                                 onClick={() => {
+                                  if (guardSymbol(s.id)) return;
                                   const cur = tradingCfg.symbol_blacklist || [];
                                   const next = active ? cur.filter((x) => x !== s.id) : [...cur, s.id];
                                   handleUpdateTradingConfig({ symbol_blacklist: next });
@@ -5499,6 +5531,7 @@ export function App() {
                         <select
                           value={liveOrderSymbol}
                           onChange={(e) => {
+                            if (guardSymbol(e.target.value)) return;
                             setLiveOrderSymbol(e.target.value);
                             setLiveOrderDraftCheck(null);
                           }}
@@ -5506,7 +5539,7 @@ export function App() {
                         >
                           {SYMBOLS.map((s) => (
                             <option key={s.id} value={s.id}>
-                              {s.id}
+                              {s.id + unavailableSuffix(lang, s.id)}
                             </option>
                           ))}
                         </select>

@@ -38,6 +38,14 @@ _SEPARATOR_RE = re.compile(r"[\s/\-_]+")
 _PERP_SUFFIX_RE = re.compile(r"(?:PERP|SWAP|FUTURES|FUT|[_\-]\d{6})$", re.IGNORECASE)
 
 
+def _build_short_coin_aliases() -> dict:
+    from config import BINANCE_CRYPTO_SYMBOLS
+    return {sym[:-4]: sym for sym in BINANCE_CRYPTO_SYMBOLS if sym.endswith("USDT") and sym not in ("BTCUSDT", "ETHUSDT")}
+
+
+_SHORT_COIN_ALIASES = _build_short_coin_aliases()
+
+
 def normalize_symbol(symbol: str) -> str:
     """Convertit une chaîne de symbole fournie par l'utilisateur ou un flux externe
     en un ticker standardisé compatible Binance (ex: 'BTC/USDT', 'btcusdt_perp' -> 'BTCUSDT').
@@ -61,11 +69,14 @@ def normalize_symbol(symbol: str) -> str:
     # Étape 4 — Suppression des suffixes PERP / SWAP / FUTURES collés
     s = _PERP_SUFFIX_RE.sub("", s)
 
-    # Étape 5 — Conversion des alias courts vers les symboles officiellement documentés (BTCUSDT, ETHUSDT, XAUUSDT)
+    # Étape 5 — Conversion des alias courts vers les symboles officiellement documentés (config.DOCUMENTED_SYMBOLS)
     if s in ("BTC", "XBT"):
         s = "BTCUSDT"
     elif s == "ETH":
         s = "ETHUSDT"
+    elif s in _SHORT_COIN_ALIASES:
+        # Tickers courts des autres cryptos de l'univers (SOL -> SOLUSDT, ...), dérivés de config.BINANCE_CRYPTO_SYMBOLS.
+        s = _SHORT_COIN_ALIASES[s]
     elif s in ("XAU", "XAUUSD"):
         # "XAUUSD" n'est plus un symbole Bitsure : simple alias d'entrée (anciennes données, saisies « XAU/USD »).
         s = "XAUUSDT"

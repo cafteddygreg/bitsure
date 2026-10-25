@@ -3,7 +3,7 @@ import threading
 import asyncio
 from typing import Dict, List
 
-from config import MAX_ALERTS_FREE, MAX_ALERTS_TESTER, MAX_ALERTS_PRO
+from config import MAX_ALERTS_FREE, MAX_ALERTS_TESTER, MAX_ALERTS_PRO, DOCUMENTED_SYMBOLS_SQL
 
 
 class AlertManager:
@@ -72,7 +72,7 @@ class AlertManager:
                     self.conn.execute("UPDATE alerts SET symbol = 'XAUUSDT' WHERE triggered = 0 AND UPPER(symbol) = 'XAUUSD'")
                     self.conn.commit()
                     rows = self.conn.execute(
-                        "SELECT * FROM alerts WHERE triggered = 0 AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'XAUUSDT')"
+                        f"SELECT * FROM alerts WHERE triggered = 0 AND UPPER(symbol) IN ({DOCUMENTED_SYMBOLS_SQL})"
                     ).fetchall()
                     alerts = [dict(r) for r in rows if str(r["symbol"]).upper() in DOCUMENTED_SYMBOLS]
 

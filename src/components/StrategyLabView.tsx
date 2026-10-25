@@ -25,6 +25,7 @@ import { apiFetch } from '../api';
 import { OptimizationLabPanel } from './OptimizationLabPanel';
 import { InfoTip } from './ui';
 import { AppLang, tr } from '../i18n';
+import { isSymbolUnavailable, unavailableSymbolMessage, unavailableSuffix } from '../symbolAvailability';
 import {
   StrategyLabParams,
   StrategyLabPreset,
@@ -1097,6 +1098,8 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
     'ADAUSDT',
     'AVAXUSDT',
     'LINKUSDT',
+    'SUIUSDT',
+    'ZECUSDT',
   ]);
   const [timeframes, setTimeframes] = useState<string[]>(['1m', '5m', '15m', '1h', '4h', '1d']);
   const [presets, setPresets] = useState<StrategyLabPreset[]>([]);
@@ -2196,12 +2199,18 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           </label>
           <select
             value={symbol}
-            onChange={(e) => setSymbol(e.target.value)}
+            onChange={(e) => {
+              if (isSymbolUnavailable(e.target.value)) {
+                onShowToast('info', unavailableSymbolMessage(lang, e.target.value));
+                return;
+              }
+              setSymbol(e.target.value);
+            }}
             className="w-full px-3 py-2 bg-[#080C0F] border border-white/15 rounded-lg text-xs font-mono-tabular font-semibold text-[#E8EEF2]"
           >
             {symbols.map((s) => (
               <option key={s} value={s}>
-                {s}
+                {s + unavailableSuffix(lang, s)}
               </option>
             ))}
           </select>

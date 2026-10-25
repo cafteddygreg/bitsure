@@ -59,6 +59,8 @@ from config import (
     SESSION_SECRET,
     SYMBOL_CONFIGS,
     TRIAL_DAYS,
+    BINANCE_CRYPTO_SYMBOLS,
+    LEGACY_FALLBACK_SYMBOLS,
 )
 from payments import generate_binance_payment
 import auth_security as authsec
@@ -346,7 +348,7 @@ def _init_web_schema_and_seed():
         um.set_account_status(admin_uid, ACCOUNT_STATUS_APPROVED)
         pt.init_capital(admin_uid, PAPER_DEFAULT_CAPITAL)
         trading_config.ensure_config_row(admin_uid)
-        for sym in ("BTCUSDT", "ETHUSDT", "XAUUSDT"):
+        for sym in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):  # XAUUSDT temporairement indisponible
             um.add_to_watchlist(admin_uid, sym)
 
         existing_admin = db.execute("SELECT email, user_id, password_hash FROM web_accounts WHERE LOWER(email) = %s", (ADMIN_EMAIL,)).fetchone()
@@ -1614,6 +1616,11 @@ def _serialize_ohlcv_and_overlays(df, limit: int = 120) -> List[Dict[str, Any]]:
 def _load_fallback_csv(symbol: str):
     import pandas as pd
     sym_clean = normalize_symbol(symbol)
+    if sym_clean not in LEGACY_FALLBACK_SYMBOLS:
+        # Aucune donnée de secours valable pour ce symbole : on renvoie None (=> signal WAIT) plutôt que des bougies
+        # BTC/synthétiques étiquetées avec un autre actif, qui produiraient un faux signal.
+        logger.warning("Aucune donnée de secours pour %s : analyse impossible (Binance indisponible).", sym_clean)
+        return None
     base_dir = os.path.dirname(os.path.abspath(__file__))
     csv_name = "ETHUSDT_1h_tail.csv" if sym_clean == "ETHUSDT" else "BTCUSDT_1h_tail.csv"
     candidate_paths = [
@@ -1672,7 +1679,7 @@ def _analyze_symbol_complete(user_id: int, symbol: str, timeframe: str = "1h", s
     df = None
     data_source = "live_api"
     try:
-        if norm_sym in ("BTCUSDT", "ETHUSDT"):
+        if norm_sym in BINANCE_CRYPTO_SYMBOLS:
             # Use Spot klines as canonical chart reference so displayed price matches Binance Spot WebSocket/Ticker
             df = get_klines_dataframe(norm_sym, timeframe, "spot", 500)
             if df is None or df.empty:
@@ -1894,7 +1901,7 @@ def _analyze_symbol_complete(user_id: int, symbol: str, timeframe: str = "1h", s
 # =====================================================================
 # DEMO MODE (public, no account) — read-only analysis, nothing persisted
 # =====================================================================
-DEMO_SYMBOLS = ("BTCUSDT", "ETHUSDT", "XAUUSDT")
+DEMO_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")  # XAUUSDT temporairement indisponible
 DEMO_TIMEFRAMES = ("15m", "1h", "4h", "1d")
 DEMO_SESSION_LIMIT = 3      # analyses per demo session (browser tab session)
 DEMO_IP_DAILY_LIMIT = 12    # hard cap per IP / 24h so resetting the session id does not bypass the limit
@@ -1932,7 +1939,7 @@ def _analyze_symbol_demo(symbol: str, timeframe: str, lang: str = "fr") -> Dict[
     df = None
     data_source = "live_api"
     try:
-        if norm_sym in ("BTCUSDT", "ETHUSDT"):
+        if norm_sym in BINANCE_CRYPTO_SYMBOLS:
             df = get_klines_dataframe(norm_sym, timeframe, "spot", 500)
     except Exception:
         df = None
@@ -2657,10 +2664,20 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             if path == "/api/market/tickers":
                 fetcher = DataFetcher.get_instance()
-                symbols = ["BTCUSDT", "ETHUSDT", "XAUUSDT"]
+                symbols = list(DOCUMENTED_SYMBOLS)
                 tickers = []
+                try:
+                    batch_prices = fetcher.get_binance_prices_batch(symbols)
+                except Exception:
+                    batch_prices = {}
                 for sym in symbols:
-                    price_raw = run_coro(fetcher.get_realtime_price(sym))
+                    price_raw = batch_prices.get(sym)
+                    if not price_raw:
+                        # Repli individuel (or Futures-only, ou symbole absent du lot) : un échec ne bloque pas les autres.
+                        try:
+                            price_raw = run_coro(fetcher.get_realtime_price(sym))
+                        except Exception:
+                            price_raw = None
                     price_val = _extract_price_float(price_raw, 0.0)
                     open_status = market_hours.is_market_open(sym)
                     msg = "Ouvert" if open_status else "Fermé"
@@ -3714,7 +3731,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
                 PaperTrader().init_capital(uid, PAPER_DEFAULT_CAPITAL)
                 trading_config.ensure_config_row(uid)
-                for s in ("BTCUSDT", "ETHUSDT", "XAUUSDT"):
+                for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):  # XAUUSDT temporairement indisponible
                     um.add_to_watchlist(uid, s)
 
                 pw_hash = _hash_password_secure(password)

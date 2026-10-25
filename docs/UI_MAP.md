@@ -6,7 +6,7 @@ Stack : React 19 + TypeScript + Tailwind 4 (Vite), icônes lucide-react, pas de 
 ## Shell
 | Zone | Où | Contenu |
 |---|---|---|
-| Sidebar desktop | `App.tsx` ~2495 | `navItems` (10 entrées), sélecteur « Marchés Documentés » (BTC/ETH/XAU + prix live), profil/quota, Présentation, Quitter |
+| Sidebar desktop | `App.tsx` ~2495 | `navItems` (10 entrées), sélecteur « Marchés Documentés » (10 cryptos + XAU « indisponible » : message à chaque clic via `symbolAvailability.ts`, + prix live), profil/quota, Présentation, Quitter |
 | Header desktop | ~2677 | symbole, timeframes 5m→1d, style (scalping…position), Actualiser, ticker live WS, Paper equity/PnL, Utilisateurs 360° (admin), CGU, langue FR/EN |
 | Mobile | ~2895 / ~6718 | barre basse de 4–5 « hubs » + barre de sous-onglets (`mobileHubGroups`) |
 | Feedback | ~2930 | toast + actions en cours (`pendingActions` / `isPending`) |

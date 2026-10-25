@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from typing import List, Dict, Optional
 import logging
 
+from config import DOCUMENTED_SYMBOLS_SQL
+
 logger = logging.getLogger(__name__)
 
 
@@ -183,7 +185,7 @@ class HistoryManager:
     def get_recent_signals(self, limit: int = 10, user_id: int = None) -> List[Dict]:
         try:
             self.conn.execute(
-                "DELETE FROM signals WHERE UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'XAUUSDT')"
+                f"DELETE FROM signals WHERE UPPER(symbol) NOT IN ({DOCUMENTED_SYMBOLS_SQL})"
             )
             self.conn.commit()
         except Exception:
@@ -191,14 +193,14 @@ class HistoryManager:
         if user_id:
             rows = self.conn.execute(
                 "SELECT * FROM signals WHERE user_id = %s AND direction <> %s "
-                "AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'XAUUSDT') "
+                f"AND UPPER(symbol) IN ({DOCUMENTED_SYMBOLS_SQL}) "
                 "ORDER BY created_at DESC LIMIT %s",
                 (user_id, "WAIT", limit),
             ).fetchall()
         else:
             rows = self.conn.execute(
                 "SELECT * FROM signals WHERE direction <> %s "
-                "AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'XAUUSDT') "
+                f"AND UPPER(symbol) IN ({DOCUMENTED_SYMBOLS_SQL}) "
                 "ORDER BY created_at DESC LIMIT %s",
                 ("WAIT", limit),
             ).fetchall()

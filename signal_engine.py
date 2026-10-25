@@ -3,7 +3,7 @@ from typing import Dict, Optional, Tuple
 
 from indicators import rsi, macd, sma, atr, adx, bollinger_bands, support_resistance
 from config import (
-    ATR_MULTIPLIER_SL, RR_RATIO_TARGET, SYMBOL_CONFIGS
+    ATR_MULTIPLIER_SL, RR_RATIO_TARGET, SYMBOL_CONFIGS, BINANCE_CRYPTO_SYMBOLS
 )
 from i18n import get_text
 from decision_journal import SignalDecisionRecord, decision_journal, STRATEGY_VERSION
@@ -54,7 +54,7 @@ BUFFER_MULTIPLIERS = {
 
 ASSET_CLASS_RULES = {
     "crypto": {
-        "symbols": {"BTCUSDT", "ETHUSDT"},
+        "symbols": set(BINANCE_CRYPTO_SYMBOLS),
         "sl_factor": 1.00,
         "tp_factor": 1.00,
         "adx_delta": 0,
@@ -500,7 +500,7 @@ class SignalEngine:
         Args:
             df:     DataFrame OHLC (minimum 60 bougies clôturées).
             lang:   Code langue ("en" ou "fr").
-            symbol: Symbole (ex: "BTCUSDT", "ETHUSDT", "XAUUSDT").
+            symbol: Symbole documenté (voir config.DOCUMENTED_SYMBOLS, ex: "BTCUSDT", "SOLUSDT", "XAUUSDT").
             style:  Style de trading ("scalping", "scalping_15m", "day", "swing", "position", ou None pour fallback config.py).
             htf_data: Dictionnaire optionnel de DataFrames de timeframes supérieurs {'1h': df_1h, '4h': df_4h, '1d': df_1d}.
             now:    Horodatage de référence pour exclure toute bougie non clôturée.

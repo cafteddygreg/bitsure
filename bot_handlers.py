@@ -32,9 +32,8 @@ alert_mgr = AlertManager.get_instance()
 history_mgr = HistoryManager.get_instance()
 weekly_scheduler = None
 
-SYMBOLS_12 = [
-    "BTCUSDT", "ETHUSDT", "XAUUSDT"
-]
+from config import DOCUMENTED_SYMBOLS as _DOCUMENTED_SYMBOLS
+SYMBOLS_12 = list(_DOCUMENTED_SYMBOLS)  # nom historique conservé ; contenu dérivé de la source de vérité
 
 def generate_signal_id():
     raw = f"{time.time()}-{random.random()}"

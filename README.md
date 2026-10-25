@@ -1,6 +1,6 @@
 # 🧸 Bitsure Teddy v2.0 — Plateforme & Bot Telegram d'Analyse Quantitative, Paper Trading & AutoTrade Binance
 
-**Bitsure Teddy v2.0** est un écosystème complet de trading algorithmique et d'analyse quantitative multi-actifs (**Crypto & Or / XAUUSDT**). Il combine :
+**Bitsure Teddy v2.0** est un écosystème complet de trading algorithmique et d'analyse quantitative multi-actifs (**10 cryptos Binance** — BTC, ETH, SOL, XRP, DOGE, ADA, LINK, SUI, BNB, ZEC ; l'or `XAUUSDT` est temporairement indisponible dans l'interface). Il combine :
 1. **Un Bot Telegram institutionnel (`main.py`)** avec menus interactifs, scanner multi-timeframes, Paper Trading, AutoTrade Binance (Spot & Futures USDT-M), Live Trading manuel, gestion du risque dynamique et interpréteur de logs IA (`/logs`).
 2. **Une Plateforme Web Quantitative (`server.ts` + `web_api_server.py` + React/Vite)** connectée en temps réel au même moteur Python et à la même base de données (PostgreSQL en production / SQLite autonome en local).
 
@@ -70,13 +70,31 @@ Le dépôt est structuré autour d'un cœur analytique et transactionnel en **Py
 
 ## 🎯 2. Actifs Officiels & Calibration Walk-Forward
 
-Pour garantir une **sélectivité institutionnelle** et éviter le sur-trading sur des paires peu liquides ou bruitées, Bitsure Teddy concentre ses analyses périodiques et son calibrage sur **3 instruments officiels** (`DOCUMENTED_SYMBOLS`) :
+Pour garantir une **sélectivité institutionnelle**, Bitsure Teddy concentre ses analyses périodiques sur **11 instruments officiels** (`DOCUMENTED_SYMBOLS` : 10 cryptos Binance + l'or). Tout autre symbole est refusé.
 
 | Symbole | Classe d'Actif | Source Primaire | ADX Min | RSI Achat | RSI Vente | ATR Max (%) | Cond. Min |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **`BTCUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.5%` | `4 / 6` |
-| **`ETHUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.8%` | `4 / 6` |
-| **`XAUUSDT`** | Matière Première (Or) — perpétuel TradFi Binance Futures (USD-M, pas de marché Spot) | Binance Futures (`/fapi`) | `22` | `48 – 66` | `34 – 52` | `2.5%` | `4 / 6` |
+| **`BTCUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.5%` | `4 / 5` |
+| **`ETHUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.8%` | `4 / 5` |
+| **`SOLUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.8%` | `4 / 5` |
+| **`XRPUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.8%` | `4 / 5` |
+| **`DOGEUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.8%` | `4 / 5` |
+| **`ADAUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.8%` | `4 / 5` |
+| **`LINKUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.8%` | `4 / 5` |
+| **`SUIUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.8%` | `4 / 5` |
+| **`BNBUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.8%` | `4 / 5` |
+| **`ZECUSDT`** | Crypto (Futures/Spot) | Binance WS / REST | `22` | `48 – 66` | `34 – 52` | `4.8%` | `4 / 5` |
+| **`XAUUSDT`** | Matière Première (Or) — perpétuel TradFi Binance Futures (USD-M, pas de marché Spot) — *temporairement indisponible dans l'interface* | Binance Futures (`/fapi`) | `22` | `48 – 66` | `34 – 52` | `2.5%` | `4 / 5` |
+
+> **Source de vérité unique : `config.py`.** `BINANCE_CRYPTO_SYMBOLS` / `DOCUMENTED_SYMBOLS` définissent l'univers ; `DEFAULT_SYMBOL_PARAMS` + `SYMBOL_PARAM_OVERRIDES` définissent les paramètres par symbole (`SYMBOL_CONFIGS` en est dérivé). Ajouter un symbole = l'ajouter dans `config.py` uniquement ; les listes SQL, le scan, l'API web et le moteur de signal en dérivent.
+>
+> **Valeurs des nouveaux symboles (SOL, XRP, DOGE, ADA, LINK, SUI, BNB, ZEC)** : ce sont des valeurs initiales de compatibilité avec la stratégie existante (seuils globaux identiques à BTC/ETH ; seul le plafond de volatilité `atr_max_pct` est propre à chaque symbole, fixé à `4.8%` comme ETH). Elles n'ont **pas** été optimisées ni validées par backtest et ne garantissent aucune performance. Les seuils BTC/ETH/XAU sont inchangés.
+>
+> **Précision Binance** (tick, lot, notional) : lue dynamiquement via `exchangeInfo`. Si `exchangeInfo` est injoignable, seuls BTC/ETH/XAU gardent un repli historique ; pour les autres symboles l'ordre est refusé plutôt que d'envoyer une précision erronée. Aucune bougie de secours n'est fournie hors BTC/ETH/XAU (le signal reste `WAIT`).
+>
+> **Limites d'appels** : prix du bandeau en un seul appel groupé (cache 2 s) et cache partagé des bougies (`KLINES_CACHE_TTL_SECONDS`, défaut 15 s, `0` pour désactiver).
+>
+> **Symbole temporairement indisponible dans l'interface** : `src/symbolAvailability.ts` (`UNAVAILABLE_SYMBOLS`, actuellement `XAUUSDT`). Chaque clic sur ce symbole affiche « n'est pas disponible pour le moment ». Retirer le symbole de cette liste le réactive.
 
 ### Paramètres Calibrés par Défaut (`config.py`)
 - **Score Teddy Minimum (`DEFAULT_MIN_SCORE`)** : `68 / 100` (calibré par validation walk-forward hors échantillon).
@@ -94,7 +112,7 @@ Chaque appel à `/analyse <symbole>` ou scan périodique exécute un pipeline d�
 
 1. **Vérification des Horaires de Marché (`market_hours.py`)** :
    - Les cryptomonnaies sont analysées 24h/24 et 7j/7.
-   - L'Or (`XAUUSDT`, perpétuel Binance 24/7) est traité comme les autres symboles Binance ; seul le Forex hors Binance respecte la fermeture du week-end.
+   - L'Or (`XAUUSDT`, perpétuel Binance 24/7) est traité comme les autres symboles Binance (actuellement indisponible dans l'interface web) ; seul le Forex hors Binance respecte la fermeture du week-end.
 2. **Calcul des Indicateurs Techniques (`indicators.py`)** :
    - Moyennes mobiles simples **SMA 20, SMA 50, SMA 200**.
    - **RSI (14)** avec détection de pente et zones d'élan (momentum).
@@ -236,7 +254,7 @@ Dans Telegram, toutes les commandes affichées par `/help` sont formatées pour 
 - `/support` — Contacter l'administrateur ou le support technique.
 
 ### 📊 Analyse Quantitative & Marché
-- `/analyse <symbole>` — Analyse technique complète avec **Teddy Score**, confluence MTF, SL, TP et R:R (ex: `/analyse BTCUSDT` ou `/analyse XAUUSDT`).
+- `/analyse <symbole>` — Analyse technique complète avec **Teddy Score**, confluence MTF, SL, TP et R:R (ex: `/analyse BTCUSDT` ou `/analyse SOLUSDT`).
 - `/price <symbole>` — Obtenir le cours en temps réel et la variation.
 - `/trend <symbole>` — Analyse détaillée de la tendance court, moyen et long terme (SMA 20/50/200, ADX).
 - `/volatility <symbole>` — Indicateurs de volatilité (ATR absolu, ATR%, largeur des Bandes de Bollinger).

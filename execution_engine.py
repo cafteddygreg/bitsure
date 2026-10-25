@@ -91,7 +91,7 @@ def fetch_pending_signals():
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT id, user_id, symbol, direction, entry_price, sl, tp, score,
                        timeframe, signal_type, created_at
                 FROM signals
@@ -100,7 +100,7 @@ def fetch_pending_signals():
                         OR (status = 'skipped' AND COALESCE(rejection_reason, '') LIKE 'safe_mode:%%')
                       )
                   AND direction IN ('BUY', 'SELL')
-                  AND UPPER(symbol) IN ('BTCUSDT', 'ETHUSDT', 'XAUUSDT')
+                  AND UPPER(symbol) IN ({DOCUMENTED_SYMBOLS_SQL})
                 ORDER BY id ASC
                 """
             )
@@ -409,9 +409,9 @@ def _get_auto_trade_user_ids(interval_minutes: int) -> list[int]:
         conn.close()
 
 
-from config import DOCUMENTED_SYMBOLS
+from config import DOCUMENTED_SYMBOLS, DOCUMENTED_SYMBOLS_SQL, BINANCE_CRYPTO_SYMBOLS
 
-# Uniquement les symboles documentés dans le bot (BTCUSDT, ETHUSDT, XAUUSDT).
+# Uniquement les symboles documentés dans le bot (config.DOCUMENTED_SYMBOLS).
 # Aucun autre symbole ne peut être analysé ni apparaître dans les signaux ou rapports.
 ALLOWED_DOCUMENTED_SYMBOLS_SET = frozenset(DOCUMENTED_SYMBOLS)
 DEFAULT_PERIODIC_SCAN_SYMBOLS = list(DOCUMENTED_SYMBOLS)
@@ -423,9 +423,9 @@ def purge_undocumented_signals() -> int:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 DELETE FROM signals
-                WHERE UPPER(symbol) NOT IN ('BTCUSDT', 'ETHUSDT', 'XAUUSDT')
+                WHERE UPPER(symbol) NOT IN ({DOCUMENTED_SYMBOLS_SQL})
                 """
             )
             deleted = cur.rowcount or 0
@@ -439,7 +439,7 @@ def purge_undocumented_signals() -> int:
 
 def _resolve_requested_scan_symbols(user_id: int, config: TradingConfig) -> tuple[list[str], str]:
     """
-    Retourne UNIQUEMENT les symboles documentés dans le bot (`BTCUSDT`, `ETHUSDT`, `XAUUSDT`).
+    Retourne UNIQUEMENT les symboles documentés dans le bot (config.DOCUMENTED_SYMBOLS).
     Tout symbole non documenté éventuellement présent dans une ancienne Whitelist ou Watchlist est strictement filtré.
     """
     # 1. Si une Whitelist explicite AutoTrade contient des symboles documentés :
@@ -585,7 +585,7 @@ async def run_market_analysis_for_user(
             tf_min_map = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
             base_min = tf_min_map.get(base_tf, 60)
 
-            if symbol in ("BTCUSDT", "ETHUSDT"):
+            if symbol in BINANCE_CRYPTO_SYMBOLS:
                 df = await asyncio.to_thread(
                     get_klines_dataframe,
                     symbol,

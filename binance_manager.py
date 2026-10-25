@@ -8,6 +8,8 @@ Dépendance : pip install python-binance
 """
 
 import logging
+import os
+import threading
 import hashlib
 import hmac
 import math
@@ -330,13 +332,13 @@ def get_tradable_symbols(market_type: MarketType = "futures", quote_asset: str =
         raise BinanceClientError(f"Erreur Binance (liste symboles) : {e}")
 
 
-def get_klines_dataframe(
+def _fetch_klines_dataframe(
     symbol: str,
     timeframe: str,
     market_type: MarketType = "futures",
     limit: int = 500,
 ) -> Optional[pd.DataFrame]:
-    """Fetch public Binance OHLCV data as a DataFrame compatible with SignalEngine.
+    """Fetch public Binance OHLCV data as a DataFrame compatible with SignalEngine (sans cache).
     Prioritizes the exact market endpoint (Futures vs Spot).
     """
     symbol = normalize_symbol(symbol)
@@ -393,6 +395,41 @@ def get_klines_dataframe(
     df.set_index("Date", inplace=True)
     return df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
 
+
+
+# Cache partagé de bougies (toutes les utilisateurs/symboles) : avec 10 cryptos + l'or, un scan par utilisateur
+# multiplierait les appels REST. Durée courte (15 s par défaut, 0 = désactivé) : les bougies clôturées ne changent
+# pas, et le prix temps réel reste lu séparément (jamais depuis ce cache).
+KLINES_CACHE_TTL_SECONDS = float(os.environ.get("KLINES_CACHE_TTL_SECONDS", "15"))
+_KLINES_CACHE: dict = {}
+_KLINES_CACHE_LOCK = threading.Lock()
+_KLINES_CACHE_MAX_ENTRIES = 300
+
+
+def get_klines_dataframe(
+    symbol: str,
+    timeframe: str,
+    market_type: MarketType = "futures",
+    limit: int = 500,
+) -> Optional[pd.DataFrame]:
+    """Bougies Binance publiques avec micro-cache partagé. Retourne toujours une COPIE (l'appelant peut la modifier)."""
+    ttl = KLINES_CACHE_TTL_SECONDS
+    if ttl <= 0:
+        return _fetch_klines_dataframe(symbol, timeframe, market_type, limit)
+    key = (normalize_symbol(symbol), timeframe, market_type, int(limit))
+    now = time.time()
+    with _KLINES_CACHE_LOCK:
+        hit = _KLINES_CACHE.get(key)
+        if hit and now - hit[0] < ttl:
+            return hit[1].copy()
+    df = _fetch_klines_dataframe(symbol, timeframe, market_type, limit)
+    if df is not None and not df.empty:  # un échec n'est jamais mis en cache
+        with _KLINES_CACHE_LOCK:
+            if len(_KLINES_CACHE) >= _KLINES_CACHE_MAX_ENTRIES:
+                for k in sorted(_KLINES_CACHE, key=lambda k: _KLINES_CACHE[k][0])[: _KLINES_CACHE_MAX_ENTRIES // 3]:
+                    _KLINES_CACHE.pop(k, None)
+            _KLINES_CACHE[key] = (now, df.copy())
+    return df
 
 
 def make_client_order_id(prefix: str, unique_key: Optional[str] = None, max_len: int = 36) -> str:
@@ -506,7 +543,14 @@ def get_symbol_filters(client: Client, symbol: str, market_type: MarketType) -> 
     except Exception:
         pass
 
-    # Fallback sécurisé standard si l'API exchangeInfo est momentanément injoignable
+    # Fallback historique UNIQUEMENT pour BTC/ETH/XAU. Pour tout autre symbole, un tick/step inventé serait faux
+    # (ex. DOGE/XRP/ADA) : on refuse plutôt que d'envoyer un ordre avec une précision erronée.
+    from config import LEGACY_FALLBACK_SYMBOLS
+    if symbol not in LEGACY_FALLBACK_SYMBOLS:
+        raise BinanceClientError(
+            f"Filtres Binance (lot/tick) indisponibles pour {symbol} : exchangeInfo injoignable. "
+            f"Ordre refusé pour éviter une quantité ou un prix invalide."
+        )
     if symbol.startswith("BTC"):
         return {
             "LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},
@@ -1085,10 +1129,16 @@ def close_position(
                         f"Fermeture refusée: aucune position Binance {symbol} {direction} "
                         f"avec quantité attendue {quantity}."
                     )
-        filters = get_symbol_filters(client, symbol, market_type)
-        step_size = filters.get("LOT_SIZE", {}).get("stepSize") or filters.get("MARKET_LOT_SIZE", {}).get("stepSize", "0.001")
-        qty = format_step_value(effective_qty, step_size)
-        if float(qty) <= 0:
+        try:
+            filters = get_symbol_filters(client, symbol, market_type)
+        except BinanceClientError:
+            filters = {}  # Fermeture = réduction de risque : on tente avec la quantité brute plutôt que de bloquer.
+        if filters:
+            step_size = filters.get("LOT_SIZE", {}).get("stepSize") or filters.get("MARKET_LOT_SIZE", {}).get("stepSize", "0.001")
+            qty = format_step_value(effective_qty, step_size)
+            if float(qty) <= 0:
+                qty = str(effective_qty)
+        else:
             qty = str(effective_qty)
         if market_type == "futures":
             try:

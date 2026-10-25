@@ -30,7 +30,7 @@ interface BeginnerPathProps {
 const ASSETS = [
   { id: 'BTCUSDT', label: 'Bitcoin' },
   { id: 'ETHUSDT', label: 'Ethereum' },
-  { id: 'XAUUSDT', label: 'Gold' },
+  { id: 'SOLUSDT', label: 'Solana' },
 ];
 
 export const BeginnerPath: React.FC<BeginnerPathProps> = ({

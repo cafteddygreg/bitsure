@@ -126,7 +126,7 @@ TEXTS = {
 
         # ----- Limites -----
         "limit_reached": "❌ Vous avez atteint votre limite quotidienne de requêtes. Passez PRO pour un accès illimité : /upgrade",
-        "watchlist_limit": "❌ Vous avez atteint la limite de 3 symboles en mode gratuit.\nPassez PRO pour en ajouter plus : /upgrade",
+        "watchlist_limit": "❌ Vous avez atteint la limite de symboles de votre plan gratuit.\nPassez PRO pour en ajouter plus : /upgrade",
 
         # ----- Watchlist -----
         "watchlist_added": "✅ {symbol} ajouté à votre watchlist.",
@@ -542,7 +542,7 @@ TEXTS = {
 
         # ----- Limits -----
         "limit_reached": "❌ You have reached your daily request limit. Upgrade to PRO for unlimited access: /upgrade",
-        "watchlist_limit": "❌ You have reached the limit of 3 symbols in free mode.\nUpgrade to PRO to add more: /upgrade",
+        "watchlist_limit": "❌ You have reached the symbol limit of your free plan.\nUpgrade to PRO to add more: /upgrade",
 
         # ----- Watchlist -----
         "watchlist_added": "✅ {symbol} added to your watchlist.",

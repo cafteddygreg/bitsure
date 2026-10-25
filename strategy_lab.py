@@ -27,7 +27,7 @@ import pandas as pd
 import database as _db_mod
 from indicators import macd, adx, bollinger_bands, sma, rsi as calc_rsi, atr as calc_atr
 from data_fetcher import normalize_symbol
-from config import FUTURES_ONLY_SYMBOLS
+from config import FUTURES_ONLY_SYMBOLS, DOCUMENTED_SYMBOLS
 
 
 def get_db():
@@ -42,18 +42,9 @@ FORBIDDEN_LIVE_MODULES = ("live_trader", "position_manager")
 
 SUPPORTED_LAB_MARKETS = ["futures", "spot"]
 
-SUPPORTED_LAB_SYMBOLS = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "XAUUSDT",
-    "SOLUSDT",
-    "BNBUSDT",
-    "XRPUSDT",
-    "DOGEUSDT",
-    "ADAUSDT",
-    "AVAXUSDT",
-    "LINKUSDT",
-]
+# Univers documenté (source de vérité : config.DOCUMENTED_SYMBOLS) + paires de recherche historiques conservées.
+_EXTRA_LAB_RESEARCH_SYMBOLS = ("AVAXUSDT",)
+SUPPORTED_LAB_SYMBOLS = list(DOCUMENTED_SYMBOLS) + [s for s in _EXTRA_LAB_RESEARCH_SYMBOLS if s not in DOCUMENTED_SYMBOLS]
 
 
 def _normalize_lab_symbol(raw_symbol: Optional[str]) -> str:

@@ -539,10 +539,17 @@ class TradingSafetyTests(unittest.TestCase):
         self.assertEqual(syms, ["BTCUSDT"])
         self.assertEqual(src, "Whitelist (Symboles documentés)")
 
-        # 2. Sans Whitelist ni Watchlist : uniquement les 3 symboles documentés du bot
+        # 1b. Un symbole hors univers (AVAXUSDT : paire de recherche Strategy Lab) reste filtré même s'il est demandé
+        cfg_extra = TradingConfig(user_id=42, symbol_whitelist=["SOLUSDT", "AVAXUSDT"])
+        syms_extra, _ = _resolve_requested_scan_symbols(42, cfg_extra)
+        self.assertEqual(syms_extra, ["SOLUSDT"])
+
+        # 2. Sans Whitelist ni Watchlist : exactement l'univers documenté (config.DOCUMENTED_SYMBOLS), rien d'autre
+        from config import DOCUMENTED_SYMBOLS
         cfg_default = TradingConfig(user_id=42, symbol_whitelist=[])
         syms_def, _ = _resolve_requested_scan_symbols(42, cfg_default)
-        self.assertEqual(syms_def, ["BTCUSDT", "ETHUSDT", "XAUUSDT"])
+        self.assertEqual(syms_def, list(DOCUMENTED_SYMBOLS))
+        self.assertNotIn("AVAXUSDT", syms_def)
 
 
 if __name__ == "__main__":

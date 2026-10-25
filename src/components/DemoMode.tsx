@@ -9,7 +9,7 @@ const DEMO_LIMIT = 3;
 const ASSETS = [
   { id: 'BTCUSDT', label: 'Bitcoin (BTC)' },
   { id: 'ETHUSDT', label: 'Ethereum (ETH)' },
-  { id: 'XAUUSDT', label: 'Gold (XAU)' },
+  { id: 'SOLUSDT', label: 'Solana (SOL)' },
 ];
 const TIMEFRAMES = ['15m', '1h', '4h', '1d'];
 

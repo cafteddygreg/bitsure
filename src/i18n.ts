@@ -110,7 +110,7 @@ const EN_EXACT_MAP: Record<string, string> = {
   'Levier (1x–20x)': 'Leverage (1x–20x)',
   'Stop Loss (SL)': 'Stop Loss (SL)',
   'Take Profit (TP)': 'Take Profit (TP)',
-  'Scanner Multi-Marchés (BTCUSDT • ETHUSDT • XAUUSDT)': 'Multi-Market Scanner (BTCUSDT • ETHUSDT • XAUUSDT)',
+  'Scanner Multi-Marchés (10 cryptos • XAUUSDT)': 'Multi-Market Scanner (10 cryptos • XAUUSDT)',
   'Scan en cours...': 'Scanning...',
   'Zone de surachat (>70)': 'Overbought zone (>70)',
   'Zone de survente (<30)': 'Oversold zone (<30)',

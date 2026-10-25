@@ -115,7 +115,7 @@ _KNOWN_PATTERNS: List[Tuple[re.Pattern, str, str, str]] = [
         re.compile(r"-1111|Precision is over the maximum defined", re.IGNORECASE),
         "🔢 Précision décimale refusée par Binance (Code -1111)",
         "Le nombre de décimales sur la quantité ou le prix dépasse ce qu'autorise Binance pour ce symbole.",
-        "Le bot arrondit via les filtres LOT_SIZE / PRICE_FILTER. Réessaie sur une paire majeure (`BTCUSDT`, `ETHUSDT`).",
+        "Le bot arrondit via les filtres LOT_SIZE / PRICE_FILTER. Réessaie sur une paire majeure (`BTCUSDT`, `ETHUSDT`, `SOLUSDT`).",
     ),
     (
         re.compile(r"-4061|Order's position side does not match user's setting", re.IGNORECASE),
@@ -175,7 +175,7 @@ _KNOWN_PATTERNS: List[Tuple[re.Pattern, str, str, str]] = [
         re.compile(r"data_unavailable|Impossible de récupérer|empty|No data", re.IGNORECASE),
         "📉 Données de marché indisponibles pour ce symbole",
         "Le fournisseur de prix n'a pas renvoyé de bougies historiques pour cette paire ou ce timeframe.",
-        "Utilise un symbole standardisé comme `BTCUSDT`, `ETHUSDT` ou `XAUUSDT` et vérifie la source avec `/switchapi` (admin).",
+        "Utilise un symbole standardisé du bot (ex. `BTCUSDT`, `ETHUSDT`, `SOLUSDT`, `DOGEUSDT`) et vérifie la source avec `/switchapi` (admin).",
     ),
 ]
 
