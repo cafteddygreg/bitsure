@@ -152,7 +152,8 @@ def _resolve_real_exit_price(trade: Dict[str, Any], fallback_price: float) -> fl
                 continue
             try:
                 if market_type == "futures" and hasattr(client, "futures_get_order"):
-                    ord_info = client.futures_get_order(symbol=norm_sym, orderId=oid)
+                    from binance_manager import futures_get_order_or_algo
+                    ord_info = futures_get_order_or_algo(client, norm_sym, oid)
                 elif market_type != "futures" and hasattr(client, "get_order"):
                     ord_info = client.get_order(symbol=norm_sym, orderId=oid)
                 else:

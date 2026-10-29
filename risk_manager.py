@@ -11,6 +11,7 @@ Toute la logique de gestion du risque :
 
 import asyncio
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -66,6 +67,96 @@ def _max_position_notional(balance: float, leverage: int, market_type: str) -> f
     if market_type == "futures":
         return exposure_margin_cap * max(int(leverage or 1), 1)
     return exposure_margin_cap
+
+
+def sl_side_error(direction: Optional[str], entry_price: float, sl_price: Optional[float], tp_price: Optional[float] = None) -> Optional[str]:
+    """Retourne un message d'erreur si SL/TP sont du mauvais côté de l'entrée pour la direction donnée, sinon None.
+    BUY : SL < entrée < TP.  SELL : TP < entrée < SL."""
+    if not direction:
+        return None
+    d = str(direction).upper()
+    if d not in ("BUY", "SELL"):
+        return f"Direction invalide ({direction})."
+    if sl_price:
+        if d == "BUY" and sl_price >= entry_price:
+            return f"SL ({sl_price}) incohérent avec un achat : il doit être sous le prix d'entrée ({entry_price})."
+        if d == "SELL" and sl_price <= entry_price:
+            return f"SL ({sl_price}) incohérent avec une vente : il doit être au-dessus du prix d'entrée ({entry_price})."
+    if tp_price:
+        if d == "BUY" and tp_price <= entry_price:
+            return f"TP ({tp_price}) incohérent avec un achat : il doit être au-dessus du prix d'entrée ({entry_price})."
+        if d == "SELL" and tp_price >= entry_price:
+            return f"TP ({tp_price}) incohérent avec une vente : il doit être sous le prix d'entrée ({entry_price})."
+    return None
+
+
+def compute_risk_based_quantity(
+    *,
+    balance: float,
+    risk_pct: float,
+    entry_price: float,
+    sl_price: float,
+    leverage: int = 1,
+    market_type: str = "futures",
+    direction: Optional[str] = None,
+    step_size: Optional[float] = None,
+    min_qty: float = 0.0,
+    min_notional: float = 0.0,
+) -> dict:
+    """Taille de position par le risque : quantité = (solde × risque%) / |entrée − SL|, plafonnée à l'exposition max.
+
+    Fonction pure (aucun appel réseau) : sert à la fois à la recommandation affichée dans Market Intelligence
+    et de référence de calcul, avec exactement les mêmes règles que `calculate_position_size`
+    (même plafond d'exposition, même formule). Ne lève pas : renvoie ok=False + reason.
+    """
+    out = {
+        "ok": False, "reason": None, "quantity": 0.0, "notional": 0.0, "risk_amount": 0.0,
+        "margin_required": 0.0, "capped": False, "stop_distance_pct": None,
+    }
+    lev = max(int(leverage or 1), 1) if market_type == "futures" else 1
+    if balance is None or balance <= 0:
+        out["reason"] = "Solde insuffisant ou introuvable."
+        return out
+    if not entry_price or entry_price <= 0:
+        out["reason"] = "Prix d'entrée invalide."
+        return out
+    if not sl_price or sl_price <= 0:
+        out["reason"] = "Stop Loss manquant ou invalide."
+        return out
+    side_err = sl_side_error(direction, entry_price, sl_price)
+    if side_err:
+        out["reason"] = side_err
+        return out
+
+    distance = abs(entry_price - sl_price)
+    out["stop_distance_pct"] = distance / entry_price * 100.0
+    if distance < EPSILON or out["stop_distance_pct"] < MIN_STOP_DISTANCE_PCT:
+        out["reason"] = f"SL trop serré ({out['stop_distance_pct']:.4f}% < minimum {MIN_STOP_DISTANCE_PCT}%)."
+        return out
+
+    risk_amount = balance * (float(risk_pct or 0.0) / 100.0)
+    qty = risk_amount / distance
+    max_notional = _max_position_notional(balance, lev, market_type)
+    if qty * entry_price > max_notional:
+        qty = max_notional / entry_price
+        out["capped"] = True
+
+    if step_size and step_size > 0:
+        steps = math.floor(qty / step_size + 1e-12)
+        qty = round(steps * step_size, 12)
+    notional = qty * entry_price
+    out.update({
+        "quantity": qty, "notional": notional, "risk_amount": risk_amount,
+        "margin_required": notional / lev,
+    })
+    if qty <= 0 or (min_qty and qty < min_qty):
+        out["reason"] = f"Quantité ({qty}) sous le minimum Binance ({min_qty})."
+        return out
+    if min_notional and notional < min_notional:
+        out["reason"] = f"Valeur ({notional:.2f} USDT) sous le minimum Binance ({min_notional:.2f} USDT)."
+        return out
+    out["ok"] = True
+    return out
 
 
 def compute_atr_dynamic_stop_loss(
@@ -407,7 +498,7 @@ def calculate_position_size(
     *,
     atr_value: Optional[float] = None,
     atr_multiplier: float = 1.5,
-    direction: str = "BUY",
+    direction: Optional[str] = None,
     tick_size: float = EPSILON,
 ) -> float:
     """Calcule la taille de position basée sur le risque en % du capital et la distance au SL.
@@ -450,7 +541,7 @@ def calculate_position_size(
     if (sl_price is None or sl_price <= 0) and atr_value is not None and atr_value > 0:
         sl_price = compute_atr_dynamic_stop_loss(
             entry_price=entry_price,
-            direction=direction,
+            direction=direction or "BUY",
             atr_value=atr_value,
             atr_multiplier=atr_multiplier,
             tick_size=effective_tick,
@@ -458,6 +549,11 @@ def calculate_position_size(
 
     if sl_price is None or sl_price <= 0:
         raise ValueError("Stop Loss invalide ou manquant (aucun ATR fourni pour le calcul dynamique).")
+
+    # Un SL du mauvais côté de l'entrée donnerait une distance « valide » mais un risque faux : on refuse.
+    side_err = sl_side_error(direction, entry_price, sl_price)
+    if side_err:
+        raise ValueError(side_err)
 
     risk_amount = balance * (config.risk_per_trade / 100.0)
     price_distance = abs(entry_price - sl_price)
@@ -599,7 +695,7 @@ async def calculate_position_size_async(
     *,
     atr_value: Optional[float] = None,
     atr_multiplier: float = 1.5,
-    direction: str = "BUY",
+    direction: Optional[str] = None,
     tick_size: float = EPSILON,
 ) -> float:
     """Version asynchrone de `calculate_position_size` pour ne pas bloquer l'event loop."""

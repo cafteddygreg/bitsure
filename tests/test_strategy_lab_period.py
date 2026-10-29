@@ -3,6 +3,7 @@ même lorsque la plage dépasse la « profondeur » en bougies (max_candles)."""
 
 import time
 import unittest
+from unittest.mock import patch
 from unittest import mock
 
 import strategy_lab
@@ -65,11 +66,17 @@ class StrategyLabPeriodTests(unittest.TestCase):
         self.assertFalse(stats["period_clamped"])
 
     def test_huge_period_is_clamped_and_flagged(self):
-        df, _src, stats = strategy_lab.load_historical_candles(
-            "BTCUSDT", "15m", "futures", start_date=_iso(365), max_candles=800, warmup_candles=300
-        )
+        # Le plafond est configurable (LAB_MAX_PERIOD_CANDLES) : on le fixe pour que le test reste indépendant.
+        with patch.object(strategy_lab, "LAB_MAX_PERIOD_CANDLES", 12000):
+            df, _src, stats = strategy_lab.load_historical_candles(
+                "BTCUSDT", "15m", "futures", start_date=_iso(365), max_candles=800, warmup_candles=300
+            )
         self.assertTrue(stats["period_clamped"])
-        self.assertLessEqual(len(df), strategy_lab.LAB_MAX_PERIOD_CANDLES + 300)
+        self.assertLessEqual(len(df), 12000 + 300)
+
+    def test_default_cap_allows_long_low_timeframe_windows(self):
+        self.assertGreaterEqual(strategy_lab.LAB_MAX_PERIOD_CANDLES, 100000)
+        self.assertGreaterEqual(strategy_lab.OPT_MAX_PERIOD_CANDLES, 100000)
 
     def test_backtest_simulates_requested_window(self):
         res = strategy_lab.run_backtest_experiment(

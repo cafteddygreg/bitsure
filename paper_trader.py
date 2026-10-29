@@ -354,6 +354,18 @@ class PaperTrader:
         if entry_price <= 0 or qty <= 0:
             return None, "Prix ou quantite invalide"
 
+        # SL/TP du mauvais côté de l'entrée => position fermée instantanément ou risque faux : on refuse.
+        if sl and ((side == "BUY" and sl >= entry_price) or (side == "SELL" and sl <= entry_price)):
+            return None, (
+                "Stop Loss incohérent : pour un LONG il doit être sous le prix d'entrée, "
+                "pour un SHORT au-dessus."
+            )
+        if tp and ((side == "BUY" and tp <= entry_price) or (side == "SELL" and tp >= entry_price)):
+            return None, (
+                "Take Profit incohérent : pour un LONG il doit être au-dessus du prix d'entrée, "
+                "pour un SHORT en dessous."
+            )
+
         if uid not in self.capitals:
             self.init_capital(user_id)
         self.positions.setdefault(uid, [])

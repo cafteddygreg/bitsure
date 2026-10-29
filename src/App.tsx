@@ -17,7 +17,7 @@ import {
   SecuritySessionsPanel,
 } from './components/AuthFlows';
 import { AccountRecoveryView, ForcePasswordChangeView, AdminRecoveryPanel } from './components/AccountRecovery';
-import { AppLang, getInitialLang, setSavedLang, tr } from './i18n';
+import { AppLang, getInitialLang, setSavedLang, tr, translateMessage } from './i18n';
 import {
   UserProfile,
   MarketAnalysis,
@@ -375,6 +375,13 @@ export function App() {
   const [orderLeverage, setOrderLeverage] = useState('2');
   const [orderSL, setOrderSL] = useState('');
   const [orderTP, setOrderTP] = useState('');
+  // Ticket Market Intelligence : exécution Paper ou Binance, taille calculée par le serveur (risque %).
+  const [orderMode, setOrderMode] = useState<'paper' | 'live'>('paper');
+  const [orderAutoSize, setOrderAutoSize] = useState(true);
+  const [orderPreview, setOrderPreview] = useState<any | null>(null);
+  const [orderPreviewBusy, setOrderPreviewBusy] = useState(false);
+  const liveOverrideRef = useRef<Record<string, any> | null>(null);
+  const orderSideRef = useRef<'BUY' | 'SELL'>('BUY');
 
   // Alerts State
   const [alerts, setAlerts] = useState<PriceAlert[]>([]);
@@ -441,7 +448,8 @@ export function App() {
 
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = useCallback((text: string, type: 'success' | 'error' | 'info' = 'info') => {
-    setToast({ text, type });
+    // Filet central : tout message (interface ou serveur) s'affiche dans la langue active, FR <-> EN.
+    setToast({ text: translateMessage(text), type });
     // Les erreurs restent plus longtemps : la raison fournie par le backend doit pouvoir être lue.
     const duration = type === 'error' ? 10000 : 4500;
     // Un seul minuteur actif : un ancien toast ne ferme pas un toast plus récent au texte identique.
@@ -487,9 +495,9 @@ export function App() {
   const describeActionError = (err: any, mayHaveReachedExchange = false): string => {
     const msg = String(err?.message || err || 'Erreur inconnue');
     if (mayHaveReachedExchange && (err?.code === 'TIMEOUT' || err?.code === 'NETWORK_ERROR')) {
-      return `${msg} — Résultat INCONNU : vérifiez vos positions et ordres Binance avant de réessayer.`;
+      return translateMessage(`${msg} — Résultat INCONNU : vérifiez vos positions et ordres Binance avant de réessayer.`);
     }
-    return msg;
+    return translateMessage(msg);
   };
 
   const loadUserAndCoreData = useCallback(async () => {
@@ -617,19 +625,22 @@ export function App() {
           updateLiveTick(ana.symbol || sym, ana.current_price);
         }
         if (!silent) {
+          // Direction du signal => côté de l'ordre ; SL/TP toujours du bon côté du prix (BUY: SL<prix<TP, SELL: TP<prix<SL).
+          const sig = ana.signal === 'BUY' || ana.signal === 'SELL' ? ana.signal : null;
+          if (sig) {
+            setOrderSide(sig);
+            orderSideRef.current = sig;
+          }
+          const side = sig ?? orderSideRef.current;
           if (ana.sizing_recommendation?.position_size > 0) {
             setOrderQty(String(ana.sizing_recommendation.position_size));
           }
-          if (ana.sl) {
-            setOrderSL(String(ana.sl));
-          } else if (ana.current_price) {
-            setOrderSL((ana.current_price * 0.985).toFixed(2));
-          }
-          if (ana.tp1) {
-            setOrderTP(String(ana.tp1));
-          } else if (ana.current_price) {
-            setOrderTP((ana.current_price * 1.03).toFixed(2));
-          }
+          const px = ana.current_price;
+          const dec = px && px < 1 ? 6 : px && px < 100 ? 4 : 2;
+          const sl = ana.sl ?? (px ? (side === 'BUY' ? px * 0.985 : px * 1.015) : null);
+          const tp = ana.tp1 ?? ana.tp ?? (px ? (side === 'BUY' ? px * 1.03 : px * 0.97) : null);
+          if (sl) setOrderSL(ana.sl ? String(ana.sl) : sl.toFixed(dec));
+          if (tp) setOrderTP(ana.tp1 ?? ana.tp ? String(ana.tp1 ?? ana.tp) : tp.toFixed(dec));
           if (!newAlertPrice && ana.current_price) {
             setNewAlertPrice((ana.current_price * 1.015).toFixed(2));
           }
@@ -1111,6 +1122,76 @@ export function App() {
     showToast('Vous êtes déconnecté.', 'info');
   };
 
+  // Changement de côté depuis le ticket : on reflète SL/TP autour du prix pour qu'ils restent du bon côté.
+  const switchOrderSide = (next: 'BUY' | 'SELL') => {
+    if (next === orderSide) return;
+    const px = analysis?.current_price;
+    const sl = parseFloat(orderSL);
+    const tp = parseFloat(orderTP);
+    if (px && px > 0) {
+      const dec = px < 1 ? 6 : px < 100 ? 4 : 2;
+      if (sl > 0) setOrderSL((2 * px - sl).toFixed(dec));
+      if (tp > 0) setOrderTP((2 * px - tp).toFixed(dec));
+    }
+    setOrderSide(next);
+    orderSideRef.current = next;
+    liveOverrideRef.current = null;
+    setLiveOrderDraftCheck(null);
+  };
+
+  // Aperçu de la taille de position (calculée côté serveur avec les mêmes règles que l'exécution).
+  useEffect(() => {
+    if (activeTab !== 'intelligence' || !isApprovedUser) return;
+    const sl = parseFloat(orderSL);
+    if (!(sl > 0)) {
+      setOrderPreview(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setOrderPreviewBusy(true);
+      try {
+        const res = await apiFetch('/api/market/order-preview', {
+          method: 'POST',
+          body: JSON.stringify({
+            symbol: selectedSymbol,
+            side: orderSide,
+            mode: orderMode,
+            sl,
+            tp: parseFloat(orderTP) || null,
+            leverage: parseFloat(orderLeverage) || 1,
+          }),
+        });
+        if (!cancelled) setOrderPreview(res.preview);
+      } catch (err: any) {
+        if (!cancelled) setOrderPreview({ ok: false, reason: err.message });
+      } finally {
+        if (!cancelled) setOrderPreviewBusy(false);
+      }
+    }, 600);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [activeTab, isApprovedUser, selectedSymbol, orderSide, orderSL, orderTP, orderLeverage, orderMode]);
+
+  // Quitter Market Intelligence ou changer de mode : on abandonne tout ordre Binance en attente de confirmation.
+  useEffect(() => {
+    if (liveOverrideRef.current) {
+      liveOverrideRef.current = null;
+      setLiveOrderDraftCheck(null);
+    }
+  }, [activeTab, orderMode, selectedSymbol, orderSide, orderSL, orderTP, orderLeverage]);
+
+  const buildLiveOverride = () => ({
+    symbol: selectedSymbol,
+    side: orderSide,
+    amount_mode: 'risk',
+    sl_price: parseFloat(orderSL) || null,
+    tp_price: parseFloat(orderTP) || null,
+    leverage: Math.max(1, Math.round(parseFloat(orderLeverage) || 1)),
+  });
+
   const _handleOpenPaperOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -1119,17 +1200,19 @@ export function App() {
         body: JSON.stringify({
           symbol: selectedSymbol,
           side: orderSide,
-          qty: parseFloat(orderQty) || 0.02,
+          auto_size: orderAutoSize,
+          qty: orderAutoSize ? undefined : Number(orderQty),
           leverage: parseFloat(orderLeverage) || 1,
-          entry_price: analysis?.current_price || 0,
           sl: parseFloat(orderSL) || 0,
           tp: parseFloat(orderTP) || 0,
         }),
       });
       setPaperStats(res.stats);
       setOpenPaper(res.open_positions || []);
+      const openedQty = res.position?.qty ?? orderQty;
+      const openedPx = res.position?.entry_price ?? res.position?.entry ?? analysis?.current_price;
       showToast(
-        `Position Paper ${orderSide} ouverte sur ${selectedSymbol} (${orderQty} @ ${analysis?.current_price?.toLocaleString()})`,
+        `Position Paper ${orderSide} ouverte sur ${selectedSymbol} (${openedQty} @ ${Number(openedPx).toLocaleString()})`,
         'success'
       );
     } catch (err: any) {
@@ -1387,9 +1470,11 @@ export function App() {
       return;
     }
 
+    // Ordre venant de Market Intelligence : champs fournis par le ticket (taille calculée par le risque côté serveur).
+    const ov = liveOverrideRef.current;
     const idempotencyKey =
       action === 'execute'
-        ? `web-${liveOrderSymbol}-${liveOrderSide}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+        ? `web-${ov?.symbol ?? liveOrderSymbol}-${ov?.side ?? liveOrderSide}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
         : undefined;
 
     try {
@@ -1397,17 +1482,17 @@ export function App() {
         method: 'POST',
         body: JSON.stringify({
           action,
-          symbol: liveOrderSymbol,
-          side: liveOrderSide,
-          amount: parseFloat(liveOrderAmount) || 0,
-          amount_mode: liveOrderAmountMode,
-          order_type: liveOrderType,
-          entry_price: liveOrderType === 'LIMIT' ? parseFloat(liveOrderEntryPrice) || null : null,
-          sl_price: liveOrderSL ? parseFloat(liveOrderSL) : null,
-          tp_price: liveOrderTP ? parseFloat(liveOrderTP) : null,
-          leverage: parseInt(liveOrderLeverage, 10) || 1,
-          margin_type: liveOrderMarginType,
-          reduce_only: liveOrderReduceOnly,
+          symbol: ov?.symbol ?? liveOrderSymbol,
+          side: ov?.side ?? liveOrderSide,
+          amount: ov ? 0 : parseFloat(liveOrderAmount) || 0,
+          amount_mode: ov?.amount_mode ?? liveOrderAmountMode,
+          order_type: ov ? 'MARKET' : liveOrderType,
+          entry_price: !ov && liveOrderType === 'LIMIT' ? parseFloat(liveOrderEntryPrice) || null : null,
+          sl_price: ov ? ov.sl_price : liveOrderSL ? parseFloat(liveOrderSL) : null,
+          tp_price: ov ? ov.tp_price : liveOrderTP ? parseFloat(liveOrderTP) : null,
+          leverage: ov?.leverage ?? (parseInt(liveOrderLeverage, 10) || 1),
+          margin_type: ov ? 'ISOLATED' : liveOrderMarginType,
+          reduce_only: ov ? false : liveOrderReduceOnly,
           pin: action === 'execute' ? candidatePin : undefined,
           idempotency_key: idempotencyKey,
         }),
@@ -1417,6 +1502,7 @@ export function App() {
         showToast(res.message || 'Ordre validé : vous pouvez confirmer l\'envoi.', 'info');
       } else {
         setLiveOrderDraftCheck(null);
+        liveOverrideRef.current = null;
         if (pinModalAction === 'execute_live_order') {
           setPinModalAction(null);
           setPinModalValue('');
@@ -1556,8 +1642,11 @@ export function App() {
     runAction(`paper-close-${positionId}`, en ? 'Closing paper position…' : 'Clôture de la position Paper…', () =>
       _handleClosePaperPosition(positionId)
     );
-  const handleResetPaperAccount = () =>
-    runAction('paper-reset', en ? 'Resetting paper account…' : 'Réinitialisation du compte Paper…', () => _handleResetPaperAccount());
+  const handleResetPaperAccount = () => {
+    // Action destructive (efface positions + historique, capital remis à 10 000) : confirmation obligatoire.
+    if (!window.confirm(tr(lang, 'Réinitialiser le compte Paper ? Toutes les positions et l\'historique seront définitivement effacés et le capital remis à 10 000 USDT.', 'Reset the Paper account? All positions and history will be permanently erased and capital reset to 10,000 USDT.'))) return;
+    return runAction('paper-reset', en ? 'Resetting paper account…' : 'Réinitialisation du compte Paper…', () => _handleResetPaperAccount());
+  };
   // Pas de blocage ici : plusieurs réglages successifs doivent rester possibles (clé unique par appel).
   const handleUpdateTradingConfig = (patch: Partial<TradingConfigState> & { pin?: string }) =>
     runAction(
@@ -1565,8 +1654,20 @@ export function App() {
       en ? 'Saving trading settings…' : 'Enregistrement des paramètres de trading…',
       () => _handleUpdateTradingConfig(patch)
     );
-  const handleSafetyAction = (action: string, reason?: string, customPin?: string) =>
-    runAction(
+  const handleSafetyAction = (action: string, reason?: string, customPin?: string) => {
+    // Arrêt d'urgence = fermeture de toutes les positions réelles : jamais sans confirmation explicite.
+    if (
+      action === 'emergency_stop' &&
+      !window.confirm(
+        tr(
+          lang,
+          "ARRÊT D'URGENCE : toutes les positions ouvertes seront fermées au marché et AutoTrade sera désactivé. Confirmer ?",
+          'EMERGENCY STOP: all open positions will be closed at market and AutoTrade will be disabled. Confirm?'
+        )
+      )
+    )
+      return;
+    return runAction(
       `safety-${action}`,
       action === 'emergency_stop'
         ? en
@@ -1577,6 +1678,7 @@ export function App() {
         : "Mise à jour de l'état de sécurité…",
       () => _handleSafetyAction(action, reason, customPin)
     );
+  };
   const handleSaveBinanceKeys = (e: React.FormEvent) =>
     runAction('binance-save', en ? 'Saving and verifying API keys…' : 'Enregistrement et vérification des clés API…', () =>
       _handleSaveBinanceKeys(e)
@@ -1595,6 +1697,12 @@ export function App() {
     runAction(`live-cancel-${orderId}`, en ? 'Cancelling order…' : "Annulation de l'ordre…", () =>
       _handleCancelLiveOrder(symbol, orderId)
     );
+  const handleLiveOrderFromAnalysis = (action: 'validate' | 'execute') => {
+    // Toute modification du ticket invalide la validation précédente : on revalide toujours avant d'exécuter.
+    if (action === 'validate' || !liveOverrideRef.current) liveOverrideRef.current = buildLiveOverride();
+    return handleLiveOrderAction(action);
+  };
+
   const handleLiveOrderAction = (action: 'validate' | 'execute', customPin?: string) =>
     runAction(
       'live-order',
@@ -1744,7 +1852,7 @@ export function App() {
       {authError && (
         <div className="p-3 rounded-lg bg-[#F04438]/15 border border-[#F04438]/40 text-xs text-[#F97066] flex items-start gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{authError}</span>
+          <span>{translateMessage(authError)}</span>
         </div>
       )}
 
@@ -2077,6 +2185,9 @@ export function App() {
           }}
           onEnterWorkspace={() => {
             // Signed-in users open the app; visitors open the demo, never the login wall.
+            // Un utilisateur connecté arrive sur l'écran d'accueil de l'app (Market Intelligence), jamais directement
+            // dans un onglet d'administration ou de laboratoire laissé ouvert.
+            if (user) setActiveTab('intelligence');
             setViewMode(user ? 'workspace' : 'demo');
           }}
           onOpenAuthModal={(m) => {
@@ -2911,8 +3022,12 @@ export function App() {
                       <span
                         title={
                           item.apiConnected
-                            ? `Clés API Binance chargées et opérationnelles (${tradingCfg?.testnet ? 'TESTNET' : 'LIVE'})`
-                            : 'Clés API Binance absentes ou non opérationnelles'
+                            ? tr(
+                                lang,
+                                `Clés API Binance chargées et opérationnelles (${tradingCfg?.testnet ? 'TESTNET' : 'LIVE'})`,
+                                `Binance API keys loaded and operational (${tradingCfg?.testnet ? 'TESTNET' : 'LIVE'})`
+                              )
+                            : tr(lang, 'Clés API Binance absentes ou non opérationnelles', 'Binance API keys missing or not operational')
                         }
                         className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono-tabular font-bold border ${
                           item.apiConnected
@@ -2931,7 +3046,7 @@ export function App() {
                     {item.count !== undefined && item.count > 0 && (
                       <span className="font-mono-tabular text-[11px] text-[#8B98A4]">{item.count}</span>
                     )}
-                    {item.warn && <span className="w-2 h-2 rounded-full bg-[#D6A84F]" title="Avertissement ou Safety Lock actif" />}
+                    {item.warn && <span className="w-2 h-2 rounded-full bg-[#D6A84F]" title={tr(lang, 'Avertissement ou Safety Lock actif', 'Warning or Safety Lock active')} />}
                   </div>
                 </button>
               );
@@ -3223,7 +3338,7 @@ export function App() {
                     ? 'bg-[#20C997] text-[#080C0F] border-[#20C997]'
                     : 'bg-[#20C997]/15 hover:bg-[#20C997]/25 text-[#20C997] border-[#20C997]/40'
                 }`}
-                title="Dossier Utilisateurs 360° (IP, Appareils, Localisation, CGU)"
+                title={tr(lang, 'Dossier Utilisateurs 360° (IP, Appareils, Localisation, CGU)', 'User 360° Files (IP, Devices, Location, Terms)')}
               >
                 <Users className="w-3.5 h-3.5 shrink-0" />
                 <span className="hidden sm:inline">{tr(lang, 'Utilisateurs 360°')}</span>
@@ -3238,7 +3353,7 @@ export function App() {
                   ? 'bg-[#D6A84F] text-[#080C0F] border-[#D6A84F]'
                   : 'bg-[#0D1318] hover:bg-white/[0.05] text-[#E2BC6A] border-[#D6A84F]/40'
               }`}
-              title="Termes & Conditions d'Utilisation (CGU)"
+              title={tr(lang, "Termes & Conditions d'Utilisation (CGU)", 'Terms & Conditions of Use')}
             >
               <Shield className="w-3.5 h-3.5 shrink-0" />
               <span className="hidden sm:inline">{tr(lang, 'CGU')}</span>
@@ -3814,15 +3929,36 @@ export function App() {
                         {tr(lang, 'Exécution Rapide Paper Trading')}
                       </h3>
                       <span className="font-mono-tabular text-xs text-[#20C997]">
-                        Cap: {Number(paperStats?.capital ?? 10000).toFixed(0)} USDT
+                        {tr(lang, 'Capital :', 'Capital:')} {Number(paperStats?.capital ?? 10000).toFixed(0)} USDT
                       </span>
                     </div>
 
                     <form onSubmit={handleOpenPaperOrder} className="space-y-3 text-xs">
+                      <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-[#080C0F] border border-white/10">
+                        <button
+                          type="button"
+                          onClick={() => setOrderMode('paper')}
+                          className={`py-1.5 rounded-md font-semibold transition-colors ${
+                            orderMode === 'paper' ? 'bg-[#20C997] text-[#080C0F]' : 'text-[#8B98A4]'
+                          }`}
+                        >
+                          Paper (simulation)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setOrderMode('live')}
+                          className={`py-1.5 rounded-md font-semibold transition-colors ${
+                            orderMode === 'live' ? 'bg-[#D6A84F] text-[#080C0F]' : 'text-[#8B98A4]'
+                          }`}
+                        >
+                          Binance
+                        </button>
+                      </div>
+
                       <div className="grid grid-cols-2 gap-2">
                         <button
                           type="button"
-                          onClick={() => setOrderSide('BUY')}
+                          onClick={() => switchOrderSide('BUY')}
                           className={`py-2 rounded-lg font-semibold border transition-colors ${
                             orderSide === 'BUY'
                               ? 'bg-[#20C997] text-[#080C0F] border-[#20C997]'
@@ -3833,7 +3969,7 @@ export function App() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setOrderSide('SELL')}
+                          onClick={() => switchOrderSide('SELL')}
                           className={`py-2 rounded-lg font-semibold border transition-colors ${
                             orderSide === 'SELL'
                               ? 'bg-[#F04438] text-white border-[#F04438]'
@@ -3846,17 +3982,35 @@ export function App() {
 
                       <div className="grid grid-cols-2 gap-2.5">
                         <div>
-                          <label className="block text-[11px] text-[#8B98A4] mb-1">
-                            {lang === 'en' ? 'Quantity' : 'Quantité'} ({selectedSymbol})
+                          <label className="flex items-center justify-between text-[11px] text-[#8B98A4] mb-1">
+                            <span>
+                              {lang === 'en' ? 'Quantity' : 'Quantité'} ({selectedSymbol})
+                            </span>
+                            {orderMode === 'paper' && (
+                              <label className="flex items-center gap-1 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={orderAutoSize}
+                                  onChange={(e) => setOrderAutoSize(e.target.checked)}
+                                />
+                                <span>{tr(lang, 'Auto (risque)', 'Auto (risk)')}</span>
+                              </label>
+                            )}
                           </label>
-                          <input
-                            type="number"
-                            step="any"
-                            value={orderQty}
-                            onChange={(e) => setOrderQty(e.target.value)}
-                            className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
-                            required
-                          />
+                          {orderMode === 'live' || orderAutoSize ? (
+                            <div className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]">
+                              {orderPreviewBusy ? '…' : orderPreview?.ok ? orderPreview.quantity : '—'}
+                            </div>
+                          ) : (
+                            <input
+                              type="number"
+                              step="any"
+                              value={orderQty}
+                              onChange={(e) => setOrderQty(e.target.value)}
+                              className="w-full px-2.5 py-1.5 bg-[#080C0F] border border-white/10 rounded font-mono-tabular text-[#E8EEF2]"
+                              required
+                            />
+                          )}
                         </div>
                         <div>
                           <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Levier (1x–20x)')}</label>
@@ -3897,19 +4051,118 @@ export function App() {
                         </div>
                       </div>
 
-                      <button
-                        type="submit"
-                        disabled={isPending('paper-open')}
-                        className="w-full py-2.5 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {isPending('paper-open')
-                          ? lang === 'en'
-                            ? 'Processing…'
-                            : 'Traitement…'
-                          : lang === 'en'
-                          ? `Open Paper Position (${selectedSymbol})`
-                          : `Ouvrir Position Paper (${selectedSymbol})`}
-                      </button>
+                      {/* Aperçu de la taille (mêmes règles que l'exécution) */}
+                      <div className="p-2.5 rounded bg-[#080C0F] border border-white/[0.05] space-y-1 font-mono-tabular text-[11px]">
+                        {orderPreview?.ok ? (
+                          <>
+                            <div className="flex justify-between">
+                              <span className="text-[#6E7B88]">{tr(lang, 'Taille', 'Size')}</span>
+                              <span className="text-[#E8EEF2]">
+                                {orderPreview.quantity} • {Number(orderPreview.notional).toFixed(2)} USDT
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-[#6E7B88]">{tr(lang, 'Marge requise', 'Margin')}</span>
+                              <span className="text-[#E8EEF2]">
+                                {Number(orderPreview.margin_required).toFixed(2)} USDT (x{orderPreview.leverage})
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-[#6E7B88]">
+                                {tr(lang, 'Risque au SL', 'Risk at SL')} ({orderPreview.risk_pct}%)
+                              </span>
+                              <span className="text-[#F04438]">-{Number(orderPreview.risk_amount).toFixed(2)} USDT</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-[#6E7B88]">{tr(lang, 'Solde utilisé', 'Balance used')}</span>
+                              <span className="text-[#8B98A4]">
+                                {Number(orderPreview.balance).toFixed(2)} USDT (
+                                {orderPreview.balance_source === 'binance'
+                                  ? orderPreview.binance_environment === 'testnet'
+                                    ? 'Binance Testnet'
+                                    : tr(lang, 'Binance RÉEL', 'Binance LIVE')
+                                  : 'Paper'}
+                                )
+                              </span>
+                            </div>
+                            {orderPreview.rr_ratio ? (
+                              <div className="flex justify-between">
+                                <span className="text-[#6E7B88]">R:R</span>
+                                <span className="text-[#D6A84F]">1 : {orderPreview.rr_ratio}</span>
+                              </div>
+                            ) : null}
+                            {orderPreview.capped && (
+                              <div className="text-[#D6A84F]">
+                                {tr(lang, "Taille plafonnée par l'exposition maximale.", 'Size capped by max exposure.')}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="text-[#F04438]">
+                            {orderPreviewBusy
+                              ? '…'
+                              : orderPreview?.reason || tr(lang, 'Renseignez un Stop Loss pour calculer la taille.', 'Enter a Stop Loss to compute the size.')}
+                          </div>
+                        )}
+                      </div>
+
+                      {orderMode === 'paper' ? (
+                        <button
+                          type="submit"
+                          disabled={isPending('paper-open') || (orderAutoSize && !orderPreview?.ok)}
+                          className="w-full py-2.5 bg-[#20C997] hover:bg-[#1AA67D] text-[#080C0F] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {isPending('paper-open')
+                            ? lang === 'en'
+                              ? 'Processing…'
+                              : 'Traitement…'
+                            : lang === 'en'
+                            ? `Open Paper Position (${selectedSymbol})`
+                            : `Ouvrir Position Paper (${selectedSymbol})`}
+                        </button>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="text-[10px] text-[#D6A84F]">
+                            {orderPreview?.binance_environment === 'live'
+                              ? tr(lang, 'ORDRE RÉEL : de l’argent réel sera engagé. Un code PIN sera demandé.', 'REAL ORDER: real funds will be used. A PIN will be required.')
+                              : tr(lang, 'Ordre envoyé sur Binance (testnet si vos clés sont testnet). Un code PIN sera demandé.', 'Order sent to Binance (testnet if your keys are testnet). A PIN will be required.')}
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isPending('live-order') || !orderPreview?.ok}
+                            onClick={() => handleLiveOrderFromAnalysis('validate')}
+                            className="w-full py-2 border border-[#D6A84F]/60 text-[#D6A84F] font-semibold rounded-lg transition-colors hover:bg-[#D6A84F]/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {tr(lang, "1. Valider l'ordre Binance", '1. Validate Binance order')}
+                          </button>
+                          {liveOrderDraftCheck && liveOverrideRef.current && (
+                            <div className="p-2.5 rounded bg-[#080C0F] border border-[#D6A84F]/30 text-[11px] font-mono-tabular space-y-0.5">
+                              <div className="text-[#E8EEF2]">
+                                {orderSide} {liveOrderDraftCheck.quantity} {selectedSymbol} @ ~{Number(liveOrderDraftCheck.price).toFixed(2)}
+                              </div>
+                              <div className="text-[#8B98A4]">
+                                {tr(lang, 'Valeur notionnelle', 'Notional')} {Number(liveOrderDraftCheck.notional).toFixed(2)} USDT • {tr(lang, 'Marge', 'Margin')}{' '}
+                                {Number(liveOrderDraftCheck.margin_amount).toFixed(2)} USDT
+                              </div>
+                              <div>
+                                <span className="text-[#F04438]">SL {liveOrderDraftCheck.sl_price || '—'}</span>
+                                {' | '}
+                                <span className="text-[#20C997]">TP {liveOrderDraftCheck.tp_price || '—'}</span>
+                              </div>
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            disabled={isPending('live-order') || !liveOrderDraftCheck || !liveOverrideRef.current}
+                            onClick={() => handleLiveOrderFromAnalysis('execute')}
+                            className="w-full py-2.5 bg-[#D6A84F] hover:bg-[#BF9342] text-[#080C0F] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {isPending('live-order')
+                              ? tr(lang, 'Traitement…', 'Processing…')
+                              : tr(lang, `2. Exécuter sur Binance (${selectedSymbol})`, `2. Execute on Binance (${selectedSymbol})`)}
+                          </button>
+                        </div>
+                      )}
                     </form>
                   </div>
                 </div>
@@ -3921,7 +4174,9 @@ export function App() {
                   <div>
                     <div className="flex items-center gap-2.5">
                       <h3 className="font-display font-semibold text-base text-[#E8EEF2]">
-                        {tr(lang, 'Scanner Multi-Marchés (10 cryptos • XAUUSDT)')}
+                        {isSymbolUnavailable('XAUUSDT')
+                          ? tr(lang, 'Scanner Multi-Marchés (10 cryptos)', 'Multi-Market Scanner (10 cryptos)')
+                          : tr(lang, 'Scanner Multi-Marchés (10 cryptos • XAUUSDT)')}
                       </h3>
                       {lastScannedAt && (
                         <span className="text-[11px] font-mono-tabular text-[#20C997] bg-[#20C997]/10 border border-[#20C997]/30 px-2 py-0.5 rounded">
@@ -3969,15 +4224,21 @@ export function App() {
                       const scTick = livePrices[sc.symbol];
                       const scFlash = priceFlash[sc.symbol];
                       const scLivePrice = scTick?.price || sc.current_price || 0;
+                      const scUnavailable = isSymbolUnavailable(sc.symbol);
                       return (
                         <div
                           key={sc.symbol}
                           onClick={() => {
+                            // Même règle que les sélecteurs : un symbole indisponible n'est jamais sélectionné
+                            // (sinon l'en-tête affichait son prix alors que partout ailleurs il est « indisponible »).
+                            if (guardSymbol(sc.symbol)) return;
                             setSelectedSymbol(sc.symbol);
                             setAnalysis(sc);
                             runAnalysis(sc.symbol, selectedTimeframe, selectedStyle);
                           }}
                           className={`p-4 rounded-lg bg-[#080C0F] border cursor-pointer transition-all space-y-2.5 ${
+                            scUnavailable ? 'opacity-60' : ''
+                          } ${
                             selectedSymbol === sc.symbol
                               ? 'border-[#20C997]/60 ring-1 ring-[#20C997]/30'
                               : 'border-white/[0.07] hover:border-[#20C997]/40'
@@ -3985,7 +4246,10 @@ export function App() {
                         >
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
-                              <span className="font-mono-tabular font-bold text-sm text-[#E8EEF2]">{sc.symbol}</span>
+                              <span className="font-mono-tabular font-bold text-sm text-[#E8EEF2]">
+                                {sc.symbol}
+                                {unavailableSuffix(lang, sc.symbol)}
+                              </span>
                               <span className="text-[10px] font-mono-tabular px-1.5 py-0.5 rounded bg-white/[0.05] text-[#8B98A4]">
                                 {sc.timeframe.toUpperCase()}
                               </span>
@@ -4079,7 +4343,8 @@ export function App() {
                   <p className="text-xs text-[#8B98A4]">
                     {tr(
                       lang,
-                      "Simulation fidèle avec frais d'ouverture/clôture (0.04%), slippage (0.02%) et surveillance automatique des seuils SL/TP."
+                      "Simulation fidèle avec frais d'ouverture/clôture (0.10%), slippage (0.05%) et surveillance automatique des seuils SL/TP.",
+                      'Faithful simulation with entry/exit fees (0.10%), slippage (0.05%) and automatic SL/TP monitoring.'
                     )}
                   </p>
                 </div>
@@ -4579,7 +4844,8 @@ export function App() {
                       tradingCfg.api_status_message ||
                       tr(
                         lang,
-                        'Tous les garde-fous de risque (exposition max 20%, fraîcheur de signal 180s, TTL 3600s) sont actifs.'
+                        'Tous les garde-fous de risque (exposition max 50%, fraîcheur de signal, TTL 3600s) sont actifs.',
+                        'All risk safeguards (max exposure 50%, signal freshness, TTL 3600s) are active.'
                       )}
                   </div>
                   {(tradingCfg.safety_lock_at || tradingCfg.safety_warn_at) && (
@@ -4939,7 +5205,7 @@ export function App() {
                       {/* Max Positions */}
                       <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[#8B98A4]">Max Positions (/setmaxpos)</span>
+                          <span className="text-[#8B98A4]">{tr(lang, 'Positions max (/setmaxpos)', 'Max Positions (/setmaxpos)')}</span>
                           <span className="font-mono-tabular font-bold text-[#20C997]">
                             {tradingCfg.max_positions}
                           </span>
@@ -5043,7 +5309,7 @@ export function App() {
                             disabled={isPending('safety-reset_daily_loss')}
                             className="px-2.5 py-1.5 bg-[#172129] hover:bg-[#202A32] rounded text-[11px] text-[#E8EEF2] disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            Reset
+                            {tr(lang, 'Réinitialiser', 'Reset')}
                           </button>
                         </div>
                       </div>
@@ -5051,7 +5317,7 @@ export function App() {
                       {/* Cooldown */}
                       <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-[#8B98A4]">Cooldown (/setcooldown)</span>
+                          <span className="text-[#8B98A4]">{tr(lang, 'Délai de repos (/setcooldown)', 'Cooldown (/setcooldown)')}</span>
                           <span className="font-mono-tabular font-bold text-[#D6A84F]">
                             {tradingCfg.cooldown_seconds || 0}s
                           </span>
@@ -5208,7 +5474,7 @@ export function App() {
                       {/* Whitelist */}
                       <div className="p-3.5 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="font-semibold text-[#E8EEF2]">✅ Whitelist AutoTrade</span>
+                          <span className="font-semibold text-[#E8EEF2]">{tr(lang, '✅ Liste blanche AutoTrade', '✅ Whitelist AutoTrade')}</span>
                           {(tradingCfg.symbol_whitelist || []).length > 0 && (
                             <button
                               type="button"
@@ -5254,7 +5520,7 @@ export function App() {
                       {/* Blacklist */}
                       <div className="p-3.5 rounded-lg bg-[#080C0F] border border-white/[0.06] space-y-2">
                         <div className="flex items-center justify-between">
-                          <span className="font-semibold text-[#E8EEF2]">🚫 Blacklist AutoTrade</span>
+                          <span className="font-semibold text-[#E8EEF2]">{tr(lang, '🚫 Liste noire AutoTrade', '🚫 Blacklist AutoTrade')}</span>
                           {(tradingCfg.symbol_blacklist || []).length > 0 && (
                             <button
                               type="button"
@@ -5345,7 +5611,7 @@ export function App() {
 
                     <form onSubmit={handleSaveBinanceKeys} className="space-y-3 text-xs">
                       <div>
-                        <label className="block text-[#8B98A4] mb-1">Binance API Key</label>
+                        <label className="block text-[#8B98A4] mb-1">{tr(lang, 'Clé API Binance', 'Binance API Key')}</label>
                         <input
                           type="text"
                           value={binanceKey}
@@ -5356,7 +5622,7 @@ export function App() {
                         />
                       </div>
                       <div>
-                        <label className="block text-[#8B98A4] mb-1">Binance API Secret</label>
+                        <label className="block text-[#8B98A4] mb-1">{tr(lang, 'Secret API Binance', 'Binance API Secret')}</label>
                         <input
                           type="password"
                           value={binanceSecret}
@@ -5676,7 +5942,7 @@ export function App() {
                           checked={liveOrderReduceOnly}
                           onChange={(e) => setLiveOrderReduceOnly(e.target.checked)}
                         />
-                        <span>Reduce-Only</span>
+                        <span>{tr(lang, 'Réduction seule (Reduce-Only)', 'Reduce-Only')}</span>
                       </label>
                     </div>
 
@@ -5689,7 +5955,7 @@ export function App() {
                         </div>
                         <div>
                           {lang === 'en' ? 'Committed margin:' : 'Marge engagée:'}{' '}
-                          {Number(liveOrderDraftCheck.margin_amount).toFixed(2)} USDT • Notional:{' '}
+                          {Number(liveOrderDraftCheck.margin_amount).toFixed(2)} USDT • {tr(lang, 'Valeur notionnelle :', 'Notional:')}{' '}
                           {Number(liveOrderDraftCheck.notional).toFixed(2)} USDT
                         </div>
                         <div>
@@ -6985,7 +7251,7 @@ export function App() {
                         </div>
                       </div>
                       <div className="p-2.5 rounded-lg bg-[#080C0F] border border-white/[0.06]">
-                        <div className="text-[10px] text-[#6E7B88]">Win Rate</div>
+                        <div className="text-[10px] text-[#6E7B88]">{tr(lang, 'Taux de réussite', 'Win Rate')}</div>
                         <div className="text-sm font-bold text-[#E8EEF2] mt-0.5">
                           {adminData?.global_trading_stats?.win_rate ?? 0}%
                         </div>
@@ -7017,7 +7283,7 @@ export function App() {
                             <div>
                               <span className="text-[#20C997] font-bold">#{gt.id}</span> • UID #{gt.user_id} •{' '}
                               <span className="text-[#E8EEF2] font-semibold">{gt.symbol}</span> ({gt.direction}){' '}
-                              qty={gt.quantity} @ {gt.entry_price}
+                              {tr(lang, 'qté', 'qty')}={gt.quantity} @ {gt.entry_price}
                             </div>
                             <button
                               type="button"
@@ -7281,6 +7547,7 @@ export function App() {
              ========================================================= */}
           {activeTab === 'users_intelligence' && Boolean(user?.is_admin || user?.role === 'admin') && (
             <AdminUsersIntelligenceTab
+              lang={lang}
               apiFetch={apiFetch}
               onOpenTermsPage={() => setActiveTab('terms')}
               onAdminUserAction={async (action, targetUserId, extra = {}) => {

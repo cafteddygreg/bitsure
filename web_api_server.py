@@ -1666,6 +1666,72 @@ def _load_fallback_csv(symbol: str):
     return df
 
 
+def _order_sizing_for_mode(
+    user_id: int,
+    cfg,
+    symbol: str,
+    direction: Optional[str],
+    entry_price: float,
+    sl_price: Optional[float],
+    tp_price: Optional[float] = None,
+    mode: str = "paper",
+    leverage: Optional[float] = None,
+) -> dict:
+    """Calcule la taille d'une position selon la MÊME règle que l'exécution (risque % du solde / distance au SL,
+    plafond d'exposition commun). mode='paper' => capital paper ; mode='live' => solde Binance du compte
+    (testnet ou réel selon les clés enregistrées). Ne lève jamais : renvoie ok=False + reason."""
+    from risk_manager import compute_risk_based_quantity, sl_side_error
+    from config import PAPER_MAX_LEVERAGE
+
+    base = {
+        "mode": mode, "ok": False, "reason": None, "quantity": 0.0, "notional": 0.0, "margin_required": 0.0,
+        "risk_amount": 0.0, "risk_pct": float(cfg.risk_per_trade or 1.0), "balance": None, "leverage": None,
+        "capped": False, "market_type": None, "entry_price": entry_price, "sl": sl_price, "tp": tp_price,
+        "rr_ratio": None, "balance_source": None,
+    }
+    err = sl_side_error(direction, entry_price, sl_price, tp_price) if direction else None
+    if err:
+        base["reason"] = err
+        return base
+    if direction and sl_price and tp_price and entry_price:
+        dist = abs(entry_price - sl_price)
+        base["rr_ratio"] = round(abs(tp_price - entry_price) / dist, 2) if dist > 0 else None
+
+    step = min_qty = min_notional = 0.0
+    if mode == "live":
+        market_type = cfg.market_type
+        lev = float(leverage or cfg.leverage or 1)
+        lev = min(lev, float(cfg.leverage or 1)) if market_type == "futures" else 1.0
+        try:
+            balance = float(get_account_balance(user_id, market_type=market_type))
+        except Exception as exc:
+            base["reason"] = f"Solde Binance indisponible : {exc}"
+            return base
+        base["balance_source"] = "binance"
+        try:
+            from binance_manager import _client_for_user, get_symbol_filters
+            filters = get_symbol_filters(_client_for_user(user_id, market_type=market_type), symbol, market_type)
+            step = float((filters.get("LOT_SIZE") or {}).get("stepSize") or 0.0)
+            min_qty = float((filters.get("LOT_SIZE") or {}).get("minQty") or 0.0)
+            min_notional = float((filters.get("MIN_NOTIONAL") or {}).get("notional") or (filters.get("NOTIONAL") or {}).get("minNotional") or 0.0)
+        except Exception:
+            pass  # filtres indisponibles : la validation finale côté Binance les appliquera
+    else:
+        market_type = "futures"  # le paper simule levier et shorts
+        lev = min(float(leverage or cfg.leverage or 1), float(PAPER_MAX_LEVERAGE))
+        balance = float(PaperTrader().get_capital(user_id))
+        base["balance_source"] = "paper"
+
+    base.update({"balance": balance, "leverage": lev, "market_type": market_type})
+    res = compute_risk_based_quantity(
+        balance=balance, risk_pct=base["risk_pct"], entry_price=entry_price, sl_price=sl_price or 0.0,
+        leverage=int(lev), market_type=market_type, direction=direction,
+        step_size=step or None, min_qty=min_qty, min_notional=min_notional,
+    )
+    base.update({k: res[k] for k in ("ok", "reason", "quantity", "notional", "margin_required", "risk_amount", "capped")})
+    return base
+
+
 def _analyze_symbol_complete(user_id: int, symbol: str, timeframe: str = "1h", style: Optional[str] = None, lang: str = "fr", record_history: bool = True) -> Dict[str, Any]:
     norm_sym = normalize_symbol(symbol)
     cfg = trading_config.get_config(user_id)
@@ -1786,28 +1852,31 @@ def _analyze_symbol_complete(user_id: int, symbol: str, timeframe: str = "1h", s
             except Exception:
                 pass
 
-    # Position sizing recommendation via risk_manager & paper capital
+    # Position sizing recommendation : mêmes règles que l'exécution (risque %, plafond d'exposition commun).
+    # Basée sur le capital Paper (pas d'appel Binance à chaque analyse) ; le solde Binance réel est calculé
+    # à la demande par /api/market/order-preview.
     cap = pt.get_capital(user_id)
+    rec_dir = analysis.get("signal") if analysis.get("signal") in ("BUY", "SELL") else None
     sl_price = analysis.get("sl")
     if not sl_price and last_price > 0:
         atr_v = ind.get("atr") or (last_price * 0.01)
-        sl_price = last_price - (atr_v * 1.5) if analysis.get("signal") != "SELL" else last_price + (atr_v * 1.5)
-
-    stop_dist = abs(last_price - (sl_price or (last_price * 0.99)))
-    risk_usd = cap * (float(cfg.risk_per_trade or 1.0) / 100.0)
-    raw_qty = (risk_usd / stop_dist) if stop_dist > 0 else 0.0
-    max_notional = cap * 0.20 * (float(cfg.leverage or 1.0) if cfg.market_type == "futures" else 1.0)
-    max_qty = (max_notional / last_price) if last_price > 0 else 0.0
-    rec_qty = round(min(raw_qty, max_qty), 5) if max_qty > 0 else round(raw_qty, 5)
+        sl_price = last_price - (atr_v * 1.5) if rec_dir != "SELL" else last_price + (atr_v * 1.5)
+    rec = _order_sizing_for_mode(
+        user_id, cfg, norm_sym, rec_dir, last_price, sl_price, analysis.get("tp1") or analysis.get("tp"), mode="paper",
+    )
     sizing = {
         "capital": round(cap, 2),
         "risk_pct": cfg.risk_per_trade,
-        "risk_amount_usd": round(risk_usd, 2),
-        "position_size": rec_qty,
-        "notional_usd": round(rec_qty * last_price, 2),
-        "margin_required_usd": round((rec_qty * last_price) / max(1.0, float(cfg.leverage or 1.0)), 2),
-        "leverage": cfg.leverage,
+        "risk_amount_usd": round(rec["risk_amount"], 2),
+        "position_size": round(rec["quantity"], 6) if rec["ok"] else 0.0,
+        "notional_usd": round(rec["notional"], 2),
+        "margin_required_usd": round(rec["margin_required"], 2),
+        "leverage": rec["leverage"] or cfg.leverage,
         "market_type": cfg.market_type,
+        "basis": "paper_capital",
+        "ok": rec["ok"],
+        "reason": rec["reason"],
+        "direction": rec_dir,
     }
 
     # Record in HistoryManager if actionable or requested
@@ -3995,10 +4064,46 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             # 3. Paper Trading Actions (with per-user daily paper trade quota)
+            if path == "/api/market/order-preview":
+                # Aperçu (sans rien exécuter) de la taille de position pour un ordre issu de l'analyse.
+                symbol = normalize_symbol(body.get("symbol", "BTCUSDT"))
+                side = (body.get("side") or "BUY").upper()
+                mode = (body.get("mode") or "paper").lower()
+                if side not in ("BUY", "SELL") or mode not in ("paper", "live"):
+                    self._send_json(400, {"ok": False, "error": "Paramètres side/mode invalides."})
+                    return
+                try:
+                    price = _extract_price_float(run_coro(DataFetcher.get_instance().get_realtime_price(symbol)), 0.0)
+                except Exception:
+                    price = 0.0
+                if price <= 0:
+                    self._send_json(503, {"ok": False, "code": "PRICE_UNAVAILABLE", "error": f"Prix temps réel indisponible pour {symbol}."})
+                    return
+                sl_v = float(body.get("sl") or 0) or None
+                tp_v = float(body.get("tp") or 0) or None
+                cfg = trading_config.get_config(user_id)
+                preview = _order_sizing_for_mode(
+                    user_id, cfg, symbol, side, price, sl_v, tp_v, mode=mode,
+                    leverage=float(body["leverage"]) if body.get("leverage") else None,
+                )
+                if mode == "live":
+                    creds = trading_config.get_binance_credentials(user_id, market_type=cfg.market_type)
+                    preview["binance_environment"] = (
+                        None if not creds else ("testnet" if creds.get("testnet") else "live")
+                    )
+                    preview["has_binance_keys"] = bool(creds)
+                    if not creds:
+                        preview["ok"] = False
+                        preview["reason"] = "Aucune clé Binance configurée sur ce compte (onglet Compte / Trading)."
+                self._send_json(200, {"ok": True, "preview": preview})
+                return
+
             if path == "/api/paper/open":
                 symbol = normalize_symbol(body.get("symbol", "BTCUSDT"))
                 side = (body.get("side") or "BUY").upper()
-                qty = float(body.get("qty") or 0.05)
+                if side not in ("BUY", "SELL"):
+                    self._send_json(400, {"ok": False, "error": "Direction invalide (BUY ou SELL)."})
+                    return
                 leverage = float(body.get("leverage") or 1.0)
                 # Ignore any client-supplied body["entry_price"]; use server price only (no hardcoded fallback)
                 try:
@@ -4019,6 +4124,34 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                     )
                     return
 
+                sl = float(body.get("sl") or (entry_price * 0.985 if side == "BUY" else entry_price * 1.015))
+                tp = float(body.get("tp") or (entry_price * 1.03 if side == "BUY" else entry_price * 0.97))
+
+                # Taille : calculée côté serveur par le risque (auto_size) ou quantité fournie explicitement.
+                if body.get("auto_size"):
+                    sizing_res = _order_sizing_for_mode(
+                        user_id, trading_config.get_config(user_id), symbol, side, entry_price, sl, tp,
+                        mode="paper", leverage=leverage,
+                    )
+                    if not sizing_res["ok"]:
+                        self._send_json(400, {"ok": False, "error": sizing_res["reason"] or "Taille de position impossible."})
+                        return
+                    qty = float(sizing_res["quantity"])
+                else:
+                    try:
+                        qty = float(body["qty"]) if body.get("qty") is not None else 0.05
+                    except (TypeError, ValueError):
+                        qty = 0.0
+                    if not (qty > 0):  # 0, négatif ou NaN : refusé (jamais remplacé par une valeur par défaut)
+                        self._send_json(400, {"ok": False, "error": "Quantité invalide : elle doit être supérieure à 0."})
+                        return
+
+                from risk_manager import sl_side_error
+                side_err = sl_side_error(side, entry_price, sl, tp)
+                if side_err:
+                    self._send_json(400, {"ok": False, "error": side_err})
+                    return
+
                 um = UserManager.get_instance()
                 allowed, used_q, limit_q = um.check_and_consume_feature_quota(user_id, "paper_trade", consume=True)
                 if not allowed:
@@ -4028,9 +4161,6 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         "error": f"Quota journalier d'ordres Paper Trading atteint ({used_q}/{limit_q}).",
                     })
                     return
-
-                sl = float(body.get("sl") or (entry_price * 0.985 if side == "BUY" else entry_price * 1.015))
-                tp = float(body.get("tp") or (entry_price * 1.03 if side == "BUY" else entry_price * 0.97))
 
                 pt = PaperTrader()
                 pos, err = pt.open_position(user_id, symbol, entry_price, sl, tp, qty, side=side, leverage=leverage)
@@ -4165,6 +4295,37 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 for k, v in body.items():
                     if k in allowed_fields:
                         updates[k] = v
+
+                # Mêmes bornes que les commandes du bot Telegram : l'API web ne doit jamais accepter plus large.
+                _bounds = {
+                    "leverage": (1, 125, True, "Levier"),
+                    "risk_per_trade": (0.0, 20.0, False, "Risque par trade"),
+                    "max_positions": (1, 10, True, "Positions max"),
+                    "min_score": (0, 100, False, "Score minimum"),
+                    "dca_steps": (1, 10, True, "Étapes DCA"),
+                    "dca_step_pct": (0.1, 20.0, False, "Pas DCA (%)"),
+                    "trailing_stop_pct": (1.0, 20.0, False, "Trailing stop (%)"),
+                    "cooldown_seconds": (0, 86400, True, "Cooldown (secondes)"),
+                }
+                for _k, (_lo, _hi, _is_int, _label) in _bounds.items():
+                    if _k not in updates:
+                        continue
+                    _raw = updates[_k]
+                    try:
+                        if isinstance(_raw, bool):
+                            raise ValueError("bool")
+                        _num = float(_raw)
+                        if _num != _num or _num in (float("inf"), float("-inf")):
+                            raise ValueError("nan")
+                        if _is_int and _num != int(_num):
+                            raise ValueError("not integer")
+                    except (TypeError, ValueError):
+                        self._send_json(400, {"ok": False, "error": f"Valeur invalide pour {_label} : nombre{' entier' if _is_int else ''} attendu."})
+                        return
+                    if _num < _lo or _num > _hi or (_k == "risk_per_trade" and _num <= 0):
+                        self._send_json(400, {"ok": False, "error": f"{_label} hors limites : doit être entre {_lo} et {_hi}."})
+                        return
+                    updates[_k] = int(_num) if _is_int else _num
 
                 if updates.get("auto_trade") is True and security_manager.has_security_code(user_id):
                     pin = str(body.get("pin", "")).strip()
@@ -4924,6 +5085,7 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                         raw_params = val_res["params"]
                         config_changes = val_res.get("changes", [])
                     else:
+                        candidate_params = strategy_lab.canonicalize_legacy_params(candidate_params)
                         unknown_keys = [k for k in candidate_params.keys() if k not in strategy_lab.LAB_PARAM_SPECS]
                         if unknown_keys:
                             self._send_json(

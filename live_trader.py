@@ -12,6 +12,7 @@ import math
 import time
 import hashlib
 import uuid
+from decimal import Decimal, ROUND_HALF_UP
 from dataclasses import dataclass
 from typing import Optional
 
@@ -22,8 +23,14 @@ from binance_manager import (
     _client_for_user,
     _extract_order_fill_price,
     _lookup_order_by_client_id,
+    _place_futures_protective_orders,
     _place_spot_oco_order,
+    futures_cancel_conditional_order,
+    futures_list_conditional_orders,
+    get_mark_price,
+    rebase_protective_levels,
     get_account_balance,
+    get_available_balance,
     get_full_account_info,
     get_open_binance_positions,
     get_price,
@@ -37,7 +44,7 @@ from config import DOCUMENTED_SYMBOLS
 from database import get_connection
 import security_manager
 from trading_config import get_config
-from risk_manager import check_can_open_position, check_symbol_allowed
+from risk_manager import check_can_open_position, check_symbol_allowed, compute_risk_based_quantity
 from trading_logger import get_trading_logger
 from trading_safety import SafetyError, assert_trading_allowed, engage_safe_mode, user_trading_lock
 from utils import normalize_symbol
@@ -82,10 +89,12 @@ def _get_max_leverage(client, symbol: str) -> Optional[int]:
 
 
 def _round_tick(value: Optional[float], tick_size: float) -> Optional[float]:
-    if value is None or tick_size <= 0:
+    """Arrondit au tick le plus proche avec Decimal (pas de dérive flottante ni de tick « perdu »)."""
+    if value is None or not tick_size or tick_size <= 0:
         return value
-    precision = max(0, int(round(-math.log10(tick_size))))
-    return round(math.floor(float(value) / tick_size) * tick_size, precision)
+    tick = Decimal(str(tick_size))
+    snapped = (Decimal(str(value)) / tick).to_integral_value(rounding=ROUND_HALF_UP) * tick
+    return float(snapped)
 
 
 def _get_idempotent_result(user_id: int, key: str) -> Optional[dict]:
@@ -186,8 +195,8 @@ def build_draft(
     if side not in ("BUY", "SELL"):
         raise ValueError("Le sens doit être BUY ou SELL.")
     amount_mode = amount_mode.lower()
-    if amount_mode not in ("fixed", "percentage"):
-        raise ValueError("Le mode montant doit être fixed ou percentage.")
+    if amount_mode not in ("fixed", "percentage", "risk"):
+        raise ValueError("Le mode montant doit être fixed, percentage ou risk.")
     order_type = order_type.upper()
     if order_type not in ("MARKET", "LIMIT"):
         raise ValueError("Le type d'ordre doit être MARKET ou LIMIT.")
@@ -221,7 +230,7 @@ def validate_draft(user_id: int, draft: LiveOrderDraft) -> dict:
         raise BinanceClientError(f"Type de marché non supporté : {draft.market_type}")
     if draft.market_type != "futures" and draft.side == "SELL" and not draft.reduce_only:
         raise BinanceClientError("SHORT non supporté en Spot standard. Utilise Futures.")
-    if draft.amount <= 0:
+    if draft.amount_mode != "risk" and draft.amount <= 0:
         raise BinanceClientError("Le montant doit être supérieur à 0.")
 
     # 1. Ouverture (non reduce_only) sans sl_price -> refus
@@ -266,15 +275,43 @@ def validate_draft(user_id: int, draft: LiveOrderDraft) -> dict:
     if balance <= 0:
         raise BinanceClientError("Solde disponible insuffisant.")
 
-    margin_amount = balance * draft.amount / 100 if draft.amount_mode == "percentage" else draft.amount
-    if margin_amount <= 0 or margin_amount > balance:
-        raise BinanceClientError("Montant supérieur au solde disponible.")
-
     price = float(draft.entry_price or get_price(user_id, draft.symbol, draft.market_type))
     eff_lev = draft.leverage if draft.market_type == "futures" else 1
-    notional = margin_amount * eff_lev
-    raw_qty = notional / price if price else 0.0
     step_size = filters.get("LOT_SIZE", {}).get("stepSize") or filters.get("MARKET_LOT_SIZE", {}).get("stepSize", "0.001")
+
+    if draft.amount_mode == "risk":
+        # Taille calculée par le risque : (solde × risk_per_trade%) / |prix − SL|, plafonnée à l'exposition max,
+        # arrondie au pas Binance. SL arrondi au tick AVANT le calcul pour que le risque colle au SL réellement posé.
+        tick_pre = _filter_float(filters, "PRICE_FILTER", "tickSize", 0.0)
+        sl_for_sizing = _round_tick(draft.sl_price, tick_pre)
+        sizing = compute_risk_based_quantity(
+            balance=balance,
+            risk_pct=float(getattr(config, "risk_per_trade", 1.0) or 1.0),
+            entry_price=price,
+            sl_price=float(sl_for_sizing or 0.0),
+            leverage=eff_lev,
+            market_type=draft.market_type,
+            direction=draft.side,
+            step_size=float(step_size),
+            min_qty=_filter_float(filters, "LOT_SIZE", "minQty", 0.0),
+            min_notional=_filter_float(filters, "MIN_NOTIONAL", "notional", 0.0)
+            or _filter_float(filters, "NOTIONAL", "minNotional", 0.0),
+        )
+        if not sizing["ok"]:
+            raise BinanceClientError(sizing["reason"] or "Taille de position impossible.")
+        raw_qty = sizing["quantity"]
+        margin_amount = sizing["margin_required"]
+        available = get_available_balance(user_id, market_type=draft.market_type)
+        if margin_amount > available:
+            raise BinanceClientError(
+                f"Marge requise ({margin_amount:.2f} USDT) supérieure au solde disponible ({available:.2f} USDT)."
+            )
+    else:
+        margin_amount = balance * draft.amount / 100 if draft.amount_mode == "percentage" else draft.amount
+        if margin_amount <= 0 or margin_amount > balance:
+            raise BinanceClientError("Montant supérieur au solde disponible.")
+        notional = margin_amount * eff_lev
+        raw_qty = notional / price if price else 0.0
     quantity = round_step_size(raw_qty, step_size)
     min_qty = _filter_float(filters, "LOT_SIZE", "minQty", 0.0)
     min_notional = _filter_float(filters, "MIN_NOTIONAL", "notional", 0.0) or _filter_float(filters, "NOTIONAL", "minNotional", 0.0)
@@ -351,36 +388,34 @@ def _place_live_futures_protection(
     checks: dict,
     result: dict,
 ) -> None:
-    if (checks.get("sl_price") or checks.get("tp_price")):
-        from binance_manager import _cancel_conflicting_futures_protective_orders
-        target_types = set()
-        if checks.get("sl_price") and not result.get("sl_order"):
-            target_types.add("STOP_MARKET")
-        if checks.get("tp_price") and not result.get("tp_order"):
-            target_types.add("TAKE_PROFIT_MARKET")
-        if target_types:
-            _cancel_conflicting_futures_protective_orders(
-                client,
-                symbol,
-                side=opposite,
-                order_types=target_types,
-            )
-    if checks.get("sl_price") and not result.get("sl_order"):
-        result["sl_order"] = client.futures_create_order(
-            symbol=symbol,
-            side=opposite,
-            type="STOP_MARKET",
-            stopPrice=checks["sl_price"],
-            closePosition=True,
-        )
-    if checks.get("tp_price") and not result.get("tp_order"):
-        result["tp_order"] = client.futures_create_order(
-            symbol=symbol,
-            side=opposite,
-            type="TAKE_PROFIT_MARKET",
-            stopPrice=checks["tp_price"],
-            closePosition=True,
-        )
+    """Pose SL/TP d'une position Futures live via l'API Algo (les ordres conditionnels n'existent plus sur /order).
+
+    Les niveaux sont recalés sur le prix réel d'exécution (slippage) en conservant leurs distances, puis
+    enregistrés dans `checks` pour que le trade sauvegardé reflète les niveaux réellement posés.
+    """
+    need_sl = bool(checks.get("sl_price")) and not result.get("sl_order")
+    need_tp = bool(checks.get("tp_price")) and not result.get("tp_order")
+    if not (need_sl or need_tp):
+        return
+
+    filters = get_symbol_filters(client, symbol, "futures")
+    position_direction = "BUY" if opposite == "SELL" else "SELL"
+    fill_price = _extract_order_fill_price(result.get("order") or {}) or get_mark_price(client, symbol)
+    sl, tp = rebase_protective_levels(
+        position_direction, checks.get("price"), fill_price, checks.get("sl_price"), checks.get("tp_price")
+    )
+    checks["sl_price"], checks["tp_price"] = sl, tp
+
+    warnings: list = []
+    sl_oid, tp_oid = _place_futures_protective_orders(
+        client, symbol, opposite, sl if need_sl else None, tp if need_tp else None, filters, warnings=warnings
+    )
+    if sl_oid:
+        result["sl_order"] = {"orderId": sl_oid}
+    if tp_oid:
+        result["tp_order"] = {"orderId": tp_oid}
+    if warnings:
+        result.setdefault("warnings", []).extend(warnings)
 
 
 def execute_draft(
@@ -689,13 +724,14 @@ def get_open_orders(user_id: int, symbol: Optional[str] = None) -> list[dict]:
     client = _client_for_user(user_id, market_type=config.market_type)
     try:
         if config.market_type == "futures":
-            return client.futures_get_open_orders(symbol=symbol) if symbol else client.futures_get_open_orders()
+            base = client.futures_get_open_orders(symbol=symbol) if symbol else client.futures_get_open_orders()
+            return list(base) + futures_list_conditional_orders(client, symbol)  # + SL/TP (ordres Algo)
         return client.get_open_orders(symbol=symbol) if symbol else client.get_open_orders()
     except BinanceAPIException as e:
         raise BinanceClientError(f"Erreur Binance ordres ouverts : {e.message}")
 
 
-def cancel_live_order(user_id: int, symbol: str, order_id: str, execution_context: Optional[str] = None) -> None:
+def cancel_live_order(user_id: int, symbol: str, order_id: str, execution_context: Optional[str] = None, algo: Optional[bool] = None) -> None:
     _assert_order_context_allowed(
         user_id,
         execution_context,
@@ -706,7 +742,18 @@ def cancel_live_order(user_id: int, symbol: str, order_id: str, execution_contex
     client = _client_for_user(user_id, market_type=config.market_type)
     try:
         if config.market_type == "futures":
-            client.futures_cancel_order(symbol=normalize_symbol(symbol.upper()), orderId=order_id)
+            sym = normalize_symbol(symbol.upper())
+            if algo:
+                futures_cancel_conditional_order(client, sym, order_id)
+            else:
+                try:
+                    client.futures_cancel_order(symbol=sym, orderId=order_id)
+                except BinanceAPIException:
+                    # Peut être un SL/TP (ordre Algo) : on tente l'annulation Algo avant d'échouer.
+                    try:
+                        futures_cancel_conditional_order(client, sym, order_id)
+                    except Exception:
+                        raise
         else:
             client.cancel_order(symbol=normalize_symbol(symbol.upper()), orderId=order_id)
     except BinanceAPIException as e:

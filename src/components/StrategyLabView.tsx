@@ -568,7 +568,7 @@ const LabCandlesSignalsChart: React.FC<{
             {String(activeC.timestamp).slice(0, 16).replace('T', ' ')}
           </span>
           <span>
-            Close : <strong className="text-[#E8EEF2]">{activeC.close}</strong>
+            {tr(lang, 'Clôture :', 'Close:')} <strong className="text-[#E8EEF2]">{activeC.close}</strong>
           </span>
           <span className="text-[#20C997]">
             SMA({params.sma_fast}) : {activeC.sma_fast}
@@ -981,7 +981,7 @@ const LabCandlesSignalsChart: React.FC<{
                 )}
                 {clickedCandle.marker.pnl_usdt !== undefined && (
                   <div className="p-2.5 rounded bg-[#0D1318]">
-                    <div className="text-[10px] text-[#6E7B88]">PnL Net</div>
+                    <div className="text-[10px] text-[#6E7B88]">{tr(lang, 'PnL net', 'Net PnL')}</div>
                     <div className={clickedCandle.marker.pnl_usdt >= 0 ? 'text-[#20C997] font-bold' : 'text-[#F04438] font-bold'}>
                       {clickedCandle.marker.pnl_usdt >= 0 ? '+' : ''}
                       {clickedCandle.marker.pnl_usdt} USDT
@@ -1314,7 +1314,14 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
     [rawConfigText, baselineParams, selectedModels, tradingStyle, symbol, timeframe, onShowToast, lang]
   );
 
+  // `onShowToast` est recréé à chaque rendu de l'App : on le garde dans une ref pour que les callbacks ci-dessous
+  // restent stables (sinon l'effet « Prompt IA » renvoyait une requête à chaque rendu = rafale de requêtes).
+  const onShowToastRef = useRef(onShowToast);
+  onShowToastRef.current = onShowToast;
+  const aiPromptSeq = useRef(0);
+
   const handleGenerateAiPrompt = useCallback(async () => {
+    const seq = ++aiPromptSeq.current;
     setGeneratingAiPrompt(true);
     try {
       const res = await apiFetch('/api/admin/strategy-lab/ai-prompt', {
@@ -1341,24 +1348,27 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
             : undefined,
         }),
       });
-      if (res.prompt) {
+      if (res.prompt && seq === aiPromptSeq.current) {
         setGeneratedAiPrompt(res.prompt);
       }
     } catch (err: any) {
-      onShowToast(
-        'error',
-        err.message || (lang === 'en' ? 'Failed to generate AI Prompt.' : 'Impossible de générer le prompt IA.')
-      );
+      if (seq === aiPromptSeq.current) {
+        onShowToastRef.current(
+          'error',
+          err.message || (lang === 'en' ? 'Failed to generate AI Prompt.' : 'Impossible de générer le prompt IA.')
+        );
+      }
     } finally {
-      setGeneratingAiPrompt(false);
+      if (seq === aiPromptSeq.current) setGeneratingAiPrompt(false);
     }
-  }, [symbol, timeframe, tradingStyle, periodRange.start, periodRange.end, maxCandles, params, selectedModels, activeRun, onShowToast, lang]);
+  }, [symbol, timeframe, tradingStyle, periodRange.start, periodRange.end, maxCandles, params, selectedModels, activeRun, lang]);
 
   // Automatically refresh AI Prompt when opening the AI Prompt tab or when parameters/run change
   useEffect(() => {
-    if (configEditorMode === 'ai_prompt') {
-      handleGenerateAiPrompt();
-    }
+    if (configEditorMode !== 'ai_prompt') return;
+    // Temporisation : une rafale de modifications ne produit qu'une seule requête.
+    const timer = setTimeout(() => handleGenerateAiPrompt(), 400);
+    return () => clearTimeout(timer);
   }, [configEditorMode, handleGenerateAiPrompt]);
 
   const loadLabOverview = useCallback(async () => {
@@ -1532,6 +1542,41 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
     executeBacktest(params, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Charge un candidat de l'optimiseur avec TOUT son contexte (config de base complète, symbole, timeframe, style,
+  // période) : l'éditeur reflète exactement ce qui a été testé, sans résidu de la config précédente.
+  const handleLoadCandidate = (candidate: Record<string, any>, ctx?: Record<string, any>) => {
+    const specs = labSchema.parameters || DEFAULT_LAB_PARAM_SPECS;
+    const legacy: Record<string, string> = { ema_fast: 'sma_fast', ema_slow: 'sma_slow', require_ema_alignment: 'require_sma_alignment' };
+    const canon = (src: Record<string, any> = {}) => {
+      const out: Record<string, any> = {};
+      Object.entries(src).forEach(([k, v]) => {
+        const key = legacy[k] ?? k;
+        if (out[key] === undefined || !(k in legacy)) out[key] = v;
+      });
+      return out;
+    };
+    const merged = { ...DEFAULT_PARAMS, ...canon(ctx?.base_params_full), ...canon(candidate) } as StrategyLabParams;
+    if (ctx?.symbol) setSymbol(ctx.symbol);
+    if (ctx?.timeframe) setTimeframe(ctx.timeframe);
+    if (ctx?.trading_style) setTradingStyle(ctx.trading_style);
+    if (ctx?.start_date || ctx?.end_date) {
+      setPeriodPreset('custom');
+      setStartDate(String(ctx.start_date || '').slice(0, 10));
+      setEndDate(String(ctx.end_date || '').slice(0, 10));
+    } else {
+      setPeriodPreset('auto');
+      setStartDate('');
+      setEndDate('');
+    }
+    if (ctx?.max_candles) setMaxCandles(Number(ctx.max_candles));
+    setParams(merged);
+    // Le texte brut est régénéré depuis la config chargée : cohérent avec les paramètres, donc valide.
+    setRawConfigText(formatRawConfigText(merged, selectedModels, labSchema.models || DEFAULT_LAB_MODELS, specs));
+    setRawConfigDiff([]);
+    setRawConfigErrors([]);
+    setRawConfigValid(true);
+  };
 
   const handleParamChange = <K extends keyof StrategyLabParams>(key: K, value: StrategyLabParams[K]) => {
     const specs = labSchema.parameters || DEFAULT_LAB_PARAM_SPECS;
@@ -2435,8 +2480,8 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
             ? tr(lang, `Les ${maxCandles} dernières bougies clôturées sont simulées.`, `The last ${maxCandles} closed candles are simulated.`)
             : tr(
                 lang,
-                'Seule la période choisie est simulée ; l’historique précédent sert uniquement au warm-up des indicateurs. Au-delà de 12 000 bougies, la fenêtre est tronquée (utilisez un timeframe plus large).',
-                'Only the selected period is simulated; earlier history is used only for indicator warm-up. Beyond 12,000 candles the window is truncated (use a larger timeframe).'
+                'Seule la période choisie est simulée ; l’historique précédent sert uniquement au warm-up des indicateurs. Au-delà de 100 000 bougies, la fenêtre est tronquée (utilisez un timeframe plus large) et un avertissement est affiché.',
+                'Only the selected period is simulated; earlier history is used only for indicator warm-up. Beyond 100,000 candles the window is truncated (use a larger timeframe) and a warning is shown.'
               )}
         </p>
       </div>
@@ -3484,7 +3529,10 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                   value={rawConfigText}
                   onChange={(e) => {
                     setRawConfigText(e.target.value);
+                    // Toute modification invalide la validation précédente (libellé, erreurs, résumé des changements).
                     setRawConfigValid(null);
+                    setRawConfigErrors([]);
+                    setRawConfigDiff([]);
                   }}
                   rows={14}
                   spellCheck={false}
@@ -3498,7 +3546,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                 <div className="p-3 rounded-lg bg-[#F04438]/10 border border-[#F04438]/30 space-y-1">
                   <div className="flex items-center gap-1.5 text-xs font-bold text-[#F04438]">
                     <XCircle className="w-4 h-4 shrink-0" />
-                    <span>Invalid configuration</span>
+                    <span>{tr(lang, 'Configuration invalide', 'Invalid configuration')}</span>
                   </div>
                   {rawConfigErrors.map((err, i) => (
                     <div key={i} className="text-[11px] font-mono-tabular text-[#FDA29B]">
@@ -3512,8 +3560,14 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
               <div className="p-3 rounded-lg bg-[#080C0F] border border-white/[0.07] space-y-2">
                 <div className="flex items-center justify-between text-xs font-mono-tabular">
                   <span className="uppercase text-[#8B98A4] font-semibold">
-                    Configuration changes
+                    {tr(lang, 'Modifications de configuration', 'Configuration changes')}
                   </span>
+                  {rawConfigValid === null && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-[#D6A84F]">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      {tr(lang, 'Modifié — à revalider', 'Edited — needs revalidation')}
+                    </span>
+                  )}
                   {rawConfigValid === true && (
                     <span className="inline-flex items-center gap-1 text-[11px] text-[#20C997]">
                       <CheckCircle2 className="w-3.5 h-3.5" />
@@ -3524,11 +3578,11 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
 
                 {rawConfigErrors.length > 0 ? (
                   <div className="text-xs font-mono-tabular text-[#F04438]">
-                    Invalid configuration — {tr(lang, 'lancement bloqué.', 'launch blocked.')}
+                    {tr(lang, 'Configuration invalide —', 'Invalid configuration —')} {tr(lang, 'lancement bloqué.', 'launch blocked.')}
                   </div>
                 ) : (rawConfigDiff.length > 0 ? rawConfigDiff : liveParamsDiff).length === 0 ? (
                   <div className="text-xs font-mono-tabular text-[#6E7B88]">
-                    No configuration changes detected.
+                    {tr(lang, 'Aucune modification de configuration détectée.', 'No configuration changes detected.')}
                   </div>
                 ) : (
                   <div className="space-y-1.5 max-h-40 overflow-y-auto">
@@ -3549,7 +3603,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                       </div>
                     ))}
                     <div className="text-[11px] font-mono-tabular text-[#8B98A4] pt-1">
-                      {(rawConfigDiff.length > 0 ? rawConfigDiff : liveParamsDiff).length} parameters changed. All other parameters remain unchanged.
+                      {(rawConfigDiff.length > 0 ? rawConfigDiff : liveParamsDiff).length} {tr(lang, 'paramètres modifiés. Tous les autres paramètres restent inchangés.', 'parameters changed. All other parameters remain unchanged.')}
                     </div>
                   </div>
                 )}
@@ -3560,9 +3614,22 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                 <div className="text-[10px] uppercase text-[#6E7B88] font-bold">
                   BACKTEST CONFIG ({tr(lang, 'Séparé des variables de modèles', 'Separated from model variables')})
                 </div>
-                <div>Asset: <strong className="text-[#E8EEF2]">{symbol}</strong> • Timeframe: <strong className="text-[#E8EEF2]">{timeframe}</strong> • Style: <strong className="text-[#E8EEF2]">{tradingStyle.toUpperCase()}</strong></div>
-                <div>Period: <strong className="text-[#E8EEF2]">{activeRun?.start_date || periodRange.start || 'Auto'}</strong> → <strong className="text-[#E8EEF2]">{activeRun?.end_date || periodRange.end || 'Latest closed candle'}</strong> ({maxCandles} candles)</div>
-                <div>Initial simulated capital: <strong className="text-[#20C997]">{params.initial_capital} USDT</strong></div>
+                <div>{tr(lang, 'Actif :', 'Asset:')} <strong className="text-[#E8EEF2]">{symbol}</strong> • Timeframe: <strong className="text-[#E8EEF2]">{timeframe}</strong> • Style: <strong className="text-[#E8EEF2]">{tradingStyle.toUpperCase()}</strong></div>
+                <div>
+                  {tr(lang, 'Fenêtre sélectionnée :', 'Selected window:')}{' '}
+                  <strong className="text-[#E8EEF2]">{periodRange.start || 'Auto'}</strong> →{' '}
+                  <strong className="text-[#E8EEF2]">{periodRange.end || tr(lang, 'dernière bougie clôturée', 'latest closed candle')}</strong>
+                  {!periodRange.start && !periodRange.end && ` (${tr(lang, `${maxCandles} dernières bougies`, `last ${maxCandles} candles`)})`}
+                </div>
+                {activeRun && (
+                  <div>
+                    {tr(lang, 'Dernière simulation :', 'Last run:')}{' '}
+                    <strong className="text-[#E8EEF2]">{activeRun.start_date || '—'}</strong> →{' '}
+                    <strong className="text-[#E8EEF2]">{activeRun.end_date || '—'}</strong>{' '}
+                    ({activeRun.candles_count ?? '?'} {tr(lang, 'bougies', 'candles')})
+                  </div>
+                )}
+                <div>{tr(lang, 'Capital initial simulé :', 'Initial simulated capital:')} <strong className="text-[#20C997]">{params.initial_capital} USDT</strong></div>
               </div>
 
               {/* Raw Config Actions */}
@@ -3617,7 +3684,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-[#E8EEF2] flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5 text-[#20C997]" />
-                    <span>AI Prompt Generator</span>
+                    <span>{tr(lang, 'Générateur de prompt IA', 'AI Prompt Generator')}</span>
                   </span>
                   <span className="text-[10px] font-mono-tabular px-2 py-0.5 rounded bg-[#20C997]/10 text-[#20C997] border border-[#20C997]/25">
                     {tr(lang, '100% Local • Sans clé API', '100% Local • No API Key')}
@@ -3647,7 +3714,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                   className="flex-1 py-2.5 px-3 rounded-lg bg-[#20C997] hover:bg-[#1AA67D] disabled:opacity-40 text-[#080C0F] font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors"
                 >
                   <Copy className="w-3.5 h-3.5" />
-                  <span>Copy AI Prompt</span>
+                  <span>{tr(lang, 'Copier le prompt IA', 'Copy AI Prompt')}</span>
                 </button>
                 <button
                   type="button"
@@ -3709,7 +3776,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
 
               <div className="bg-[#0D1318] border border-white/[0.07] rounded-xl p-3.5">
                 <div className="text-[10px] font-mono-tabular uppercase text-[#6E7B88]">
-                  Win Rate &amp; Trades
+                  {tr(lang, 'Taux de réussite & Trades', 'Win Rate & Trades')}
                 </div>
                 <div className="text-lg font-mono-tabular font-bold text-[#E8EEF2] mt-0.5">
                   {m.win_rate_pct.toFixed(1)}%
@@ -3878,7 +3945,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                       {tr(lang, 'Capital Initial :', 'Initial Capital:')} {m.initial_capital.toLocaleString()} USDT →{' '}
                       {tr(lang, 'Final :', 'Final:')}{' '}
                       <strong className="text-[#E8EEF2]">{m.final_capital.toLocaleString()} USDT</strong>{' '}
-                      (Benchmark Buy &amp; Hold : {m.buy_hold_return_pct >= 0 ? '+' : ''}
+                      {tr(lang, '(Référence Buy & Hold :', '(Benchmark Buy & Hold:')} {m.buy_hold_return_pct >= 0 ? '+' : ''}
                       {m.buy_hold_return_pct}% | Alpha : {m.alpha_vs_buy_hold_pct >= 0 ? '+' : ''}
                       {m.alpha_vs_buy_hold_pct}%)
                     </p>
@@ -4377,7 +4444,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                         <th className="py-3 px-4 text-[#20C997]">
                           {tr(lang, 'Stratégie B (Actuelle', 'Strategy B (Current')} • Score≥{activeRun.params.min_teddy_score})
                         </th>
-                        <th className="py-3 px-4 text-right">Delta (B vs A)</th>
+                        <th className="py-3 px-4 text-right">{tr(lang, 'Écart (B vs A)', 'Delta (B vs A)')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/[0.06]">
@@ -4536,7 +4603,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
               baseParams={Object.fromEntries(
                 Object.entries(params as Record<string, any>).filter(([k]) => k in (labSchema.parameters as Record<string, unknown>))
               )}
-              onLoadParams={(p) => setParams((prev) => ({ ...prev, ...p }))}
+              onLoadParams={handleLoadCandidate}
             />
           )}
 
@@ -4649,7 +4716,7 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
                         <tr className="border-b border-white/10 bg-[#080C0F] text-[10px] uppercase text-[#6E7B88]">
                           <th className="py-2.5 px-3">{sweepResult.param_label}</th>
                           <th className="py-2.5 px-3">Trades</th>
-                          <th className="py-2.5 px-3">Win Rate</th>
+                          <th className="py-2.5 px-3">{tr(lang, 'Taux de réussite', 'Win Rate')}</th>
                           <th className="py-2.5 px-3">Profit Factor</th>
                           <th className="py-2.5 px-3">{tr(lang, 'Drawdown Max', 'Max Drawdown')}</th>
                           <th className="py-2.5 px-3">Sharpe</th>

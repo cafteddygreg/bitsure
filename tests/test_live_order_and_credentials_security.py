@@ -303,6 +303,9 @@ class TestLiveOrderAndCredentialsSecurity(unittest.TestCase):
              patch.object(lt, "get_price", return_value=50000.0), \
              patch.object(lt, "get_connection", side_effect=FakeConn), \
              patch.object(lt.security_manager, "verify_code", return_value=(True, "OK")), \
+             patch.object(bm, "futures_place_conditional_order",
+                          side_effect=lambda c, sym, side, otype, trig, **k: {"orderId": 90002 if otype == "STOP_MARKET" else 90003, "algo": True}), \
+             patch.object(bm, "futures_list_conditional_orders", return_value=[]), \
              patch.object(bm, "_cancel_conflicting_futures_protective_orders", return_value=0):
 
             draft = lt.build_draft(

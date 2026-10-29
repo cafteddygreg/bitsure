@@ -14,6 +14,7 @@ FLAG_LABELS = {
     "validation_loss": "Perte en validation alors que le training est gagnant",
     "validation_drop": "Rendement de validation très inférieur au training",
     "oos_collapse": "Effondrement hors échantillon (OOS négatif)",
+    "oos_negative": "Rendement hors échantillon négatif (OOS < 0)",
     "oos_profit_factor_below_1": "Profit Factor OOS < 1 malgré un bon training",
     "oos_few_trades": "Très peu de trades en OOS (peu fiable)",
     "isolated_peak": "Pic isolé : les configurations voisines sont nettement moins bonnes",

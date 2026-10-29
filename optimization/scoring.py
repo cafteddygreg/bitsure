@@ -165,6 +165,9 @@ def overfit_flags(
         o_trades = int(_num(oos_m.get("total_trades"), 0) or 0)
         if t_ret > 0 and o_ret <= 0:
             flags.append("oos_collapse")
+        elif o_ret < 0:
+            # OOS perdant même quand l'entraînement ne l'était pas : jamais présenté comme « robuste ».
+            flags.append("oos_negative")
         elif t_pf > 1.3 and o_pf < 1.0:
             flags.append("oos_profit_factor_below_1")
         if o_trades < max(5, min_trades // 4):
@@ -173,7 +176,7 @@ def overfit_flags(
         flags.append("isolated_peak")
     if int(_num(train_m.get("total_trades"), 0) or 0) < 2 * min_trades:
         flags.append("few_training_trades")
-    severe = {"validation_loss", "oos_collapse", "oos_profit_factor_below_1"}
+    severe = {"validation_loss", "oos_collapse", "oos_negative", "oos_profit_factor_below_1"}
     n_sev = sum(1 for f in flags if f in severe)
     n_minor = sum(1 for f in flags if f in {"validation_drop", "isolated_peak", "few_training_trades", "oos_few_trades"})
     risk = "high" if n_sev >= 1 or n_minor >= 3 else ("medium" if n_minor >= 1 else "low")

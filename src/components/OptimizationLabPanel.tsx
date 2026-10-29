@@ -55,7 +55,7 @@ interface Props {
   startDate: string;
   endDate: string;
   baseParams: Record<string, any>;
-  onLoadParams?: (params: Record<string, any>) => void;
+  onLoadParams?: (params: Record<string, any>, context?: Record<string, any>) => void;
 }
 
 const STATUS_TONE: Record<string, 'neutral' | 'positive' | 'negative' | 'warning' | 'info'> = {
@@ -78,6 +78,7 @@ const FLAG_LABELS: Record<string, [string, string]> = {
   validation_loss: ['Perte en validation alors que le training est gagnant', 'Validation loss while training is profitable'],
   validation_drop: ['Rendement de validation très inférieur au training', 'Validation return far below training'],
   oos_collapse: ['Effondrement hors échantillon (OOS négatif)', 'Out-of-sample collapse (negative OOS)'],
+  oos_negative: ['Rendement hors échantillon négatif (OOS < 0)', 'Negative out-of-sample return (OOS < 0)'],
   oos_profit_factor_below_1: ['Profit Factor OOS < 1 malgré un bon training', 'OOS Profit Factor < 1 despite good training'],
   oos_few_trades: ['Très peu de trades en OOS (peu fiable)', 'Very few OOS trades (unreliable)'],
   isolated_peak: ['Pic isolé : voisins nettement moins bons', 'Isolated peak: neighbours are much worse'],
@@ -529,12 +530,12 @@ export const OptimizationLabPanel: React.FC<Props> = ({
             <thead>
               <tr className="text-[#6E7B88]">
                 <th className="text-left font-normal">{tr(lang, 'Période', 'Period')}</th>
-                <th className="text-right font-normal px-1.5">Return</th>
+                <th className="text-right font-normal px-1.5">{tr(lang, 'Rendement', 'Return')}</th>
                 <th className="text-right font-normal px-1.5">Trades</th>
-                <th className="text-right font-normal px-1.5">Win</th>
+                <th className="text-right font-normal px-1.5">{tr(lang, 'Gain', 'Win')}</th>
                 <th className="text-right font-normal px-1.5">PF</th>
-                <th className="text-right font-normal px-1.5">Exp. $</th>
-                <th className="text-right font-normal px-1.5">Max DD</th>
+                <th className="text-right font-normal px-1.5">{tr(lang, 'Espér. $', 'Exp. $')}</th>
+                <th className="text-right font-normal px-1.5">{tr(lang, 'DD max', 'Max DD')}</th>
                 <th className="text-right font-normal px-1.5">Sharpe</th>
                 <th className="text-right font-normal pl-1.5">Score</th>
               </tr>
@@ -564,7 +565,17 @@ export const OptimizationLabPanel: React.FC<Props> = ({
           <button
             type="button"
             onClick={() => {
-              onLoadParams(entry.params || {});
+              // Contexte complet de la course (symbole, timeframe, style, période, config de base) : on recharge
+              // EXACTEMENT ce qui a été testé, pas seulement les paramètres balayés.
+              onLoadParams(entry.params_full || entry.params || {}, {
+                symbol: summary?.symbol,
+                timeframe: summary?.timeframe,
+                trading_style: summary?.trading_style,
+                base_params_full: summary?.base_params_full,
+                start_date: summary?.request_period?.start_date,
+                end_date: summary?.request_period?.end_date,
+                max_candles: summary?.request_period?.max_candles,
+              });
               onShowToast('success', tr(lang, "Paramètres chargés dans l'éditeur du Lab (aucun impact sur le trading live).", 'Parameters loaded in the Lab editor (no live trading impact).'));
             }}
             className="px-2.5 py-1 rounded-lg bg-[#172129] hover:bg-[#202A32] border border-white/10 text-[11px] text-[#E8EEF2] inline-flex items-center gap-1.5"
@@ -760,7 +771,7 @@ export const OptimizationLabPanel: React.FC<Props> = ({
         <div>
           <h3 className="font-display text-sm font-semibold text-[#E8EEF2] flex items-center gap-2">
             <FlaskConical className="w-4 h-4 text-[#20C997]" />
-            Optimization Lab
+            {tr(lang, 'Laboratoire d\'optimisation', 'Optimization Lab')}
           </h3>
           <p className="text-xs text-[#8B98A4] mt-1">
             {tr(
@@ -778,8 +789,8 @@ export const OptimizationLabPanel: React.FC<Props> = ({
           <div>
             <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Méthode', 'Method')}</label>
             <select value={method} onChange={(e) => { setMethod(e.target.value as any); setPlan(null); }} className={inputCls}>
-              <option value="grid">Grid Search</option>
-              <option value="random">Random Search</option>
+              <option value="grid">{tr(lang, 'Recherche par grille', 'Grid Search')}</option>
+              <option value="random">{tr(lang, 'Recherche aléatoire', 'Random Search')}</option>
             </select>
           </div>
           <div>
@@ -798,10 +809,10 @@ export const OptimizationLabPanel: React.FC<Props> = ({
           </div>
           <div>
             <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Bougies max', 'Max candles')}</label>
-            <input type="number" min={500} max={12000} value={maxCandles} onChange={(e) => setMaxCandles(e.target.value)} className={inputCls} />
+            <input type="number" min={500} max={limits.max_candles || 600000} value={maxCandles} onChange={(e) => setMaxCandles(e.target.value)} className={inputCls} />
           </div>
           <div>
-            <label className="block text-[11px] text-[#8B98A4] mb-1">Seed ({tr(lang, 'reproductibilité', 'reproducibility')})</label>
+            <label className="block text-[11px] text-[#8B98A4] mb-1">{tr(lang, 'Graine (', 'Seed (')}{tr(lang, 'reproductibilité', 'reproducibility')})</label>
             <input type="number" value={seed} onChange={(e) => setSeed(e.target.value)} className={inputCls} />
           </div>
           <div className="col-span-2">

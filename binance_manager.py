@@ -174,6 +174,246 @@ class BinancePositionNotFound(BinanceClientError):
     """Refus métier (et non erreur réseau/API) : aucune position Binance correspondante à fermer."""
 
 
+class BinanceAlgoError(BinanceClientError):
+    """Erreur renvoyée par l'API Algo Order de Binance (porte le code Binance, ex. -2021, -4130)."""
+
+    def __init__(self, message: str, code: Optional[int] = None):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+
+
+# ---------------------------------------------------------------------------
+# API « Algo Order » (ordres conditionnels Futures USDⓈ-M)
+# ---------------------------------------------------------------------------
+# Depuis fin 2025, Binance refuse STOP_MARKET / TAKE_PROFIT_MARKET / STOP / TAKE_PROFIT /
+# TRAILING_STOP_MARKET sur POST /fapi/v1/order (erreur -4120 « use Algo Order API »).
+# Ils doivent passer par POST /fapi/v1/algoOrder (algoType=CONDITIONAL, triggerPrice au lieu de stopPrice).
+# Les helpers ci-dessous exposent des dicts « normalisés » (orderId, type, stopPrice, closePosition, algo=True)
+# compatibles avec le reste du code, qui raisonne en orderId/stopPrice.
+
+_ALGO_MAX_ATTEMPTS = 3
+CONDITIONAL_ORDER_TYPES = {"STOP_MARKET", "TAKE_PROFIT_MARKET", "STOP", "TAKE_PROFIT", "TRAILING_STOP_MARKET"}
+
+
+def _client_rest_creds(client) -> tuple[str, str, bool]:
+    key = getattr(client, "API_KEY", None)
+    secret = getattr(client, "API_SECRET", None)
+    if not key or not secret:
+        raise BinanceClientError("Clés API indisponibles pour l'API Algo Binance.")
+    return str(key), str(secret), bool(getattr(client, "testnet", False))
+
+
+def _bool_str(v) -> str:
+    return "true" if v else "false"
+
+
+def _futures_algo_request(client, method: str, path: str, params: Optional[dict] = None) -> dict | list:
+    """Requête signée vers l'API Futures avec retries sur erreurs transitoires (réseau, 5xx, 429, -1021)."""
+    api_key, api_secret, testnet = _client_rest_creds(client)
+    base = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
+    last_err: Exception = BinanceAlgoError("Erreur réseau Binance (Algo)")
+    for attempt in range(_ALGO_MAX_ATTEMPTS):
+        q = {k: v for k, v in (params or {}).items() if v is not None}
+        q["timestamp"] = int(time.time() * 1000)
+        q.setdefault("recvWindow", 10000)
+        query_str = urllib.parse.urlencode(q)
+        sig = hmac.new(api_secret.encode("utf-8"), query_str.encode("utf-8"), hashlib.sha256).hexdigest()
+        try:
+            r = requests.request(
+                method.upper(), f"{base}{path}?{query_str}&signature={sig}",
+                headers={"X-MBX-APIKEY": api_key}, timeout=8,
+            )
+        except requests.RequestException as exc:
+            last_err = BinanceAlgoError(f"Erreur réseau Binance (Algo) : {exc}")
+            time.sleep(0.4 * (attempt + 1))
+            continue
+        if r.status_code == 200:
+            return r.json()
+        code, msg = None, r.text[:200]
+        try:
+            body = r.json()
+            code, msg = body.get("code"), body.get("msg")
+        except Exception:
+            pass
+        err = BinanceAlgoError(f"Code {code}: {msg}" if code is not None else f"HTTP {r.status_code}: {msg}", code=code)
+        if r.status_code >= 500 or r.status_code == 429 or code == -1021:
+            last_err = err
+            time.sleep(0.4 * (attempt + 1))
+            continue
+        raise err
+    raise last_err
+
+
+def _normalize_algo_order(o: dict) -> dict:
+    """Convertit une réponse Algo Binance au format « ordre classique » utilisé par le reste du code."""
+    algo_id = o.get("algoId")
+    status = str(o.get("algoStatus") or "NEW").upper()
+    trigger = o.get("triggerPrice")
+    otype = str(o.get("orderType") or o.get("type") or "").upper()
+    return {
+        "orderId": algo_id,
+        "algoId": algo_id,
+        "clientOrderId": o.get("clientAlgoId"),
+        "clientAlgoId": o.get("clientAlgoId"),
+        "symbol": o.get("symbol"),
+        "side": o.get("side"),
+        "type": otype,
+        "origType": otype,
+        "stopPrice": trigger,
+        "triggerPrice": trigger,
+        "closePosition": str(o.get("closePosition", "")).lower() in ("true", "1"),
+        "reduceOnly": str(o.get("reduceOnly", "")).lower() in ("true", "1"),
+        "workingType": o.get("workingType"),
+        "status": "NEW" if status in ("NEW", "WORKING") else status,
+        "algoStatus": status,
+        "actualOrderId": o.get("actualOrderId"),
+        "algo": True,
+    }
+
+
+def futures_place_conditional_order(
+    client,
+    symbol: str,
+    side: str,
+    order_type: str,
+    trigger_price: str,
+    *,
+    close_position: bool = True,
+    quantity: Optional[str] = None,
+    working_type: str = "MARK_PRICE",
+    client_algo_id: Optional[str] = None,
+) -> dict:
+    """Place un ordre conditionnel (SL/TP) via POST /fapi/v1/algoOrder. `trigger_price` doit être une chaîne
+    déjà formatée au tick du symbole (jamais de float : notation scientifique rejetée par Binance)."""
+    order_type = str(order_type).upper()
+    if order_type not in CONDITIONAL_ORDER_TYPES:
+        raise BinanceClientError(f"Type d'ordre conditionnel non supporté : {order_type}")
+    params: dict = {
+        "algoType": "CONDITIONAL",
+        "symbol": normalize_symbol(symbol),
+        "side": side.upper(),
+        "type": order_type,
+        "triggerPrice": str(trigger_price),
+        "workingType": working_type,
+        "clientAlgoId": client_algo_id,
+    }
+    if close_position:
+        params["closePosition"] = "true"
+    else:
+        params["quantity"] = quantity
+        params["reduceOnly"] = "true"
+    res = _futures_algo_request(client, "POST", "/fapi/v1/algoOrder", params)
+    if not isinstance(res, dict) or res.get("algoId") is None:
+        raise BinanceAlgoError(f"Réponse inattendue de Binance (algoOrder) : {res}")
+    out = _normalize_algo_order(res)
+    out.setdefault("stopPrice", str(trigger_price))
+    if not out.get("stopPrice"):
+        out["stopPrice"] = str(trigger_price)
+    out["closePosition"] = bool(close_position)
+    return out
+
+
+def futures_list_conditional_orders(client, symbol: Optional[str] = None) -> list[dict]:
+    """Ordres conditionnels ouverts (SL/TP) — non visibles via futures_get_open_orders depuis la migration Algo."""
+    try:
+        params = {"symbol": normalize_symbol(symbol)} if symbol else None
+        res = _futures_algo_request(client, "GET", "/fapi/v1/openAlgoOrders", params)
+    except Exception as e:
+        logger.warning("Liste des ordres Algo ouverts impossible (%s) : %s", symbol or "tous", e)
+        return []
+    if not isinstance(res, list):
+        return []
+    return [_normalize_algo_order(o) for o in res if isinstance(o, dict)]
+
+
+def futures_cancel_conditional_order(client, symbol: str, order_id) -> bool:
+    """Annule un ordre conditionnel par algoId. Retourne True si annulé."""
+    _futures_algo_request(client, "DELETE", "/fapi/v1/algoOrder", {"symbol": normalize_symbol(symbol), "algoId": str(order_id)})
+    return True
+
+
+def futures_cancel_all_conditional_orders(client, symbol: str) -> None:
+    _futures_algo_request(client, "DELETE", "/fapi/v1/algoOpenOrders", {"symbol": normalize_symbol(symbol)})
+
+
+def futures_get_order_or_algo(client, symbol: str, order_id) -> Optional[dict]:
+    """Retourne l'ordre (classique, sinon ordre d'exécution lié à un ordre Algo déclenché)."""
+    symbol = normalize_symbol(symbol)
+    try:
+        return client.futures_get_order(symbol=symbol, orderId=order_id)
+    except Exception:
+        pass
+    try:
+        algo = _futures_algo_request(client, "GET", "/fapi/v1/algoOrder", {"algoId": str(order_id)})
+        if isinstance(algo, dict):
+            actual = algo.get("actualOrderId")
+            if actual not in (None, "", 0, "0"):
+                try:
+                    return client.futures_get_order(symbol=symbol, orderId=actual)
+                except Exception:
+                    return None
+    except Exception:
+        return None
+    return None
+
+
+def get_mark_price(client, symbol: str) -> Optional[float]:
+    """Mark price Futures (prix de déclenchement des SL/TP). None si indisponible."""
+    symbol = normalize_symbol(symbol)
+    try:
+        data = client.futures_mark_price(symbol=symbol)
+        if isinstance(data, list):
+            data = next((d for d in data if d.get("symbol") == symbol), None)
+        if isinstance(data, dict) and data.get("markPrice"):
+            return float(data["markPrice"])
+    except Exception:
+        pass
+    return None
+
+
+def rebase_protective_levels(
+    direction: str,
+    planned_entry: Optional[float],
+    fill_price: Optional[float],
+    sl_price: Optional[float],
+    tp_price: Optional[float],
+    max_shift_pct: float = 1.5,
+) -> tuple[Optional[float], Optional[float]]:
+    """Décale SL/TP du même écart que le slippage (prix réel d'exécution - prix prévu).
+
+    Les SL/TP viennent d'une analyse faite sur un prix un peu ancien : au moment du remplissage au marché le
+    prix a bougé. Sans réalignement, les distances SL/TP (donc le risque et le R:R) changent, et un SL/TP trop
+    proche peut être refusé (-2021 « would immediately trigger »). On conserve les distances d'origine.
+    """
+    try:
+        if not planned_entry or not fill_price or planned_entry <= 0 or fill_price <= 0:
+            return sl_price, tp_price
+        delta = float(fill_price) - float(planned_entry)
+        if delta == 0:
+            return sl_price, tp_price
+        # Écart anormal (signal périmé, prix très différent) : ce n'est plus du slippage, on ne déplace rien.
+        if abs(delta) / float(planned_entry) * 100.0 > max_shift_pct:
+            logger.warning(
+                "Écart fill/entrée prévue trop grand (%.2f%% > %.2f%%) : SL/TP non recalés.",
+                abs(delta) / float(planned_entry) * 100.0, max_shift_pct,
+            )
+            return sl_price, tp_price
+        new_sl = float(sl_price) + delta if sl_price else sl_price
+        new_tp = float(tp_price) + delta if tp_price else tp_price
+        d = direction.upper()
+        # Garde-fou : le décalage ne doit jamais inverser l'ordre SL / entrée / TP
+        if d == "BUY":
+            if (new_sl and new_sl >= fill_price) or (new_tp and new_tp <= fill_price):
+                return sl_price, tp_price
+        else:
+            if (new_sl and new_sl <= fill_price) or (new_tp and new_tp >= fill_price):
+                return sl_price, tp_price
+        return new_sl, new_tp
+    except (TypeError, ValueError):
+        return sl_price, tp_price
+
+
 ORDER_CONTEXT_AUTOTRADE = "autotrade"
 ORDER_CONTEXT_MANUAL_AUTHENTICATED = "manual_authenticated"
 ORDER_CONTEXT_EMERGENCY = "emergency_stop"
@@ -601,8 +841,17 @@ def _place_futures_protective_orders(
     sl_price: Optional[float],
     tp_price: Optional[float],
     filters: dict,
+    warnings: Optional[list] = None,
 ) -> tuple[Optional[str], Optional[str]]:
-    """Cancel conflicting futures protective orders and place STOP_MARKET / TAKE_PROFIT_MARKET."""
+    """Annule les protections en conflit puis pose SL (STOP_MARKET) / TP (TAKE_PROFIT_MARKET) via l'API Algo.
+
+    - Prix toujours envoyés en chaîne formatée au tick du symbole.
+    - Déclenchement sur MARK_PRICE.
+    - SL : obligatoire (une erreur remonte à l'appelant, qui ferme la position par sécurité).
+    - TP : si Binance répond -2021 (« would immediately trigger », le prix a déjà atteint le TP), on le décale
+      une fois juste au-delà du mark price ; si ça échoue encore, la position reste protégée par son SL et un
+      avertissement est ajouté à `warnings`.
+    """
     if sl_price or tp_price:
         target_types = set()
         if sl_price:
@@ -617,24 +866,44 @@ def _place_futures_protective_orders(
         )
     sl_oid: Optional[str] = None
     tp_oid: Optional[str] = None
+    try:
+        tick = float(filters.get("PRICE_FILTER", {}).get("tickSize", "0.01") or 0.01)
+    except (TypeError, ValueError):
+        tick = 0.01
+    is_long_position = opposite_side == "SELL"  # on place l'ordre de sortie : SELL => position LONG
+
     if sl_price:
-        sl_order = client.futures_create_order(
-            symbol=symbol,
-            side=opposite_side,
-            type="STOP_MARKET",
-            stopPrice=format_price_for_symbol(sl_price, filters),
-            closePosition=True,
+        sl_order = futures_place_conditional_order(
+            client, symbol, opposite_side, "STOP_MARKET", format_price_for_symbol(sl_price, filters),
         )
-        sl_oid = sl_order.get("orderId") if isinstance(sl_order, dict) else None
+        sl_oid = str(sl_order.get("orderId")) if sl_order.get("orderId") is not None else None
+
     if tp_price:
-        tp_order = client.futures_create_order(
-            symbol=symbol,
-            side=opposite_side,
-            type="TAKE_PROFIT_MARKET",
-            stopPrice=format_price_for_symbol(tp_price, filters),
-            closePosition=True,
-        )
-        tp_oid = tp_order.get("orderId") if isinstance(tp_order, dict) else None
+        trigger = float(tp_price)
+        for attempt in range(2):
+            try:
+                tp_order = futures_place_conditional_order(
+                    client, symbol, opposite_side, "TAKE_PROFIT_MARKET", format_price_for_symbol(trigger, filters),
+                )
+                tp_oid = str(tp_order.get("orderId")) if tp_order.get("orderId") is not None else None
+                break
+            except BinanceAlgoError as e:
+                if e.code == -2021:
+                    if attempt == 0:
+                        mark = get_mark_price(client, symbol)
+                        if mark:
+                            buffer = max(mark * 0.0005, 2 * tick)
+                            trigger = max(trigger, mark + buffer) if is_long_position else min(trigger, mark - buffer)
+                        continue
+                    msg = (
+                        f"TP non posé sur {symbol} : le prix a déjà atteint le niveau cible (Binance -2021). "
+                        f"La position reste protégée par son Stop Loss."
+                    )
+                    logger.warning(msg)
+                    if warnings is not None:
+                        warnings.append(msg)
+                    break
+                raise
     return (sl_oid, tp_oid)
 
 
@@ -723,9 +992,11 @@ def open_position(
     leverage: int = 1,
     client_order_id: Optional[str] = None,
     execution_context: Optional[str] = None,
+    planned_entry_price: Optional[float] = None,
 ) -> dict:
     """
-    Ouvre une position au marché, puis place SL/TP.
+    Ouvre une position au marché, puis place SL/TP (recalés sur le prix réel d'exécution si `planned_entry_price`
+    est fourni, pour conserver les distances / le risque / le R:R prévus malgré le slippage).
     Retourne un dict avec les IDs d'ordres et le prix réel d'exécution (à stocker dans la table `trades`).
     Lève BinanceClientError en cas d'échec (message safe pour l'utilisateur).
     """
@@ -799,11 +1070,29 @@ def open_position(
             opened_order = order
             result["order_id"] = order["orderId"]
             result["client_order_id"] = order.get("clientOrderId") or client_order_id
-            result["executed_price"] = _extract_order_fill_price(order)
+            result["executed_price"] = _extract_order_fill_price(order) or get_mark_price(client, symbol)
 
+            # Réaligner SL/TP sur le prix réellement obtenu (slippage) : mêmes distances, même risque.
+            if planned_entry_price and result["executed_price"]:
+                new_sl, new_tp = rebase_protective_levels(
+                    direction, planned_entry_price, result["executed_price"], sl_price, tp_price
+                )
+                if (new_sl, new_tp) != (sl_price, tp_price):
+                    logger.info(
+                        "SL/TP recalés sur le fill %s %s: entrée prévue=%s fill=%s SL %s->%s TP %s->%s",
+                        symbol, direction, planned_entry_price, result["executed_price"],
+                        sl_price, new_sl, tp_price, new_tp,
+                    )
+                sl_price, tp_price = new_sl, new_tp
+            result["sl_price"] = sl_price
+            result["tp_price"] = tp_price
+
+            protect_warnings: list = []
             sl_oid, tp_oid = _place_futures_protective_orders(
-                client, symbol, opposite, sl_price, tp_price, filters
+                client, symbol, opposite, sl_price, tp_price, filters, warnings=protect_warnings
             )
+            if protect_warnings:
+                result["warnings"] = protect_warnings
             if sl_oid:
                 result["sl_order_id"] = sl_oid
             if tp_oid:
@@ -1060,12 +1349,16 @@ def get_open_binance_orders(user_id: int, market_type: MarketType = "futures", s
             testnet=bool(creds.get("testnet", True)),
         )
         if isinstance(rest_orders, list):
+            if market_type == "futures":
+                # SL/TP = ordres Algo depuis la migration Binance : on les ajoute pour que l'UI/la réconciliation les voient.
+                rest_orders = rest_orders + futures_list_conditional_orders(_client_for_user(user_id, market_type="futures"), symbol)
             return rest_orders
 
     client = _client_for_user(user_id, market_type=market_type)
     try:
         if market_type == "futures":
-            return client.futures_get_open_orders(symbol=symbol) if symbol else client.futures_get_open_orders()
+            base_orders = client.futures_get_open_orders(symbol=symbol) if symbol else client.futures_get_open_orders()
+            return list(base_orders) + futures_list_conditional_orders(client, symbol)
         return client.get_open_orders(symbol=symbol) if symbol else client.get_open_orders()
     except BinanceAPIException as e:
         raise BinanceClientError(f"Erreur Binance (ordres ouverts) : {e.message}")
@@ -1206,7 +1499,7 @@ def close_position(
         raise BinanceClientError(f"Erreur Binance à la fermeture : {getattr(e, 'message', str(e))}")
 
 
-def cancel_order(user_id: int, symbol: str, order_id: str, market_type: MarketType = "futures", execution_context: Optional[str] = None) -> None:
+def cancel_order(user_id: int, symbol: str, order_id: str, market_type: MarketType = "futures", execution_context: Optional[str] = None, algo: Optional[bool] = None) -> None:
     _assert_order_context_allowed(
         user_id,
         execution_context,
@@ -1216,7 +1509,17 @@ def cancel_order(user_id: int, symbol: str, order_id: str, market_type: MarketTy
     client = _client_for_user(user_id, market_type=market_type)
     try:
         if market_type == "futures":
-            client.futures_cancel_order(symbol=symbol, orderId=order_id)
+            if algo:
+                futures_cancel_conditional_order(client, symbol, order_id)
+            else:
+                try:
+                    client.futures_cancel_order(symbol=symbol, orderId=order_id)
+                except Exception as classic_err:
+                    # L'identifiant est peut-être celui d'un ordre Algo (SL/TP) : on tente l'annulation Algo.
+                    try:
+                        futures_cancel_conditional_order(client, symbol, order_id)
+                    except Exception:
+                        raise classic_err
         else:
             client.cancel_order(symbol=symbol, orderId=order_id)
     except Exception as e:
@@ -1263,6 +1566,9 @@ def _find_futures_protective_orders(
                     open_orders = rest_orders
         except Exception:
             pass
+
+    # Depuis la migration Algo de Binance, les SL/TP n'apparaissent plus dans openOrders : on les ajoute.
+    open_orders = list(open_orders) + futures_list_conditional_orders(client, symbol)
 
     matched: list[dict] = []
     for o in open_orders:
@@ -1313,6 +1619,13 @@ def _cancel_conflicting_futures_protective_orders(
         if oid is not None and str(oid) in excluded:
             continue
         cancelled = False
+        if o.get("algo") and oid is not None:
+            try:
+                futures_cancel_conditional_order(client, symbol, oid)
+                cancelled_ids.append(str(oid))
+            except Exception as e:
+                logger.warning("Annulation ordre Algo %s (%s) impossible : %s", oid, symbol, e)
+            continue
         if oid is not None and hasattr(client, "futures_cancel_order"):
             for candidate_id in (oid, int(oid) if str(oid).isdigit() else oid, str(oid)):
                 try:
@@ -1357,6 +1670,10 @@ def _cancel_all_open_futures_orders_fallback(
     """Purge d'urgence de tous les ordres ouverts du symbole si un ordre closePosition GTE/LTE fantôme bloque (-4130)."""
     symbol = normalize_symbol(symbol)
     purged = False
+    try:
+        futures_cancel_all_conditional_orders(client, symbol)
+    except Exception as e:
+        logger.warning("Annulation de tous les ordres Algo (%s) a échoué : %s", symbol, e)
     if hasattr(client, "futures_cancel_all_open_orders"):
         try:
             client.futures_cancel_all_open_orders(symbol=symbol)
@@ -1394,12 +1711,12 @@ def _restore_preserved_tp_order_if_needed(
     tp_type = str(preserve_tp_order.get("type") or preserve_tp_order.get("origType") or "TAKE_PROFIT_MARKET").upper()
     if tp_stop and tp_side:
         try:
-            client.futures_create_order(
-                symbol=symbol,
-                side=tp_side,
-                type=tp_type if tp_type in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT") else "TAKE_PROFIT_MARKET",
-                stopPrice=tp_stop,
-                closePosition=True,
+            futures_place_conditional_order(
+                client,
+                symbol,
+                tp_side,
+                "TAKE_PROFIT_MARKET",
+                str(tp_stop),
             )
         except Exception as e:
             logger.debug("Restauration TP optionnelle ignorée sur %s : %s", symbol, e)
@@ -1423,6 +1740,13 @@ def _confirm_futures_protective_order(
         raise BinanceClientError(
             f"Confirmation SL/TP échouée sur {symbol}: ordre #{new_oid} en statut {status}."
         )
+    if created_order.get("algo"):
+        open_algo = futures_list_conditional_orders(client, symbol)
+        if open_algo and new_oid not in {str(o.get("orderId")) for o in open_algo}:
+            raise BinanceClientError(
+                f"Confirmation SL/TP échouée sur {symbol}: le nouvel ordre #{new_oid} est absent des ordres Algo ouverts Binance."
+            )
+        return new_oid
     if hasattr(client, "futures_get_open_orders"):
         try:
             open_orders = client.futures_get_open_orders(symbol=symbol)
@@ -1538,14 +1862,10 @@ def replace_futures_stop_loss_order(
     )
 
     try:
-        sl_order = client.futures_create_order(
-            symbol=symbol,
-            side=opposite,
-            type="STOP_MARKET",
-            stopPrice=formatted_stop,
-            closePosition=True,
+        sl_order = futures_place_conditional_order(
+            client, symbol, opposite, "STOP_MARKET", formatted_stop,
         )
-    except BinanceAPIException as e:
+    except (BinanceAPIException, BinanceAlgoError) as e:
         msg = getattr(e, "message", str(e))
         if "closePosition" in msg or getattr(e, "code", None) == -4130:
             tp_to_preserve = existing_tp_orders[0] if existing_tp_orders else None
@@ -1558,24 +1878,16 @@ def replace_futures_stop_loss_order(
                 user_id=user_id,
             )
             try:
-                sl_order = client.futures_create_order(
-                    symbol=symbol,
-                    side=opposite,
-                    type="STOP_MARKET",
-                    stopPrice=formatted_stop,
-                    closePosition=True,
+                sl_order = futures_place_conditional_order(
+                    client, symbol, opposite, "STOP_MARKET", formatted_stop,
                 )
             except Exception:
                 # Dernier recours : purger l'ensemble des ordres ouverts du symbole sur Binance Futures,
                 # créer le nouveau SL en priorité absolue, puis restaurer le TP ensuite.
                 _cancel_all_open_futures_orders_fallback(client, symbol, preserve_tp_order=None, user_id=user_id)
                 try:
-                    sl_order = client.futures_create_order(
-                        symbol=symbol,
-                        side=opposite,
-                        type="STOP_MARKET",
-                        stopPrice=formatted_stop,
-                        closePosition=True,
+                    sl_order = futures_place_conditional_order(
+                        client, symbol, opposite, "STOP_MARKET", formatted_stop,
                     )
                     _restore_preserved_tp_order_if_needed(client, symbol, preserve_tp_order=tp_to_preserve)
                 except Exception as retry_err:
@@ -1596,12 +1908,8 @@ def replace_futures_stop_loss_order(
                     # Tenter de restaurer l'ancien SL
                     if old_stop_price_fallback:
                         try:
-                            restored = client.futures_create_order(
-                                symbol=symbol,
-                                side=opposite,
-                                type="STOP_MARKET",
-                                stopPrice=old_stop_price_fallback,
-                                closePosition=True,
+                            restored = futures_place_conditional_order(
+                                client, symbol, opposite, "STOP_MARKET", old_stop_price_fallback,
                             )
                             if isinstance(restored, dict) and restored.get("orderId") is not None:
                                 return str(restored["orderId"])
@@ -1619,12 +1927,8 @@ def replace_futures_stop_loss_order(
             # Tenter de restaurer l'ancien SL si nous venons de l'annuler et que le nouveau prix est rejeté (ex: -2021 Order would immediately trigger)
             if ids_to_cancel and old_stop_price_fallback:
                 try:
-                    restored = client.futures_create_order(
-                        symbol=symbol,
-                        side=opposite,
-                        type="STOP_MARKET",
-                        stopPrice=old_stop_price_fallback,
-                        closePosition=True,
+                    restored = futures_place_conditional_order(
+                        client, symbol, opposite, "STOP_MARKET", old_stop_price_fallback,
                     )
                     if isinstance(restored, dict) and restored.get("orderId") is not None:
                         return str(restored["orderId"])

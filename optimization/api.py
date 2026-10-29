@@ -45,7 +45,8 @@ def overview(user_id: int, is_admin: bool, style: str = "day", light: bool = Fal
         "ok": True,
         "parameters": get_optimizable_parameters(style),
         "limits": {"max_configs": MAX_CONFIGS_HARD, "warn_configs": WARN_CONFIGS, "max_params": MAX_PARAMS,
-                   "default_min_trades": engine.DEFAULT_MIN_TRADES, "default_top_k": engine.DEFAULT_TOP_K},
+                   "default_min_trades": engine.DEFAULT_MIN_TRADES, "default_top_k": engine.DEFAULT_TOP_K,
+                   "max_candles": sl.OPT_MAX_PERIOD_CANDLES},
         "jobs": jobs,
     }
 

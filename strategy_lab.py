@@ -346,6 +346,30 @@ LAB_MODELS_CATALOG: List[Dict[str, Any]] = [
     },
 ]
 
+# Anciens noms de paramètres (le moteur n'utilise que des SMA). Ils sont acceptés partout en entrée et convertis
+# vers le nom actuel, au lieu d'être rejetés comme « Unknown parameter » (ex. un candidat d'optimisation ou un
+# ancien preset contenant `ema_fast`). Les paramètres supprimés sont ignorés silencieusement.
+LEGACY_PARAM_ALIASES: Dict[str, str] = {
+    "ema_fast": "sma_fast",
+    "ema_slow": "sma_slow",
+    "require_ema_alignment": "require_sma_alignment",
+}
+LEGACY_DROPPED_PARAMS = frozenset({"ema_trend", "require_trend_filter_ema200"})
+
+
+def canonicalize_legacy_params(params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Copie `params` avec les anciens noms convertis (un nom actuel explicite l'emporte sur l'ancien alias)."""
+    out = dict(params or {})
+    for legacy, current in LEGACY_PARAM_ALIASES.items():
+        if legacy in out:
+            value = out.pop(legacy)
+            if out.get(current) is None and value is not None:
+                out[current] = value
+    for dropped in LEGACY_DROPPED_PARAMS:
+        out.pop(dropped, None)
+    return out
+
+
 LAB_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
     # 1. Signal & Confluence Model ("confluence")
     "min_teddy_score": {
@@ -1012,6 +1036,9 @@ def parse_and_validate_raw_config(
             val_part = val_part.split(" #", 1)[0]
         raw_key = key_part.strip()
         canonical_key = raw_key.lower()
+        if canonical_key in LEGACY_DROPPED_PARAMS:
+            continue  # paramètre supprimé : ignoré
+        canonical_key = LEGACY_PARAM_ALIASES.get(canonical_key, canonical_key)
 
         if canonical_key not in LAB_PARAM_SPECS:
             errors.append(
@@ -1102,7 +1129,10 @@ def validate_partial_model_update(
     - Rejects invalid types/ranges.
     - When selected_models is provided, verifies that no unselected model's parameter was modified
       and locks all unselected models to reference_params.
+    Legacy aliases (ema_fast...) are converted to their current names before validation.
     """
+    candidate_params = canonicalize_legacy_params(candidate_params)
+    reference_params = canonicalize_legacy_params(reference_params) if reference_params else reference_params
     base_ref = normalize_lab_params(reference_params, style=trading_style)
     if not isinstance(candidate_params, dict):
         return {
@@ -1352,7 +1382,7 @@ def generate_external_ai_prompt(
 
 
 # Nombre maximal de bougies simulées sur une période explicite par le Strategy Lab (protège le temps de calcul).
-LAB_MAX_PERIOD_CANDLES = 12000
+LAB_MAX_PERIOD_CANDLES = int(os.getenv("LAB_MAX_PERIOD_CANDLES", "100000") or 100000)
 # Profondeur maximale de l'Optimization Lab (nombre de bougies d'une période explicite). Le chargement est paginé et
 # mis en cache PostgreSQL ; la vraie contrainte est le temps de calcul (~0,14 ms / bougie / backtest) et la RAM.
 # Ajustable par variable d'environnement. Au-delà, l'optimisation est REFUSÉE avec un message clair (jamais tronquée).

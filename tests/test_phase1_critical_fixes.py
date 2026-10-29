@@ -942,16 +942,55 @@ class Phase1CriticalFixesTests(unittest.TestCase):
             self.assertEqual(res["order_id"], 77701)
             self.assertAlmostEqual(res["executed_price"], 65100.0)
 
+    def _fake_algo_exchange(self, bm, state, new_ids, conflict=None, algo_cancel_fails=False):
+        """Faux échange Algo Binance adossé à `state` : SL/TP sont des ordres Algo (invisibles dans openOrders)."""
+        from contextlib import ExitStack
+
+        ids = iter(new_ids)
+
+        def place(client, symbol, side, otype, trigger, **kw):
+            if conflict and conflict(state, side, otype):
+                raise bm.BinanceAlgoError(
+                    "An open stop or take profit order with GTE and closePosition in the direction is existing.",
+                    code=-4130,
+                )
+            order = {
+                "orderId": next(ids), "symbol": symbol, "side": side, "type": otype,
+                "stopPrice": str(trigger), "closePosition": True, "status": "NEW", "algo": True,
+            }
+            state.append(order)
+            return dict(order)
+
+        def list_orders(client, symbol=None):
+            return [dict(o) for o in state if symbol is None or o.get("symbol") == symbol]
+
+        def cancel(client, symbol, oid):
+            if algo_cancel_fails:
+                raise bm.BinanceAlgoError("Order cancel mismatch")
+            state[:] = [o for o in state if str(o["orderId"]) != str(oid)]
+            return True
+
+        def cancel_all(client, symbol):
+            state.clear()
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(bm, "futures_place_conditional_order", side_effect=place))
+        stack.enter_context(patch.object(bm, "futures_list_conditional_orders", side_effect=list_orders))
+        stack.enter_context(patch.object(bm, "futures_cancel_conditional_order", side_effect=cancel))
+        stack.enter_context(patch.object(bm, "futures_cancel_all_conditional_orders", side_effect=cancel_all))
+        return stack
+
     def test_futures_open_position_places_sl_tp_and_extracts_avg_price(self):
         bm = self.binance_manager_mod
         mock_client = MagicMock()
+        # Ordre principal via /order ; SL/TP via l'API Algo (/algoOrder) depuis la migration Binance.
         mock_client.futures_create_order.side_effect = [
             {"orderId": 88801, "clientOrderId": "fut_cid_1", "avgPrice": "64980.50"},
-            {"orderId": 88802},
-            {"orderId": 88803},
         ]
+        algo_state = []
 
-        with patch.object(bm, "_assert_order_context_allowed", return_value=None), \
+        with self._fake_algo_exchange(bm, algo_state, [88802, 88803]), \
+             patch.object(bm, "_assert_order_context_allowed", return_value=None), \
              patch.object(bm, "_client_for_user", return_value=mock_client), \
              patch.object(bm, "get_open_binance_positions", return_value=[]), \
              patch.object(bm, "set_leverage", return_value=None) as mock_lev, \
@@ -974,10 +1013,12 @@ class Phase1CriticalFixesTests(unittest.TestCase):
                 execution_context=bm.ORDER_CONTEXT_AUTOTRADE,
             )
             mock_lev.assert_called_once_with(1, "BTCUSDT", 5)
-            self.assertEqual(mock_client.futures_create_order.call_count, 3)
+            self.assertEqual(mock_client.futures_create_order.call_count, 1)  # uniquement l'ordre MARKET
             self.assertEqual(res["order_id"], 88801)
-            self.assertEqual(res["sl_order_id"], 88802)
-            self.assertEqual(res["tp_order_id"], 88803)
+            self.assertEqual(res["sl_order_id"], "88802")
+            self.assertEqual(res["tp_order_id"], "88803")
+            self.assertEqual([(o["type"], o["stopPrice"], o["side"]) for o in algo_state],
+                             [("STOP_MARKET", "66000", "BUY"), ("TAKE_PROFIT_MARKET", "63000", "BUY")])
             self.assertAlmostEqual(res["executed_price"], 64980.50)
 
     def test_live_mode_never_uses_testnet_fallback_credentials(self):
@@ -1121,6 +1162,7 @@ class Phase1CriticalFixesTests(unittest.TestCase):
                 "stopPrice": "63500.0",
                 "closePosition": True,
                 "status": "NEW",
+                "algo": True,
             },
             {
                 "orderId": 5002,
@@ -1130,50 +1172,29 @@ class Phase1CriticalFixesTests(unittest.TestCase):
                 "stopPrice": "68000.0",
                 "closePosition": True,
                 "status": "NEW",
+                "algo": True,
             },
         ]
 
         mock_client = MagicMock()
 
         def fake_get_open_orders(symbol=None):
-            return [dict(o) for o in open_orders_state if symbol is None or o["symbol"] == symbol]
+            return []  # les SL/TP sont des ordres Algo : absents de openOrders
 
         def fake_cancel_order(symbol, orderId):
-            oid_str = str(orderId)
-            open_orders_state[:] = [o for o in open_orders_state if str(o["orderId"]) != oid_str]
-            return {"orderId": orderId, "status": "CANCELED"}
+            raise BinanceAPIException("Unknown order sent.", code=-2011)  # id Algo inconnu côté /order -> repli Algo
 
-        def fake_create_order(**kwargs):
-            # Reproduce exact Binance Futures constraint: reject if an open STOP_MARKET with closePosition in same side already exists
-            if kwargs.get("type") == "STOP_MARKET" and kwargs.get("closePosition"):
-                for existing in open_orders_state:
-                    if (
-                        existing["symbol"] == kwargs.get("symbol")
-                        and existing["side"] == kwargs.get("side")
-                        and existing["type"] == "STOP_MARKET"
-                        and existing.get("closePosition")
-                    ):
-                        raise BinanceAPIException(
-                            "An open stop or take profit order with GTE and closePosition in the direction is existing.",
-                            code=-4130,
-                        )
-            new_order = {
-                "orderId": 5099,
-                "symbol": kwargs["symbol"],
-                "side": kwargs["side"],
-                "type": kwargs["type"],
-                "stopPrice": str(kwargs.get("stopPrice")),
-                "closePosition": bool(kwargs.get("closePosition")),
-                "status": "NEW",
-            }
-            open_orders_state.append(new_order)
-            return new_order
+        def same_side_stop_exists(state, side, otype):
+            # Contrainte Binance : refuse un STOP_MARKET closePosition si un autre existe déjà dans le même sens
+            return otype == "STOP_MARKET" and any(
+                o["side"] == side and o["type"] == "STOP_MARKET" and o.get("closePosition") for o in state
+            )
 
         mock_client.futures_get_open_orders.side_effect = fake_get_open_orders
         mock_client.futures_cancel_order.side_effect = fake_cancel_order
-        mock_client.futures_create_order.side_effect = fake_create_order
 
-        with patch.object(bm, "_assert_order_context_allowed", return_value=None), \
+        with self._fake_algo_exchange(bm, open_orders_state, [5099, 5100, 5101], conflict=same_side_stop_exists), \
+             patch.object(bm, "_assert_order_context_allowed", return_value=None), \
              patch.object(bm, "_client_for_user", return_value=mock_client), \
              patch.object(bm, "get_symbol_filters", return_value={
                  "LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},
@@ -1328,41 +1349,22 @@ class Phase1CriticalFixesTests(unittest.TestCase):
                 "stopPrice": "63500.0",
                 "closePosition": "true",
                 "status": "NEW",
+                "algo": True,
             }
         ]
 
         mock_client = MagicMock()
-        mock_client.futures_get_open_orders.side_effect = lambda symbol=None: list(open_orders_state)
+        mock_client.futures_get_open_orders.side_effect = lambda symbol=None: []
 
-        def fake_cancel_all(symbol):
-            open_orders_state.clear()
-            return {"code": 200}
-
-        # Simulate individual cancel failing so fallback futures_cancel_all_open_orders is triggered
+        # Annulation individuelle en échec (classique ET Algo) -> déclenche la purge globale de repli
         mock_client.futures_cancel_order.side_effect = Exception("Order cancel mismatch")
-        mock_client.futures_cancel_all_open_orders.side_effect = fake_cancel_all
 
-        def fake_create_order(**kwargs):
-            if open_orders_state:
-                raise BinanceAPIException(
-                    "An open stop or take profit order with GTE and closePosition in the direction is existing.",
-                    code=-4130,
-                )
-            created = {
-                "orderId": 7799,
-                "symbol": kwargs["symbol"],
-                "side": kwargs["side"],
-                "type": kwargs["type"],
-                "stopPrice": str(kwargs.get("stopPrice")),
-                "closePosition": True,
-                "status": "NEW",
-            }
-            open_orders_state.append(created)
-            return created
+        def any_order_blocks(state, side, otype):
+            return bool(state)  # un ordre closePosition « fantôme » bloque toute nouvelle création (-4130)
 
-        mock_client.futures_create_order.side_effect = fake_create_order
 
-        with patch.object(bm, "_assert_order_context_allowed", return_value=None), \
+        with self._fake_algo_exchange(bm, open_orders_state, [7799, 7800], conflict=any_order_blocks, algo_cancel_fails=True), \
+             patch.object(bm, "_assert_order_context_allowed", return_value=None), \
              patch.object(bm, "_client_for_user", return_value=mock_client), \
              patch.object(bm, "get_symbol_filters", return_value={
                  "LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},

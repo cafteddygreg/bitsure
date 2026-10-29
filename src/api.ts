@@ -1,3 +1,5 @@
+import { translateMessage } from './i18n';
+
 const SESSION_TOKEN_KEY = 'bitsure_session_token';
 const CSRF_TOKEN_KEY = 'bitsure_csrf_token';
 
@@ -104,12 +106,14 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
         return attemptFetch(true);
       }
       if (err?.name === 'AbortError') {
-        throw new ApiError(`Délai d'attente dépassé sur ${path}`, 504, 'TIMEOUT');
+        throw new ApiError(translateMessage(`Délai d'attente dépassé sur ${path}`), 504, 'TIMEOUT');
       }
       throw new ApiError(
-        isTransientNetworkErr
-          ? `Connexion interrompue lors du chargement (${path}). Veuillez réessayer.`
-          : rawMsg || `Serveur inaccessible (${path})`,
+        translateMessage(
+          isTransientNetworkErr
+            ? `Connexion interrompue lors du chargement (${path}). Veuillez réessayer.`
+            : rawMsg || `Serveur inaccessible (${path})`
+        ),
         503,
         'NETWORK_ERROR'
       );
@@ -122,9 +126,14 @@ export async function apiFetch<T = any>(path: string, options: RequestInit = {})
   if (response.status === 401 && data?.code === 'SESSION_LOCKED' && typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(SESSION_LOCKED_EVENT));
   }
+  // Messages serveur : toujours restitués dans la langue de l'interface (FR <-> EN).
+  if (data && typeof data === 'object') {
+    if (typeof data.error === 'string') data.error = translateMessage(data.error);
+    if (typeof data.message === 'string') data.message = translateMessage(data.message);
+  }
   if (!response.ok || data.ok === false) {
     throw new ApiError(
-      data.error || data.message || `Erreur API (${response.status})`,
+      data.error || data.message || translateMessage(`Erreur API (${response.status})`),
       response.status,
       data.code,
       data.account_status,

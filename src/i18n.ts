@@ -1,3 +1,5 @@
+import { SERVER_MESSAGES } from './serverMessages';
+
 export type AppLang = 'fr' | 'en';
 
 export function getInitialLang(): AppLang {
@@ -299,6 +301,60 @@ const EN_EXACT_MAP: Record<string, string> = {
   "Titre de l'annonce...": 'Announcement title...',
   'Message diffusé à tous les utilisateurs...': 'Message broadcast to all users...',
   'Diffuser à tous les comptes': 'Broadcast to all accounts',
+  // --- Ajouts : libellés App.tsx sans équivalent anglais jusque-là ---
+  'Toutes les alertes ont été supprimées.': 'All alerts have been deleted.',
+  'Termes & Conditions (CGU)': 'Terms & Conditions',
+  'Lire le contrat intégral (CGU)': 'Read the full agreement (Terms)',
+  'Utilisateurs 360° (Admin)': 'User 360° (Admin)',
+  'Utilisateurs 360°': 'User 360°',
+  'CGU': 'Terms',
+  'Moyennes mobiles SMA 20 / 50': 'SMA 20 / 50 moving averages',
+  'Tendance haussière (prix > SMA20 > SMA50)': 'Uptrend (price > SMA20 > SMA50)',
+  'Tendance baissière (prix < SMA20 < SMA50)': 'Downtrend (price < SMA20 < SMA50)',
+  'Tendance neutre': 'Neutral trend',
+  'Bandes de Bollinger (20, 2σ)': 'Bollinger Bands (20, 2σ)',
+  'Haute': 'Upper',
+  'Basse': 'Lower',
+  'Volume vs moyenne 20': 'Volume vs 20-period average',
+  'Moyenne 20': '20-period average',
+  'Fibonacci (50 bougies)': 'Fibonacci (50 candles)',
+  'Divergence RSI / Prix': 'RSI / Price divergence',
+  'Haussière': 'Bullish',
+  'Baissière': 'Bearish',
+  'Aucune': 'None',
+  'Réessayer maintenant': 'Retry now',
+  'PIN (6 chiffres)': 'PIN (6 digits)',
+  'Réconciliation DB ↔ Binance exécutée.': 'DB ↔ Binance reconciliation completed.',
+  'Synchronisé en temps réel avec `/config`, `/autotrade` et `/periodic_analysis`.': 'Synchronized in real time with `/config`, `/autotrade` and `/periodic_analysis`.',
+  'Test en cours…': 'Testing…',
+  'Vérification en cours…': 'Checking…',
+  'Connectez des clés API Binance valides pour afficher le solde temps réel, la marge disponible et les positions sur le serveur Binance.': 'Connect valid Binance API keys to show the real-time balance, available margin and positions from the Binance server.',
+  'Prix SL...': 'SL price...',
+  'Prix TP...': 'TP price...',
+  'Quantité': 'Quantity',
+  'Exécution en cours…': 'Executing…',
+  'ID / Actif': 'ID / Asset',
+  'Sens & Marché': 'Side & Market',
+  'PNL actuel': 'Current PnL',
+  'Action (/close)': 'Action (/close)',
+  'Aucune position ouverte enregistrée localement ou sur Binance.': 'No open position recorded locally or on Binance.',
+  'Fermeture…': 'Closing…',
+  'Type & Sens': 'Type & Side',
+  'Prix / Stop': 'Price / Stop',
+  'Annulation…': 'Cancelling…',
+  'Vérification…': 'Checking…',
+  'Binance ID destinataire :': 'Recipient Binance ID:',
+  'Non configuré': 'Not configured',
+  'Montant à envoyer :': 'Amount to send:',
+  'Mémo obligatoire :': 'Required memo:',
+  'Enregistrement…': 'Saving…',
+  'Envoi…': 'Sending…',
+  'Dossier Utilisateurs 360° & Consentement CGU': 'User 360° Files & Terms Consent',
+  'Consultez toutes les informations par utilisateur : appareil, OS, navigateur, batterie, IP, géolocalisation GPS/IP, preuves CGU et trading.': 'View all information per user: device, OS, browser, battery, IP, GPS/IP geolocation, Terms proofs and trading.',
+  'Ouvrir Utilisateurs 360°': 'Open User 360°',
+  'Voir les CGU publiques': 'View the public Terms',
+  'Compte Telegram': 'Telegram account',
+  'Signal': 'Signal',
 };
 
 export function tr(lang: AppLang | string | undefined, frText: string, enText?: string): string {
@@ -306,4 +362,79 @@ export function tr(lang: AppLang | string | undefined, frText: string, enText?: 
   if (activeLang === 'fr') return frText;
   if (enText !== undefined) return enText;
   return EN_EXACT_MAP[frText] || frText;
+}
+
+
+// ---------------------------------------------------------------------------
+// Traduction des messages serveur (FR <-> EN)
+// ---------------------------------------------------------------------------
+// Les messages d'erreur / de confirmation du backend sont produits dans une langue fixe. `translateMessage` les
+// restitue dans la langue de l'interface, dans les deux sens, via la table `SERVER_MESSAGES` :
+//  - correspondance exacte pour les messages statiques ;
+//  - correspondance par gabarit pour les messages à variables (`{}`), les valeurs capturées étant elles-mêmes
+//    traduites (ex. « Erreur Binance à l'ouverture : {} » contenant un autre message) ;
+//  - à défaut, remplacement des phrases statiques connues à l'intérieur d'un message composite.
+// Un message inconnu est renvoyé tel quel (jamais d'erreur, jamais de texte perdu).
+
+interface MsgRule {
+  re: RegExp;
+  target: string;
+  statics: number; // nb de caractères fixes : les gabarits les plus précis passent en premier
+}
+interface MsgIndex {
+  exact: Map<string, string>;
+  rules: MsgRule[];
+  statics: Array<[string, string]>;
+}
+
+const _normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
+const _escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function _buildIndex(from: 0 | 1): MsgIndex {
+  const to = from === 0 ? 1 : 0;
+  const exact = new Map<string, string>();
+  const rules: MsgRule[] = [];
+  const statics: Array<[string, string]> = [];
+  for (const pair of SERVER_MESSAGES) {
+    if (!pair || typeof pair[0] !== 'string' || typeof pair[1] !== 'string') continue;
+    const src = _normalize(pair[from]);
+    const dst = pair[to];
+    if (!src.includes('{}')) {
+      exact.set(src, dst);
+      if (src.length >= 20) statics.push([src, dst]);
+      continue;
+    }
+    const parts = src.split('{}').map(_escapeRe);
+    rules.push({ re: new RegExp('^' + parts.join('([\\s\\S]+?)') + '$'), target: dst, statics: src.replace(/\{\}/g, '').length });
+  }
+  rules.sort((a, b) => b.statics - a.statics);
+  statics.sort((a, b) => b[0].length - a[0].length);
+  return { exact, rules, statics };
+}
+
+let _indexToEn: MsgIndex | null = null;
+let _indexToFr: MsgIndex | null = null;
+
+export function translateMessage(text: string, lang?: AppLang | string, depth = 0): string {
+  if (typeof text !== 'string' || !text || depth > 3) return text;
+  const target: AppLang = (lang ?? getInitialLang()) === 'en' ? 'en' : 'fr';
+  const idx = target === 'en' ? (_indexToEn ??= _buildIndex(0)) : (_indexToFr ??= _buildIndex(1));
+  const norm = _normalize(text);
+  const hit = idx.exact.get(norm);
+  if (hit !== undefined) return hit;
+  for (const rule of idx.rules) {
+    const m = rule.re.exec(norm);
+    if (!m) continue;
+    let i = 1;
+    return rule.target.replace(/\{\}/g, () => translateMessage(m[i++] ?? '', target, depth + 1));
+  }
+  let out = text;
+  let changed = false;
+  for (const [src, dst] of idx.statics) {
+    if (out.includes(src)) {
+      out = out.split(src).join(dst);
+      changed = true;
+    }
+  }
+  return changed ? out : text;
 }

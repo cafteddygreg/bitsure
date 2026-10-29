@@ -98,8 +98,8 @@ def plan_request(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         max_configs = int(raw["max_configs"]) if raw.get("max_configs") not in (None, "") else None
     except (TypeError, ValueError):
         raise SpaceError("Valeurs numériques invalides (max_candles, min_trades, top_k, seed, max_configs).")
-    if not 500 <= max_candles <= sl.LAB_MAX_PERIOD_CANDLES:
-        raise SpaceError(f"max_candles doit être entre 500 et {sl.LAB_MAX_PERIOD_CANDLES}.")
+    if not 500 <= max_candles <= sl.OPT_MAX_PERIOD_CANDLES:
+        raise SpaceError(f"max_candles doit être entre 500 et {sl.OPT_MAX_PERIOD_CANDLES}.")
     if not 5 <= min_trades <= 500:
         raise SpaceError("min_trades doit être entre 5 et 500.")
     top_k = max(3, min(MAX_TOP_K, top_k))
@@ -240,11 +240,18 @@ def run_job(
             if p["key"] in ("sma_slow", "sr_lookback"):
                 slow_candidates.extend(int(v) for v in p["values"])
         warmup = max(60, 3 * max(slow_candidates))
-        raw_df, data_source, _stats = loader(
+        loader_kwargs = dict(
             symbol=symbol, timeframe=tf, market_type=market,
             start_date=req.get("start_date") or None, end_date=req.get("end_date") or None,
             max_candles=int(req.get("max_candles") or 4000), warmup_candles=warmup,
         )
+        # Plafond propre à l'optimiseur (OPT_MAX_PERIOD_CANDLES) : sans lui le chargeur retombe sur le plafond
+        # du Strategy Lab et tronquait silencieusement les fenêtres 1m/5m/15m.
+        import inspect
+        _params = inspect.signature(loader).parameters
+        if "max_period_candles" in _params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in _params.values()):
+            loader_kwargs["max_period_candles"] = sl.OPT_MAX_PERIOD_CANDLES
+        raw_df, data_source, _stats = loader(**loader_kwargs)
         total_n = len(raw_df)
         if total_n <= warmup + 100:
             raise ValueError(
@@ -271,6 +278,13 @@ def run_job(
             "oos": {"candles": window_n - n_train - n_val, "start": _isoformat(timestamps[sim_start_idx + n_train + n_val]), "end": _isoformat(timestamps[-1])},
         }
         run_warnings: List[str] = []
+        _stats = _stats if isinstance(_stats, dict) else {}
+        if _stats.get("period_clamped"):
+            run_warnings.append(
+                f"Période tronquée : la fenêtre demandée dépasse {_stats.get('max_period_candles')} bougies, seules les plus récentes ont été simulées."
+            )
+        if _stats.get("fetch_incomplete"):
+            run_warnings.append("Téléchargement Binance incomplet : des bougies manquent dans la période simulée.")
         if n_train < 300:
             run_warnings.append("Fenêtre de training courte (< 300 bougies) : résultats statistiquement fragiles.")
         prog.step(1, force=True)
@@ -382,8 +396,13 @@ def run_job(
             categories["best_raw"] = max(
                 finalists, key=lambda e: (_f(e["training"].get("total_return_pct")), e["training_score"] or -1e9))["idx"]
             categories["best_compromise"] = max(finalists, key=lambda e: e["compromise"] if e["compromise"] is not None else -1e9)["idx"]
-            categories["best_robust"] = max(finalists, key=lambda e: e["robustness"] if e["robustness"] is not None else -1e9)["idx"]
+            # Les catégories « robuste » et « global » excluent les candidats à risque de surapprentissage élevé
+            # (OOS/validation qui contredit l'entraînement). Si TOUS sont à risque élevé, on garde le classement mais
+            # un avertissement est ajouté au résumé.
             pool = [e for e in finalists if e["overfit"]["risk"] != "high"] or finalists
+            if all(e["overfit"]["risk"] == "high" for e in finalists):
+                run_warnings.append("Tous les finalistes présentent un risque de surapprentissage élevé : aucun résultat n'est à considérer comme robuste.")
+            categories["best_robust"] = max(pool, key=lambda e: e["robustness"] if e["robustness"] is not None else -1e9)["idx"]
             categories["best_overall"] = max(
                 pool, key=lambda e: 0.5 * (e["compromise"] or 0.0) + 0.5 * (e["robustness"] or 0.0))["idx"]
         prog.step(1)
@@ -439,11 +458,15 @@ def run_job(
             "sensitivity": sens,
             "warnings": list(plan.get("warnings", [])) + run_warnings,
             "walk_forward": {"available": False, "reason": "Non implémenté : le moteur actuel n'expose pas de fenêtres glissantes ; la stabilité temporelle est évaluée via training/validation/OOS."},
-            "selection_protocol": "Sélection sur training + validation ; l'OOS n'est jamais utilisé pour choisir (diagnostic de surapprentissage uniquement).",
+            "selection_protocol": "Classement sur training + validation ; l'OOS ne modifie aucun score, mais les candidats que l'OOS contredit (risque élevé) sont exclus des choix « robuste » et « global ».",
             "disclaimer": DISCLAIMER,
             "duration_seconds": round(time.time() - float(job.get("started_at") or t_start), 1),
             "compute_seconds_this_run": round(time.time() - t_start, 1),
             "base_params": _override_subset(base, param_keys),
+            # Contexte complet de la course : permet de recharger un candidat dans l'éditeur avec EXACTEMENT
+            # la config testée (risque, levier, etc.), pas seulement les paramètres balayés.
+            "base_params_full": {k: v for k, v in base.items() if isinstance(v, (int, float, str, bool)) or v is None},
+            "request_period": {"start_date": req.get("start_date"), "end_date": req.get("end_date"), "max_candles": req.get("max_candles")},
         }
         from .report import build_report_html
         html = build_report_html(summary)

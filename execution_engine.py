@@ -253,7 +253,7 @@ def execute_signal(signal: dict, config: TradingConfig, execution_context: str |
     try:
         entry_price = signal["entry_price"] or get_price(user_id, symbol, config.market_type)
         quantity = calculate_position_size(
-            user_id, config, entry_price, signal["sl"], config.market_type
+            user_id, config, entry_price, signal["sl"], config.market_type, direction=direction
         )
 
         result = open_position(
@@ -267,6 +267,7 @@ def execute_signal(signal: dict, config: TradingConfig, execution_context: str |
             leverage=config.leverage,
             client_order_id=client_order_id,
             execution_context=execution_context,
+            planned_entry_price=entry_price,
         )
 
         actual_entry_price = float(result.get("executed_price") or entry_price)
@@ -279,6 +280,13 @@ def execute_signal(signal: dict, config: TradingConfig, execution_context: str |
             "sl_order_id": str(result.get("sl_order_id")) if result.get("sl_order_id") else None,
             "tp_order_id": str(result.get("tp_order_id")) if result.get("tp_order_id") else None,
         })
+        # Les niveaux SL/TP ont pu être recalés sur le prix réel d'exécution : on enregistre ceux réellement posés.
+        if result.get("sl_price"):
+            fields["sl_price"] = result["sl_price"]
+        if result.get("tp_price"):
+            fields["tp_price"] = result["tp_price"]
+        if result.get("warnings"):
+            fields["error_message"] = " | ".join(str(w) for w in result["warnings"])
         log_trade_opened(logger, user_id, symbol, direction, result["quantity"], actual_entry_price)
         mark_signal_status(signal["id"], "executed")
 

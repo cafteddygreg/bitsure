@@ -237,12 +237,21 @@ class TradingSafetyTests(unittest.TestCase):
             "MIN_NOTIONAL": {"notional": "5.0"},
         }
 
+        def fake_algo_ok(client, symbol, side, otype, trigger, **kw):
+            # Depuis la migration Binance, SL/TP passent par l'API Algo (/fapi/v1/algoOrder).
+            return {"orderId": 202 if otype == "STOP_MARKET" else 203, "algo": True}
+
+        def fake_algo_down(client, symbol, side, otype, trigger, **kw):
+            raise real_bm.BinanceAlgoError("Network down for protection")
+
         # Cas A : Timeout sur l'ordre principal, mais l'ordre a été exécuté sur Binance -> relit clientOrderId et pose SL/TP
         pos_calls = [
             [],  # avant l'ouverture : aucune position existante
             [{"symbol": "BTCUSDT", "direction": "BUY", "quantity": 0.1}],  # après timeout : position présente
         ]
-        with patch.object(real_bm, "_assert_order_context_allowed", return_value=None), \
+        with patch.object(real_bm, "futures_place_conditional_order", side_effect=fake_algo_ok), \
+             patch.object(real_bm, "futures_list_conditional_orders", return_value=[]), \
+             patch.object(real_bm, "_assert_order_context_allowed", return_value=None), \
              patch.object(real_bm, "_client_for_user", return_value=mock_client), \
              patch.object(real_bm, "get_open_binance_positions", side_effect=lambda *a, **k: pos_calls.pop(0) if pos_calls else []), \
              patch.object(real_bm, "get_symbol_filters", return_value=filters), \
@@ -271,7 +280,9 @@ class TradingSafetyTests(unittest.TestCase):
             [],
             [{"symbol": "BTCUSDT", "direction": "BUY", "quantity": 0.1}],
         ]
-        with patch.object(real_bm, "_assert_order_context_allowed", return_value=None), \
+        with patch.object(real_bm, "futures_place_conditional_order", side_effect=fake_algo_down), \
+             patch.object(real_bm, "futures_list_conditional_orders", return_value=[]), \
+             patch.object(real_bm, "_assert_order_context_allowed", return_value=None), \
              patch.object(real_bm, "_client_for_user", return_value=mock_client_fail), \
              patch.object(real_bm, "get_open_binance_positions", side_effect=lambda *a, **k: pos_calls_b.pop(0) if pos_calls_b else []), \
              patch.object(real_bm, "get_symbol_filters", return_value=filters), \
@@ -320,11 +331,16 @@ class TradingSafetyTests(unittest.TestCase):
             "PRICE_FILTER": {"tickSize": "0.10"},
             "MIN_NOTIONAL": {"notional": "5.0"},
         }
+        def fake_algo_sl_rejected(client, symbol, side, otype, trigger, **kw):
+            raise real_bm.BinanceAlgoError("Code -2021: SL rejected by exchange", code=-2021)
+
         pos_calls = [
             [],
             [{"symbol": "BTCUSDT", "direction": "BUY", "quantity": 0.1}],
         ]
-        with patch.object(real_bm, "_assert_order_context_allowed", return_value=None), \
+        with patch.object(real_bm, "futures_place_conditional_order", side_effect=fake_algo_sl_rejected), \
+             patch.object(real_bm, "futures_list_conditional_orders", return_value=[]), \
+             patch.object(real_bm, "_assert_order_context_allowed", return_value=None), \
              patch.object(real_bm, "_client_for_user", return_value=MockClient()), \
              patch.object(real_bm, "get_open_binance_positions", side_effect=lambda *a, **k: pos_calls.pop(0) if pos_calls else []), \
              patch.object(real_bm, "get_symbol_filters", return_value=filters), \

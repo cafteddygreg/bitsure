@@ -1,3 +1,4 @@
+import { tr, translateMessage } from "../i18n";
 import React, { useState, useEffect, useMemo } from "react";
 import {
   Users,
@@ -32,12 +33,14 @@ interface AdminUsersIntelligenceTabProps {
   apiFetch: (path: string, options?: RequestInit) => Promise<any>;
   onAdminUserAction?: (action: string, targetUserId: number, extra?: Record<string, any>) => Promise<void>;
   onOpenTermsPage?: () => void;
+  lang?: string;
 }
 
 export function AdminUsersIntelligenceTab({
   apiFetch,
   onAdminUserAction,
   onOpenTermsPage,
+  lang = "fr",
 }: AdminUsersIntelligenceTabProps) {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>("");
@@ -62,10 +65,10 @@ export function AdminUsersIntelligenceTab({
           setSelectedUserId(res.users[0].user_id);
         }
       } else {
-        setError(res?.error || "Impossible de charger les dossiers utilisateurs.");
+        setError(res?.error || tr(lang, 'Impossible de charger les dossiers utilisateurs.', 'Unable to load user files.'));
       }
     } catch (e: any) {
-      setError(e?.message || "Erreur réseau lors du chargement des dossiers utilisateurs.");
+      setError(e?.message || tr(lang, 'Erreur réseau lors du chargement des dossiers utilisateurs.', 'Network error while loading user files.'));
     } finally {
       setLoading(false);
     }
@@ -172,15 +175,18 @@ export function AdminUsersIntelligenceTab({
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-bold text-white tracking-tight">
-                  Dossiers Utilisateurs 360° &amp; Télémétrie (Admin Seulement)
+                  {tr(lang, 'Dossiers Utilisateurs 360° & Télémétrie (Admin Seulement)', 'User 360° Files & Telemetry (Admin Only)')}
                 </h2>
                 <span className="px-2 py-0.5 text-[10px] font-mono font-semibold uppercase rounded bg-rose-500/15 text-rose-300 border border-rose-500/30">
-                  Accès Restreint Admin
+                  {tr(lang, 'Accès Restreint Admin', 'Admin Restricted Access')}
                 </span>
               </div>
               <p className="text-xs text-slate-400">
-                Vue intégrale par utilisateur : Identité, Consentement CGU, Adresse IP, Localisation GPS/Réseau,
-                Appareil, Données Sensibles (Clés API, PIN, Sessions) et Activité Trading.
+                {tr(
+                  lang,
+                  'Vue intégrale par utilisateur : Identité, Consentement CGU, Adresse IP, Localisation GPS/Réseau, Appareil, Données Sensibles (Clés API, PIN, Sessions) et Activité Trading.',
+                  'Full per-user view: Identity, Terms consent, IP address, GPS/Network location, Device, Sensitive Data (API keys, PIN, Sessions) and Trading Activity.'
+                )}
               </p>
             </div>
           </div>
@@ -192,7 +198,7 @@ export function AdminUsersIntelligenceTab({
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold transition"
               >
                 <FileText className="w-3.5 h-3.5 text-amber-400" />
-                Voir l&apos;onglet public CGU (v{summary.terms_current_version || "2.2.0"})
+                {tr(lang, 'Voir l\'onglet public CGU (v', 'View the public Terms tab (v')}{summary.terms_current_version || "2.2.0"})
               </button>
             )}
             <button
@@ -204,14 +210,14 @@ export function AdminUsersIntelligenceTab({
               }`}
             >
               {revealSensitive ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-              {revealSensitive ? "Masquer les données sensibles" : "Afficher les données sensibles"}
+              {revealSensitive ? tr(lang, 'Masquer les données sensibles', 'Hide sensitive data') : tr(lang, 'Afficher les données sensibles', 'Show sensitive data')}
             </button>
             <button
               onClick={handleExportJson}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold transition"
             >
               <Download className="w-3.5 h-3.5 text-sky-400" />
-              Exporter JSON
+              {tr(lang, 'Exporter JSON', 'Export JSON')}
             </button>
             <button
               onClick={loadIntelligence}
@@ -219,7 +225,7 @@ export function AdminUsersIntelligenceTab({
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-              Actualiser
+              {tr(lang, 'Actualiser', 'Refresh')}
             </button>
           </div>
         </div>
@@ -227,35 +233,35 @@ export function AdminUsersIntelligenceTab({
         {/* Summary KPI Strip */}
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5 mt-4">
           <div className="p-3 rounded-lg bg-slate-950/90 border border-slate-800/80">
-            <div className="text-[10px] font-mono uppercase text-slate-400">Total Utilisateurs</div>
+            <div className="text-[10px] font-mono uppercase text-slate-400">{tr(lang, 'Total Utilisateurs', 'Total Users')}</div>
             <div className="text-lg font-bold font-mono text-white mt-0.5">{summary.total_users ?? 0}</div>
           </div>
           <div className="p-3 rounded-lg bg-slate-950/90 border border-slate-800/80">
-            <div className="text-[10px] font-mono uppercase text-emerald-400">CGU Acceptées</div>
+            <div className="text-[10px] font-mono uppercase text-emerald-400">{tr(lang, 'CGU Acceptées', 'Terms Accepted')}</div>
             <div className="text-lg font-bold font-mono text-emerald-400 mt-0.5">{summary.consented_users ?? 0}</div>
           </div>
           <div className="p-3 rounded-lg bg-slate-950/90 border border-slate-800/80">
-            <div className="text-[10px] font-mono uppercase text-amber-400">En attente</div>
+            <div className="text-[10px] font-mono uppercase text-amber-400">{tr(lang, 'En attente', 'Pending')}</div>
             <div className="text-lg font-bold font-mono text-amber-400 mt-0.5">{summary.pending_users ?? 0}</div>
           </div>
           <div className="p-3 rounded-lg bg-slate-950/90 border border-slate-800/80">
-            <div className="text-[10px] font-mono uppercase text-sky-400">Approuvés</div>
+            <div className="text-[10px] font-mono uppercase text-sky-400">{tr(lang, 'Approuvés', 'Approved')}</div>
             <div className="text-lg font-bold font-mono text-sky-400 mt-0.5">{summary.approved_users ?? 0}</div>
           </div>
           <div className="p-3 rounded-lg bg-slate-950/90 border border-slate-800/80">
-            <div className="text-[10px] font-mono uppercase text-purple-400">Comptes PRO / VIP</div>
+            <div className="text-[10px] font-mono uppercase text-purple-400">{tr(lang, 'Comptes PRO / VIP', 'PRO / VIP Accounts')}</div>
             <div className="text-lg font-bold font-mono text-purple-400 mt-0.5">{summary.pro_or_vip_users ?? 0}</div>
           </div>
           <div className="p-3 rounded-lg bg-slate-950/90 border border-slate-800/80">
-            <div className="text-[10px] font-mono uppercase text-cyan-400">Télémétrie Appareil</div>
+            <div className="text-[10px] font-mono uppercase text-cyan-400">{tr(lang, 'Télémétrie Appareil', 'Device Telemetry')}</div>
             <div className="text-lg font-bold font-mono text-cyan-400 mt-0.5">{summary.with_telemetry ?? 0}</div>
           </div>
           <div className="p-3 rounded-lg bg-slate-950/90 border border-slate-800/80">
-            <div className="text-[10px] font-mono uppercase text-teal-400">GPS Précis Autorisé</div>
+            <div className="text-[10px] font-mono uppercase text-teal-400">{tr(lang, 'GPS Précis Autorisé', 'Precise GPS Allowed')}</div>
             <div className="text-lg font-bold font-mono text-teal-400 mt-0.5">{summary.with_geolocation_coords ?? 0}</div>
           </div>
           <div className="p-3 rounded-lg bg-slate-950/90 border border-slate-800/80">
-            <div className="text-[10px] font-mono uppercase text-rose-400">Clés Binance Liées</div>
+            <div className="text-[10px] font-mono uppercase text-rose-400">{tr(lang, 'Clés Binance Liées', 'Linked Binance Keys')}</div>
             <div className="text-lg font-bold font-mono text-rose-400 mt-0.5">{summary.with_binance_keys ?? 0}</div>
           </div>
         </div>
@@ -276,19 +282,19 @@ export function AdminUsersIntelligenceTab({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Rechercher par email, User ID, @telegram, adresse IP, pays, ville, OS, modèle d'appareil..."
+            placeholder={tr(lang, 'Rechercher par email, User ID, @telegram, adresse IP, pays, ville, OS, modèle d\'appareil...', 'Search by email, User ID, @telegram, IP address, country, city, OS, device model...')}
             className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-[#0D1318] border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50"
           />
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {[
             { id: "all", label: "Tous" },
-            { id: "consented", label: "CGU Acceptées" },
-            { id: "pending", label: "En attente" },
-            { id: "approved", label: "Approuvés" },
-            { id: "pro_vip", label: "PRO / VIP" },
-            { id: "binance", label: "API Binance" },
-            { id: "gps", label: "GPS Actif" },
+            { id: "consented", label: tr(lang, 'CGU Acceptées', 'Terms Accepted') },
+            { id: "pending", label: tr(lang, 'En attente', 'Pending') },
+            { id: "approved", label: tr(lang, 'Approuvés', 'Approved') },
+            { id: "pro_vip", label: tr(lang, 'PRO / VIP', 'PRO / VIP') },
+            { id: "binance", label: tr(lang, 'API Binance', 'Binance API') },
+            { id: "gps", label: tr(lang, 'GPS Actif', 'GPS Active') },
           ].map((f) => (
             <button
               key={f.id}
@@ -311,19 +317,19 @@ export function AdminUsersIntelligenceTab({
         <div className="lg:col-span-4 rounded-xl border border-slate-800/90 bg-[#0D1318] overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
             <span className="text-xs font-bold text-slate-200 uppercase tracking-wider font-mono">
-              Comptes répertoriés ({filteredUsers.length})
+              {tr(lang, 'Comptes répertoriés (', 'Listed accounts (')}{filteredUsers.length})
             </span>
           </div>
           <div className="max-h-[720px] overflow-y-auto divide-y divide-slate-800/70">
             {filteredUsers.length === 0 ? (
               <div className="p-6 text-center text-xs text-slate-500">
-                Aucun utilisateur ne correspond aux critères.
+                {tr(lang, 'Aucun utilisateur ne correspond aux critères.', 'No user matches the criteria.')}
               </div>
             ) : (
               filteredUsers.map((u) => {
                 const isSelected = selectedUser && selectedUser.user_id === u.user_id;
                 const status = u.identity?.account_status || "PENDING_APPROVAL";
-                const ip = u.network_location?.ip_address || "IP non relevée";
+                const ip = u.network_location?.ip_address || tr(lang, 'IP non relevée', 'IP not recorded');
                 const devType = u.device?.device_type || "Inconnu";
                 return (
                   <button
@@ -342,7 +348,7 @@ export function AdminUsersIntelligenceTab({
                         <span className="text-[10px] font-mono text-slate-400">#{u.user_id}</span>
                       </div>
                       <div className="text-[11px] text-slate-400 truncate">
-                        {u.identity?.email || "Compte Telegram uniquement"}
+                        {u.identity?.email || tr(lang, 'Compte Telegram uniquement', 'Telegram account only')}
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5 pt-1">
                         <span
@@ -366,7 +372,7 @@ export function AdminUsersIntelligenceTab({
                               : "bg-slate-800 text-slate-400"
                           }`}
                         >
-                          {u.consent?.terms_accepted ? `CGU v${u.consent.terms_version}` : "CGU non signées"}
+                          {u.consent?.terms_accepted ? `CGU v${u.consent.terms_version}` : tr(lang, 'CGU non signées', 'Terms not signed')}
                         </span>
                       </div>
                       <div className="text-[10px] font-mono text-slate-500 truncate pt-0.5">
@@ -385,7 +391,7 @@ export function AdminUsersIntelligenceTab({
         <div className="lg:col-span-8 space-y-4">
           {!selectedUser ? (
             <div className="rounded-xl border border-slate-800 bg-[#0D1318] p-8 text-center text-xs text-slate-400">
-              Sélectionnez un utilisateur dans la liste de gauche pour inspecter son dossier 360° complet.
+              {tr(lang, 'Sélectionnez un utilisateur dans la liste de gauche pour inspecter son dossier 360° complet.', 'Select a user from the list on the left to inspect their full 360° file.')}
             </div>
           ) : (
             <div className="rounded-xl border border-slate-800/90 bg-[#0D1318] p-5 space-y-5">
@@ -400,18 +406,18 @@ export function AdminUsersIntelligenceTab({
                       UID: {selectedUser.user_id}
                     </span>
                     <span className="px-2 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30 font-mono text-xs uppercase font-semibold">
-                      Rôle: {selectedUser.identity?.role}
+                      {tr(lang, 'Rôle:', 'Role:')} {selectedUser.identity?.role}
                     </span>
                     <span className="px-2 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30 font-mono text-xs uppercase font-semibold">
-                      Plan: {selectedUser.subscription?.plan}
+                      {tr(lang, 'Plan:', 'Plan:')} {selectedUser.subscription?.plan}
                     </span>
                   </div>
                   <div className="text-xs text-slate-400 flex flex-wrap items-center gap-3">
-                    <span>Email: <strong className="text-slate-200">{selectedUser.identity?.email || "Non renseigné"}</strong></span>
+                    <span>{tr(lang, 'Email:', 'Email:')} <strong className="text-slate-200">{selectedUser.identity?.email || tr(lang, 'Non renseigné', 'Not provided')}</strong></span>
                     <span>•</span>
-                    <span>Telegram: <strong className="text-slate-200">{selectedUser.identity?.telegram_handle || "N/A"}</strong></span>
+                    <span>{tr(lang, 'Telegram:', 'Telegram:')} <strong className="text-slate-200">{selectedUser.identity?.telegram_handle || "N/A"}</strong></span>
                     <span>•</span>
-                    <span>Dernière activité: <strong className="text-slate-200">{formatTs(selectedUser.identity?.last_seen_at)}</strong></span>
+                    <span>{tr(lang, 'Dernière activité:', 'Last activity:')} <strong className="text-slate-200">{formatTs(selectedUser.identity?.last_seen_at)}</strong></span>
                   </div>
                 </div>
 
@@ -424,7 +430,7 @@ export function AdminUsersIntelligenceTab({
                         onClick={() => handleQuickAction("approve", selectedUser.user_id, { role: "tester" })}
                         className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition"
                       >
-                        Approuver le compte
+                        {tr(lang, 'Approuver le compte', 'Approve account')}
                       </button>
                     )}
                     {selectedUser.identity?.account_status === "APPROVED" && (
@@ -433,7 +439,7 @@ export function AdminUsersIntelligenceTab({
                         onClick={() => handleQuickAction("suspend", selectedUser.user_id)}
                         className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-300 font-semibold text-xs transition"
                       >
-                        Suspendre
+                        {tr(lang, 'Suspendre', 'Suspend')}
                       </button>
                     )}
                     <button
@@ -441,14 +447,14 @@ export function AdminUsersIntelligenceTab({
                       onClick={() => handleQuickAction("set_plan", selectedUser.user_id, { plan: "pro", days: 30 })}
                       className="px-3 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/40 text-sky-300 font-semibold text-xs transition"
                     >
-                      Activer PRO (30j)
+                      {tr(lang, 'Activer PRO (30j)', 'Enable PRO (30d)')}
                     </button>
                     <button
                       disabled={actionBusy}
                       onClick={() => handleQuickAction("set_plan", selectedUser.user_id, { plan: "vip", days: 30 })}
                       className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 font-semibold text-xs transition"
                     >
-                      Activer VIP (30j)
+                      {tr(lang, 'Activer VIP (30j)', 'Enable VIP (30d)')}
                     </button>
                   </div>
                 )}
@@ -457,11 +463,11 @@ export function AdminUsersIntelligenceTab({
               {/* Sub-navigation inside the User Dossier */}
               <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-3">
                 {[
-                  { id: "identity", label: "1. Identité, Consentement CGU & Abonnement", icon: Shield },
-                  { id: "device", label: "2. Appareil, OS, Adresse IP & Localisation GPS", icon: Globe },
-                  { id: "sensitive", label: "3. Données Sensibles (Clés API, PIN, Sessions)", icon: Lock },
-                  { id: "trading", label: "4. Portefeuilles Paper & Live Binance", icon: DollarSign },
-                  { id: "activity", label: "5. Historique Signaux, Alertes & Sécurité", icon: Activity },
+                  { id: "identity", label: tr(lang, '1. Identité, Consentement CGU & Abonnement', '1. Identity, Terms Consent & Subscription'), icon: Shield },
+                  { id: "device", label: tr(lang, '2. Appareil, OS, Adresse IP & Localisation GPS', '2. Device, OS, IP Address & GPS Location'), icon: Globe },
+                  { id: "sensitive", label: tr(lang, '3. Données Sensibles (Clés API, PIN, Sessions)', '3. Sensitive Data (API Keys, PIN, Sessions)'), icon: Lock },
+                  { id: "trading", label: tr(lang, '4. Portefeuilles Paper & Live Binance', '4. Paper & Live Binance Wallets'), icon: DollarSign },
+                  { id: "activity", label: tr(lang, '5. Historique Signaux, Alertes & Sécurité', '5. Signal, Alert & Security History'), icon: Activity },
                 ].map((tab) => {
                   const Icon = tab.icon;
                   return (
@@ -487,44 +493,44 @@ export function AdminUsersIntelligenceTab({
                   {/* Personal Identity */}
                   <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
                     <div className="text-xs font-bold text-amber-400 uppercase font-mono flex items-center gap-2">
-                      <Users className="w-4 h-4" /> Informations Personnelles &amp; Identité
+                      <Users className="w-4 h-4" /> {tr(lang, 'Informations Personnelles & Identité', 'Personal Information & Identity')}
                     </div>
                     <div className="space-y-1.5 text-xs">
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">User ID (Interne / Telegram):</span>
+                        <span className="text-slate-400">{tr(lang, 'User ID (Interne / Telegram):', 'User ID (Internal / Telegram):')}</span>
                         <span className="font-mono text-white font-semibold">{selectedUser.user_id}</span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Adresse Email:</span>
-                        <span className="font-mono text-white">{selectedUser.identity?.email || "Non lié"}</span>
+                        <span className="text-slate-400">{tr(lang, 'Adresse Email:', 'Email Address:')}</span>
+                        <span className="font-mono text-white">{selectedUser.identity?.email || tr(lang, 'Non lié', 'Not linked')}</span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Nom d&apos;affichage:</span>
+                        <span className="text-slate-400">{tr(lang, 'Nom d\'affichage:', 'Display name:')}</span>
                         <span className="text-white font-semibold">{selectedUser.identity?.display_name || "N/A"}</span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Pseudonyme Telegram:</span>
+                        <span className="text-slate-400">{tr(lang, 'Pseudonyme Telegram:', 'Telegram username:')}</span>
                         <span className="font-mono text-sky-300">{selectedUser.identity?.telegram_handle || "N/A"}</span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Fournisseur Auth:</span>
+                        <span className="text-slate-400">{tr(lang, 'Fournisseur Auth:', 'Auth provider:')}</span>
                         <span className="font-mono text-white uppercase">{selectedUser.identity?.auth_provider}</span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Google Sub ID:</span>
+                        <span className="text-slate-400">{tr(lang, 'Google Sub ID:', 'Google Sub ID:')}</span>
                         <span className="font-mono text-slate-300">
                           {selectedUser.identity?.google_sub || "Aucun"}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Langue / Timeframe / Risque:</span>
+                        <span className="text-slate-400">{tr(lang, 'Langue / Timeframe / Risque:', 'Language / Timeframe / Risk:')}</span>
                         <span className="font-mono text-white">
                           {selectedUser.identity?.lang?.toUpperCase()} / {selectedUser.identity?.preferred_timeframe} /{" "}
                           {selectedUser.identity?.risk_profile}
                         </span>
                       </div>
                       <div className="flex justify-between py-1">
-                        <span className="text-slate-400">Compte créé le:</span>
+                        <span className="text-slate-400">{tr(lang, 'Compte créé le:', 'Account created on:')}</span>
                         <span className="font-mono text-slate-200">{formatTs(selectedUser.identity?.created_at)}</span>
                       </div>
                     </div>
@@ -533,54 +539,54 @@ export function AdminUsersIntelligenceTab({
                   {/* Legal Consent & Terms Proof */}
                   <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
                     <div className="text-xs font-bold text-emerald-400 uppercase font-mono flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4" /> Preuve de Consentement CGU &amp; Collecte
+                      <CheckCircle2 className="w-4 h-4" /> {tr(lang, 'Preuve de Consentement CGU & Collecte', 'Terms Consent & Collection Proof')}
                     </div>
                     <div className="space-y-1.5 text-xs">
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Termes &amp; Conditions acceptés:</span>
+                        <span className="text-slate-400">{tr(lang, 'Termes & Conditions acceptés:', 'Terms & Conditions accepted:')}</span>
                         <span
                           className={`font-mono font-bold ${
                             selectedUser.consent?.terms_accepted ? "text-emerald-400" : "text-rose-400"
                           }`}
                         >
-                          {selectedUser.consent?.terms_accepted ? "OUI (Consentement explicite)" : "NON"}
+                          {selectedUser.consent?.terms_accepted ? tr(lang, 'OUI (Consentement explicite)', 'YES (Explicit consent)') : "NON"}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Consentement collecte données:</span>
+                        <span className="text-slate-400">{tr(lang, 'Consentement collecte données:', 'Data collection consent:')}</span>
                         <span
                           className={`font-mono font-bold ${
                             selectedUser.consent?.data_collection_consent ? "text-emerald-400" : "text-amber-400"
                           }`}
                         >
-                          {selectedUser.consent?.data_collection_consent ? "AUTORISÉ" : "Partiel / Ancien compte"}
+                          {selectedUser.consent?.data_collection_consent ? tr(lang, 'AUTORISÉ', 'ALLOWED') : tr(lang, 'Partiel / Ancien compte', 'Partial / Legacy account')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Version du contrat signée:</span>
+                        <span className="text-slate-400">{tr(lang, 'Version du contrat signée:', 'Signed agreement version:')}</span>
                         <span className="font-mono text-amber-300">v{selectedUser.consent?.terms_version || "2.2.0"}</span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Date &amp; Heure de signature:</span>
+                        <span className="text-slate-400">{tr(lang, 'Date & Heure de signature:', 'Signature date & time:')}</span>
                         <span className="font-mono text-white">{formatTs(selectedUser.consent?.terms_accepted_at)}</span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Adresse IP à la signature:</span>
+                        <span className="text-slate-400">{tr(lang, 'Adresse IP à la signature:', 'IP address at signature:')}</span>
                         <span className="font-mono text-sky-300">
                           {selectedUser.consent?.terms_accepted_ip || selectedUser.network_location?.ip_address || "N/A"}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Permission GPS Navigateur:</span>
+                        <span className="text-slate-400">{tr(lang, 'Permission GPS Navigateur:', 'Browser GPS permission:')}</span>
                         <span className="font-mono text-white uppercase">
                           {selectedUser.consent?.geolocation_permission || "prompt"}
                         </span>
                       </div>
                       <div className="flex justify-between py-1">
-                        <span className="text-slate-400">Quotas utilisés aujourd&apos;hui:</span>
+                        <span className="text-slate-400">{tr(lang, 'Quotas utilisés aujourd\'hui:', 'Quotas used today:')}</span>
                         <span className="font-mono text-slate-200">
-                          Analyses: {selectedUser.subscription?.daily_analyses_used} | Scans:{" "}
-                          {selectedUser.subscription?.daily_scans_used} | Paper:{" "}
+                          {tr(lang, 'Analyses:', 'Analyses:')} {selectedUser.subscription?.daily_analyses_used} {tr(lang, '| Scans:', '| Scans:')}{" "}
+                          {selectedUser.subscription?.daily_scans_used} {tr(lang, '| Paper:', '| Paper:')}{" "}
                           {selectedUser.subscription?.daily_paper_trades_used}
                         </span>
                       </div>
@@ -595,17 +601,17 @@ export function AdminUsersIntelligenceTab({
                   {/* Network, IP & Geolocation */}
                   <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
                     <div className="text-xs font-bold text-sky-400 uppercase font-mono flex items-center gap-2">
-                      <MapPin className="w-4 h-4" /> Adresse IP, Réseau &amp; Localisation
+                      <MapPin className="w-4 h-4" /> {tr(lang, 'Adresse IP, Réseau & Localisation', 'IP Address, Network & Location')}
                     </div>
                     <div className="space-y-1.5 text-xs">
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Adresse IP actuelle:</span>
+                        <span className="text-slate-400">{tr(lang, 'Adresse IP actuelle:', 'Current IP address:')}</span>
                         <span className="font-mono text-amber-300 font-bold">
                           {selectedUser.network_location?.ip_address || "Inconnue"}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Pays / Région / Ville:</span>
+                        <span className="text-slate-400">{tr(lang, 'Pays / Région / Ville:', 'Country / Region / City:')}</span>
                         <span className="font-mono text-white">
                           {[
                             selectedUser.network_location?.country,
@@ -613,17 +619,17 @@ export function AdminUsersIntelligenceTab({
                             selectedUser.network_location?.city,
                           ]
                             .filter(Boolean)
-                            .join(" / ") || "Déduit via fuseau horaire"}
+                            .join(" / ") || tr(lang, 'Déduit via fuseau horaire', 'Inferred from time zone')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Fuseau horaire (Timezone):</span>
+                        <span className="text-slate-400">{tr(lang, 'Fuseau horaire (Timezone):', 'Time zone:')}</span>
                         <span className="font-mono text-sky-300">
                           {selectedUser.network_location?.timezone || "N/A"}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Coordonnées GPS exactes:</span>
+                        <span className="text-slate-400">{tr(lang, 'Coordonnées GPS exactes:', 'Exact GPS coordinates:')}</span>
                         <span className="font-mono text-emerald-400">
                           {selectedUser.network_location?.latitude != null &&
                           selectedUser.network_location?.longitude != null
@@ -632,17 +638,17 @@ export function AdminUsersIntelligenceTab({
                               ).toFixed(5)} (±${Math.round(
                                 selectedUser.network_location.location_accuracy_m || 0
                               )}m)`
-                            : "Non partagées par le navigateur"}
+                            : tr(lang, 'Non partagées par le navigateur', 'Not shared by the browser')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Source de localisation:</span>
+                        <span className="text-slate-400">{tr(lang, 'Source de localisation:', 'Location source:')}</span>
                         <span className="font-mono text-slate-300">
-                          {selectedUser.network_location?.location_source || "IP / Timezone"}
+                          {selectedUser.network_location?.location_source || tr(lang, 'IP / Timezone', 'IP / Timezone')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Fournisseur (ISP / Réseau):</span>
+                        <span className="text-slate-400">{tr(lang, 'Fournisseur (ISP / Réseau):', 'Provider (ISP / Network):')}</span>
                         <span className="font-mono text-slate-300">
                           {selectedUser.network_location?.isp || "Standard"} (
                           {selectedUser.network_location?.connection_type || "N/A"})
@@ -650,7 +656,7 @@ export function AdminUsersIntelligenceTab({
                       </div>
                       <div className="py-1">
                         <div className="text-slate-400 mb-1">
-                          Historique complet des adresses IP ({selectedUser.network_location?.ip_history?.length || 0}):
+                          {tr(lang, 'Historique complet des adresses IP (', 'Full IP address history (')}{selectedUser.network_location?.ip_history?.length || 0}):
                         </div>
                         <div className="flex flex-wrap gap-1.5">
                           {(selectedUser.network_location?.ip_history || []).map((ipItem: string, idx: number) => (
@@ -669,62 +675,62 @@ export function AdminUsersIntelligenceTab({
                   {/* Hardware & Device Telemetry */}
                   <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
                     <div className="text-xs font-bold text-emerald-400 uppercase font-mono flex items-center gap-2">
-                      <Cpu className="w-4 h-4" /> Type d&apos;Appareil, OS &amp; Empreinte Matérielle
+                      <Cpu className="w-4 h-4" /> {tr(lang, 'Type d\'Appareil, OS & Empreinte Matérielle', 'Device Type, OS & Hardware Fingerprint')}
                     </div>
                     <div className="space-y-1.5 text-xs">
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Type d&apos;appareil:</span>
+                        <span className="text-slate-400">{tr(lang, 'Type d\'appareil:', 'Device type:')}</span>
                         <span className="font-mono text-white font-bold">
                           {selectedUser.device?.device_type || "Inconnu"} ({selectedUser.device?.device_vendor_model || "N/A"})
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Système d&apos;exploitation (OS):</span>
+                        <span className="text-slate-400">{tr(lang, 'Système d\'exploitation (OS):', 'Operating system (OS):')}</span>
                         <span className="font-mono text-white">
                           {selectedUser.device?.os_name} {selectedUser.device?.os_version}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Navigateur Web:</span>
+                        <span className="text-slate-400">{tr(lang, 'Navigateur Web:', 'Web browser:')}</span>
                         <span className="font-mono text-sky-300">
                           {selectedUser.device?.browser_name} {selectedUser.device?.browser_version}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Écran / Viewport / Pixel Ratio:</span>
+                        <span className="text-slate-400">{tr(lang, 'Écran / Viewport / Pixel Ratio:', 'Screen / Viewport / Pixel Ratio:')}</span>
                         <span className="font-mono text-white">
                           {selectedUser.device?.screen_resolution || "N/A"} /{" "}
                           {selectedUser.device?.viewport_size || "N/A"} (@{selectedUser.device?.pixel_ratio || 1}x)
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">CPU (Cœurs) / RAM / Tactile:</span>
+                        <span className="text-slate-400">{tr(lang, 'CPU (Cœurs) / RAM / Tactile:', 'CPU (Cores) / RAM / Touch:')}</span>
                         <span className="font-mono text-white">
-                          {selectedUser.device?.hardware_concurrency || "?"} cœurs /{" "}
+                          {selectedUser.device?.hardware_concurrency || "?"} {tr(lang, 'cœurs /', 'cores /')}{" "}
                           {selectedUser.device?.device_memory ? `${selectedUser.device.device_memory} Go` : "? Go"} /{" "}
-                          {selectedUser.device?.max_touch_points || 0} pts
+                          {selectedUser.device?.max_touch_points || 0} {tr(lang, 'pts', 'pts')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Batterie:</span>
+                        <span className="text-slate-400">{tr(lang, 'Batterie:', 'Battery:')}</span>
                         <span className="font-mono text-slate-200">
                           {selectedUser.device?.battery_level != null
                             ? `${selectedUser.device.battery_level}% (${
-                                selectedUser.device.battery_charging ? "En charge" : "Sur batterie"
+                                selectedUser.device.battery_charging ? tr(lang, 'En charge', 'Charging') : tr(lang, 'Sur batterie', 'On battery')
                               })`
-                            : "Non exposé par l'OS"}
+                            : tr(lang, 'Non exposé par l\'OS', 'Not exposed by the OS')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Langues du navigateur:</span>
+                        <span className="text-slate-400">{tr(lang, 'Langues du navigateur:', 'Browser languages:')}</span>
                         <span className="font-mono text-slate-300">
                           {selectedUser.device?.browser_languages || selectedUser.device?.browser_language || "N/A"}
                         </span>
                       </div>
                       <div className="py-1">
-                        <div className="text-slate-400 mb-1">Chaîne User-Agent brute:</div>
+                        <div className="text-slate-400 mb-1">{tr(lang, 'Chaîne User-Agent brute:', 'Raw User-Agent string:')}</div>
                         <div className="p-2 rounded bg-slate-900 border border-slate-800 font-mono text-[10px] text-slate-300 break-all">
-                          {selectedUser.device?.user_agent || "Aucun User-Agent enregistré"}
+                          {selectedUser.device?.user_agent || tr(lang, 'Aucun User-Agent enregistré', 'No User-Agent recorded')}
                         </div>
                       </div>
                     </div>
@@ -739,16 +745,19 @@ export function AdminUsersIntelligenceTab({
                     <div className="flex items-center gap-2.5 text-xs text-rose-200">
                       <Lock className="w-4 h-4 text-rose-400 shrink-0" />
                       <span>
-                        <strong>Section Données Sensibles &amp; Cryptographiques :</strong> Utilisez le bouton{" "}
-                        <em>« Afficher les données sensibles »</em> en haut à droite pour révéler les clés API
-                        déchiffrées, les empreintes de sécurité et les jetons de session.
+                        <strong>{tr(lang, 'Section Données Sensibles & Cryptographiques :', 'Sensitive & Cryptographic Data Section:')}</strong> {tr(lang, 'Utilisez le bouton', 'Use the button')}{" "}
+                        <em>{tr(lang, '« Afficher les données sensibles »', '“Show sensitive data”')}</em> {tr(
+                          lang,
+                          'en haut à droite pour révéler les clés API déchiffrées, les empreintes de sécurité et les jetons de session.',
+                          'at the top right to reveal the decrypted API keys, security fingerprints and session tokens.'
+                        )}
                       </span>
                     </div>
                     <button
                       onClick={() => setRevealSensitive((prev) => !prev)}
                       className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200 text-xs font-bold shrink-0"
                     >
-                      {revealSensitive ? "Masquer" : "Révéler tout"}
+                      {revealSensitive ? "Masquer" : tr(lang, 'Révéler tout', 'Reveal all')}
                     </button>
                   </div>
 
@@ -756,43 +765,43 @@ export function AdminUsersIntelligenceTab({
                     {/* Binance API Keys & Encryption */}
                     <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
                       <div className="text-xs font-bold text-rose-400 uppercase font-mono flex items-center gap-2">
-                        <Key className="w-4 h-4" /> Clés API Binance &amp; Secrets
+                        <Key className="w-4 h-4" /> {tr(lang, 'Clés API Binance & Secrets', 'Binance API Keys & Secrets')}
                       </div>
                       <div className="space-y-1.5 text-xs">
                         <div className="flex justify-between py-1 border-b border-slate-800/60">
-                          <span className="text-slate-400">Compte Binance lié:</span>
+                          <span className="text-slate-400">{tr(lang, 'Compte Binance lié:', 'Linked Binance account:')}</span>
                           <span className="font-mono font-bold text-white">
                             {selectedUser.sensitive_security?.binance_credentials?.configured ? "OUI" : "NON"}
                           </span>
                         </div>
                         <div className="flex justify-between py-1 border-b border-slate-800/60">
-                          <span className="text-slate-400">Environnement:</span>
+                          <span className="text-slate-400">{tr(lang, 'Environnement:', 'Environment:')}</span>
                           <span className="font-mono text-amber-300">
                             {selectedUser.sensitive_security?.binance_credentials?.is_testnet
-                              ? "TESTNET (Simulation)"
-                              : "LIVE PRODUCTION"}
+                              ? tr(lang, 'TESTNET (Simulation)', 'TESTNET (Simulation)')
+                              : tr(lang, 'LIVE PRODUCTION', 'LIVE PRODUCTION')}
                           </span>
                         </div>
                         <div className="py-1 border-b border-slate-800/60">
-                          <div className="text-slate-400 mb-1">Clé API Binance (API Key):</div>
+                          <div className="text-slate-400 mb-1">{tr(lang, 'Clé API Binance (API Key):', 'Binance API Key:')}</div>
                           <div className="p-2 rounded bg-slate-900 border border-slate-800 font-mono text-[11px] text-amber-300 break-all">
                             {revealSensitive
-                              ? selectedUser.sensitive_security?.binance_credentials?.api_key_decrypted || "Aucune clé"
-                              : selectedUser.sensitive_security?.binance_credentials?.api_key_masked || "Aucune clé"}
+                              ? selectedUser.sensitive_security?.binance_credentials?.api_key_decrypted || tr(lang, 'Aucune clé', 'No key')
+                              : selectedUser.sensitive_security?.binance_credentials?.api_key_masked || tr(lang, 'Aucune clé', 'No key')}
                           </div>
                         </div>
                         <div className="py-1 border-b border-slate-800/60">
-                          <div className="text-slate-400 mb-1">Clé Secrète Binance (API Secret):</div>
+                          <div className="text-slate-400 mb-1">{tr(lang, 'Clé Secrète Binance (API Secret):', 'Binance API Secret:')}</div>
                           <div className="p-2 rounded bg-slate-900 border border-slate-800 font-mono text-[11px] text-rose-300 break-all">
                             {revealSensitive
                               ? selectedUser.sensitive_security?.binance_credentials?.api_secret_decrypted ||
-                                "Aucun secret"
+                                tr(lang, 'Aucun secret', 'No secret')
                               : selectedUser.sensitive_security?.binance_credentials?.api_secret_masked ||
-                                "Aucun secret"}
+                                tr(lang, 'Aucun secret', 'No secret')}
                           </div>
                         </div>
                         <div className="py-1">
-                          <div className="text-slate-400 mb-1">Chiffrement en base (Ciphertext Fernet):</div>
+                          <div className="text-slate-400 mb-1">{tr(lang, 'Chiffrement en base (Ciphertext Fernet):', 'Database encryption (Fernet ciphertext):')}</div>
                           <div className="p-2 rounded bg-slate-900 border border-slate-800 font-mono text-[10px] text-slate-400 break-all">
                             {selectedUser.sensitive_security?.binance_credentials?.api_key_ciphertext_preview || "N/A"}
                           </div>
@@ -803,45 +812,45 @@ export function AdminUsersIntelligenceTab({
                     {/* Password Hash, PIN Code & Sessions */}
                     <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
                       <div className="text-xs font-bold text-amber-400 uppercase font-mono flex items-center gap-2">
-                        <Shield className="w-4 h-4" /> Empreintes Mot de Passe, PIN &amp; Sessions
+                        <Shield className="w-4 h-4" /> {tr(lang, 'Empreintes Mot de Passe, PIN & Sessions', 'Password, PIN & Session Fingerprints')}
                       </div>
                       <div className="space-y-1.5 text-xs">
                         <div className="flex justify-between py-1 border-b border-slate-800/60">
-                          <span className="text-slate-400">Algorithme Mot de Passe:</span>
+                          <span className="text-slate-400">{tr(lang, 'Algorithme Mot de Passe:', 'Password algorithm:')}</span>
                           <span className="font-mono text-emerald-400">
                             {selectedUser.sensitive_security?.password_algorithm}
                           </span>
                         </div>
                         <div className="py-1 border-b border-slate-800/60">
-                          <div className="text-slate-400 mb-1">Hash du mot de passe (PBKDF2):</div>
+                          <div className="text-slate-400 mb-1">{tr(lang, 'Hash du mot de passe (PBKDF2):', 'Password hash (PBKDF2):')}</div>
                           <div className="p-2 rounded bg-slate-900 border border-slate-800 font-mono text-[10px] text-slate-300 break-all">
                             {revealSensitive
-                              ? selectedUser.sensitive_security?.password_hash || "Non défini"
+                              ? selectedUser.sensitive_security?.password_hash || tr(lang, 'Non défini', 'Not set')
                               : selectedUser.sensitive_security?.password_hash
                               ? `${String(selectedUser.sensitive_security.password_hash).slice(0, 28)}...`
-                              : "Non défini"}
+                              : tr(lang, 'Non défini', 'Not set')}
                           </div>
                         </div>
                         <div className="flex justify-between py-1 border-b border-slate-800/60">
-                          <span className="text-slate-400">Code PIN à 6 chiffres configuré:</span>
+                          <span className="text-slate-400">{tr(lang, 'Code PIN à 6 chiffres configuré:', '6-digit PIN configured:')}</span>
                           <span className="font-mono text-white font-bold">
-                            {selectedUser.sensitive_security?.security_pin?.configured ? "OUI" : "NON"} (Échecs:{" "}
+                            {selectedUser.sensitive_security?.security_pin?.configured ? "OUI" : "NON"} {tr(lang, '(Échecs:', '(Failures:')}{" "}
                             {selectedUser.sensitive_security?.security_pin?.failed_attempts || 0})
                           </span>
                         </div>
                         <div className="py-1 border-b border-slate-800/60">
-                          <div className="text-slate-400 mb-1">Hash du Code PIN:</div>
+                          <div className="text-slate-400 mb-1">{tr(lang, 'Hash du Code PIN:', 'PIN hash:')}</div>
                           <div className="p-2 rounded bg-slate-900 border border-slate-800 font-mono text-[10px] text-slate-300 break-all">
                             {revealSensitive
-                              ? selectedUser.sensitive_security?.security_pin?.code_hash || "Aucun PIN"
+                              ? selectedUser.sensitive_security?.security_pin?.code_hash || tr(lang, 'Aucun PIN', 'No PIN')
                               : selectedUser.sensitive_security?.security_pin?.code_hash
                               ? `${String(selectedUser.sensitive_security.security_pin.code_hash).slice(0, 24)}...`
-                              : "Aucun PIN"}
+                              : tr(lang, 'Aucun PIN', 'No PIN')}
                           </div>
                         </div>
                         <div className="py-1">
                           <div className="text-slate-400 mb-1">
-                            Sessions Web actives ({selectedUser.sensitive_security?.active_sessions_count || 0}):
+                            {tr(lang, 'Sessions Web actives (', 'Active web sessions (')}{selectedUser.sensitive_security?.active_sessions_count || 0}):
                           </div>
                           <div className="space-y-1 max-h-28 overflow-y-auto">
                             {(selectedUser.sensitive_security?.sessions || []).map((s: any, idx: number) => (
@@ -849,7 +858,7 @@ export function AdminUsersIntelligenceTab({
                                 key={idx}
                                 className="p-1.5 rounded bg-slate-900 border border-slate-800 font-mono text-[10px] text-slate-300 flex justify-between"
                               >
-                                <span>Token: {s.token_preview}</span>
+                                <span>{tr(lang, 'Token:', 'Token:')} {s.token_preview}</span>
                                 <span>IP: {s.ip_address || "N/A"}</span>
                                 <span>{formatTs(s.created_at)}</span>
                               </div>
@@ -868,17 +877,17 @@ export function AdminUsersIntelligenceTab({
                   {/* Paper Trading */}
                   <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
                     <div className="text-xs font-bold text-sky-400 uppercase font-mono flex items-center gap-2">
-                      <DollarSign className="w-4 h-4" /> Portefeuille Paper Trading
+                      <DollarSign className="w-4 h-4" /> {tr(lang, 'Portefeuille Paper Trading', 'Paper Trading Wallet')}
                     </div>
                     <div className="space-y-1.5 text-xs">
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Capital disponible:</span>
+                        <span className="text-slate-400">{tr(lang, 'Capital disponible:', 'Available capital:')}</span>
                         <span className="font-mono text-white font-bold">
                           ${Number(selectedUser.trading?.paper_portfolio?.capital || 0).toFixed(2)} USDT
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">PnL Réalisé Total:</span>
+                        <span className="text-slate-400">{tr(lang, 'PnL Réalisé Total:', 'Total realized PnL:')}</span>
                         <span
                           className={`font-mono font-bold ${
                             Number(selectedUser.trading?.paper_portfolio?.total_realized_pnl || 0) >= 0
@@ -890,15 +899,15 @@ export function AdminUsersIntelligenceTab({
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Positions Ouvertes / Fermées:</span>
+                        <span className="text-slate-400">{tr(lang, 'Positions Ouvertes / Fermées:', 'Open / Closed Positions:')}</span>
                         <span className="font-mono text-white">
-                          {selectedUser.trading?.paper_portfolio?.open_positions_count || 0} ouvertes /{" "}
-                          {selectedUser.trading?.paper_portfolio?.closed_positions_count || 0} fermées (Winrate:{" "}
+                          {selectedUser.trading?.paper_portfolio?.open_positions_count || 0} {tr(lang, 'ouvertes /', 'open /')}{" "}
+                          {selectedUser.trading?.paper_portfolio?.closed_positions_count || 0} {tr(lang, 'fermées (Winrate:', 'closed (Win rate:')}{" "}
                           {selectedUser.trading?.paper_portfolio?.win_rate_pct || 0}%)
                         </span>
                       </div>
                       <div className="flex justify-between py-1">
-                        <span className="text-slate-400">Watchlist active:</span>
+                        <span className="text-slate-400">{tr(lang, 'Watchlist active:', 'Active watchlist:')}</span>
                         <span className="font-mono text-amber-300">
                           {(selectedUser.trading?.watchlist || []).join(", ") || "Aucune"}
                         </span>
@@ -909,31 +918,31 @@ export function AdminUsersIntelligenceTab({
                   {/* Live Trading & Config */}
                   <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
                     <div className="text-xs font-bold text-amber-400 uppercase font-mono flex items-center gap-2">
-                      <Activity className="w-4 h-4" /> Trading Réel Binance &amp; Configuration
+                      <Activity className="w-4 h-4" /> {tr(lang, 'Trading Réel Binance & Configuration', 'Real Binance Trading & Configuration')}
                     </div>
                     <div className="space-y-1.5 text-xs">
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Mode d&apos;exécution / Auto-Trade:</span>
+                        <span className="text-slate-400">{tr(lang, 'Mode d\'exécution / Auto-Trade:', 'Execution mode / Auto-Trade:')}</span>
                         <span className="font-mono text-white">
-                          {selectedUser.trading?.config?.trading_mode?.toUpperCase()} / Auto:{" "}
+                          {selectedUser.trading?.config?.trading_mode?.toUpperCase()} {tr(lang, '/ Auto:', '/ Auto:')}{" "}
                           {selectedUser.trading?.config?.auto_trade ? "ON" : "OFF"}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Risque par trade / Levier Max:</span>
+                        <span className="text-slate-400">{tr(lang, 'Risque par trade / Levier Max:', 'Risk per trade / Max leverage:')}</span>
                         <span className="font-mono text-white">
                           {selectedUser.trading?.config?.risk_per_trade}% / {selectedUser.trading?.config?.max_leverage}x
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-slate-800/60">
-                        <span className="text-slate-400">Ordres Live Ouverts / Fermés:</span>
+                        <span className="text-slate-400">{tr(lang, 'Ordres Live Ouverts / Fermés:', 'Open / Closed Live Orders:')}</span>
                         <span className="font-mono text-white">
-                          {selectedUser.trading?.live_trading?.open_trades_count || 0} ouverts /{" "}
-                          {selectedUser.trading?.live_trading?.closed_trades_count || 0} fermés
+                          {selectedUser.trading?.live_trading?.open_trades_count || 0} {tr(lang, 'ouverts /', 'open /')}{" "}
+                          {selectedUser.trading?.live_trading?.closed_trades_count || 0} {tr(lang, 'fermés', 'closed')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1">
-                        <span className="text-slate-400">PnL Live Réalisé:</span>
+                        <span className="text-slate-400">{tr(lang, 'PnL Live Réalisé:', 'Realized Live PnL:')}</span>
                         <span
                           className={`font-mono font-bold ${
                             Number(selectedUser.trading?.live_trading?.realized_pnl_usdt || 0) >= 0
@@ -955,11 +964,11 @@ export function AdminUsersIntelligenceTab({
                   {/* Security Audit Logs for this user */}
                   <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
                     <div className="text-xs font-bold text-rose-400 uppercase font-mono flex items-center gap-2">
-                      <Shield className="w-4 h-4" /> Journal de Sécurité de l&apos;Utilisateur
+                      <Shield className="w-4 h-4" /> {tr(lang, 'Journal de Sécurité de l\'Utilisateur', 'User Security Log')}
                     </div>
                     <div className="space-y-1.5 max-h-60 overflow-y-auto">
                       {(selectedUser.activity?.security_events || []).length === 0 ? (
-                        <div className="text-xs text-slate-500">Aucun événement de sécurité enregistré.</div>
+                        <div className="text-xs text-slate-500">{tr(lang, 'Aucun événement de sécurité enregistré.', 'No security event recorded.')}</div>
                       ) : (
                         (selectedUser.activity?.security_events || []).map((ev: any, idx: number) => (
                           <div
@@ -981,8 +990,7 @@ export function AdminUsersIntelligenceTab({
                   {/* Recent Signals, Alerts & Support Tickets */}
                   <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
                     <div className="text-xs font-bold text-sky-400 uppercase font-mono flex items-center gap-2">
-                      <Bell className="w-4 h-4" /> Signaux Récents ({selectedUser.activity?.signals_count || 0}) &amp;
-                      Tickets ({selectedUser.activity?.support_tickets?.length || 0})
+                      <Bell className="w-4 h-4" /> {tr(lang, 'Signaux Récents (', 'Recent Signals (')}{selectedUser.activity?.signals_count || 0}{tr(lang, ') & Tickets (', ') & Tickets (')}{selectedUser.activity?.support_tickets?.length || 0})
                     </div>
                     <div className="space-y-1.5 max-h-60 overflow-y-auto">
                       {(selectedUser.activity?.recent_signals || []).map((sig: any, idx: number) => (
@@ -1007,7 +1015,7 @@ export function AdminUsersIntelligenceTab({
                           className="p-2 rounded bg-amber-500/10 border border-amber-500/30 text-[11px] space-y-0.5"
                         >
                           <div className="font-bold text-amber-300 flex items-center gap-1">
-                            <MessageSquare className="w-3 h-3" /> Ticket: {t.subject} ({t.status})
+                            <MessageSquare className="w-3 h-3" /> {tr(lang, 'Ticket:', 'Ticket:')} {t.subject} ({t.status})
                           </div>
                           <div className="text-slate-300">{t.message}</div>
                         </div>
