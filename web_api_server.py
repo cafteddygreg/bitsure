@@ -69,6 +69,7 @@ from data_fetcher import DataFetcher
 from database import get_connection, get_db
 from decision_journal import decision_journal
 import health_monitor
+import security_audit
 from history_manager import HistoryManager
 from i18n import get_text
 from indicators import adx, atr, bollinger_bands, macd, rsi, sma, support_resistance
@@ -2060,6 +2061,25 @@ def _analyze_symbol_demo(symbol: str, timeframe: str, lang: str = "fr") -> Dict[
 # =====================================================================
 
 class BitsureAPIHandler(BaseHTTPRequestHandler):
+    # Ne divulgue ni le nom du serveur ni la version de Python dans l'en-tête « Server ».
+    server_version = "Bitsure"
+    sys_version = ""
+
+    def end_headers(self) -> None:
+        # En-têtes de sécurité sur TOUTES les réponses (API, HTML, fichiers statiques).
+        # Pas de CSP ici : elle doit d'abord être testée en mode report-only pour ne pas casser l'interface.
+        try:
+            forwarded = (self.headers.get("X-Forwarded-Proto") or "").lower()
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+            self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+            self.send_header("Permissions-Policy", "geolocation=(self), camera=(), microphone=(), payment=()")
+            if forwarded == "https" or str(APP_URL or "").startswith("https://"):
+                self.send_header("Strict-Transport-Security", "max-age=15552000")
+        except Exception:
+            pass
+        super().end_headers()
+
     def log_message(self, format, *args):
         pass
 
@@ -2616,9 +2636,12 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
             # Public healthcheck endpoint for Railway deployment liveness (no sensitive data exposed)
             if path == "/api/health":
                 db_ok = health_monitor.check_db_health()
+                # Résumé public minimal : aucun détail technique (le rapport complet est réservé à l'admin).
+                status = "degraded" if not db_ok else security_audit.public_status()
                 self._send_json(200, {
                     "ok": True,
                     "database_ok": db_ok,
+                    "status": status,
                     "timestamp": time.time(),
                 })
                 return
@@ -2729,6 +2752,11 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
 
             if path.startswith("/api/admin/recovery/"):
                 self._handle_recovery_admin_get(path, query, sess)
+                return
+
+            if path == "/api/admin/security-audit":
+                # Route /api/admin/* : réservée à l'administrateur par la porte d'authentification (require_admin).
+                self._send_json(200, {"ok": True, **security_audit.get_state()})
                 return
 
             if path == "/api/market/tickers":
@@ -3952,6 +3980,15 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
             user_id = int(sess["user_id"])
             is_admin = bool(sess.get("is_admin"))
+
+            if path == "/api/admin/security-audit/run":
+                started = security_audit.run_async("manual")
+                self._send_json(202 if started else 200, {
+                    "ok": True,
+                    "started": started,
+                    "message": "Audit de sécurité lancé." if started else "Un audit est déjà en cours.",
+                })
+                return
 
             # Guard against privilege escalation attempts in user endpoints
             if not is_admin and any(k in body for k in ("role", "is_admin", "account_status", "approved", "target_user_id")):
@@ -5270,6 +5307,7 @@ def start_background_web_server(host: str = "0.0.0.0", port: Optional[int] = Non
         t = threading.Thread(target=server.serve_forever, name=f"bitsure-web-{target_port}", daemon=True)
         t.start()
         logger.info("Bitsure Teddy Web & API Server listening on http://%s:%d", host, target_port)
+        security_audit.start_background(target_port)
     except Exception as e:
         logger.warning("Could not bind background web server on %s:%d: %s", host, target_port, e)
 

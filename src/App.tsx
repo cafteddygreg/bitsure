@@ -17,6 +17,7 @@ import {
   SecuritySessionsPanel,
 } from './components/AuthFlows';
 import { AccountRecoveryView, ForcePasswordChangeView, AdminRecoveryPanel } from './components/AccountRecovery';
+import { SecurityAuditPanel } from './components/SecurityAuditPanel';
 import { AppLang, getInitialLang, setSavedLang, tr, translateMessage } from './i18n';
 import {
   UserProfile,
@@ -860,15 +861,6 @@ export function App() {
   useEffect(() => {
     loadUserAndCoreData();
   }, [loadUserAndCoreData]);
-
-  // Automatic recovery polling if preflight API diagnostic temporarily failed during server restart
-  useEffect(() => {
-    if (!apiDiag || apiDiag.ok || apiDiagChecking) return;
-    const retryTimer = setTimeout(() => {
-      loadUserAndCoreData();
-    }, 2500);
-    return () => clearTimeout(retryTimer);
-  }, [apiDiag, apiDiagChecking, loadUserAndCoreData]);
 
   useEffect(() => {
     const applyGooglePending = (pending: any) => {
@@ -2222,13 +2214,13 @@ export function App() {
             <RefreshCw className="w-5 h-5 text-[#20C997] animate-spin shrink-0" />
             <div>
               <h2 className="font-display text-sm font-bold text-[#E8EEF2]">
-                {tr(lang, 'Diagnostic de connectivité API en cours...', 'Running core API diagnostic check...')}
+                {tr(lang, 'Vérification des services et de la sécurité en cours…', 'Verifying services and security…')}
               </h2>
               <p className="text-[11px] font-mono-tabular text-[#8B98A4]">
                 {tr(
                   lang,
-                  'Vérification de /api/health et /api/auth/me avant ouverture du terminal',
-                  'Verifying /api/health and /api/auth/me before rendering workspace'
+                  "Contrôle de la connexion au serveur, de la base de données et du service de session avant l'ouverture du terminal. Cela peut prendre quelques instants.",
+                  'Checking the server connection, the database and the session service before opening the terminal. This can take a few moments.'
                 )}
               </p>
             </div>
@@ -3474,6 +3466,30 @@ export function App() {
                     {Object.keys(pendingActions).length > 1 ? ` (+${Object.keys(pendingActions).length - 1})` : ''}
                   </span>
                 </div>
+              </div>
+            )}
+            {apiDiag?.serviceStatus === 'degraded' && (
+              <div
+                className="fixed bottom-4 left-4 z-40 max-w-[260px] px-3 py-2 rounded-lg bg-[#F79009]/15 border border-[#F79009]/50 text-[11px] text-[#F79009]"
+                role="status"
+              >
+                {tr(
+                  lang,
+                  'Service dégradé : certaines fonctions peuvent être limitées. Nos équipes sont informées.',
+                  'Degraded service: some features may be limited. Our team has been notified.'
+                )}
+              </div>
+            )}
+            {apiDiag?.serviceStatus === 'checking' && (
+              <div
+                className="fixed bottom-4 left-4 z-40 max-w-[260px] px-3 py-2 rounded-lg bg-[#20C997]/10 border border-[#20C997]/40 text-[11px] text-[#20C997]"
+                role="status"
+              >
+                {tr(
+                  lang,
+                  'Vérification de la sécurité des services en cours…',
+                  'Verifying service security…'
+                )}
               </div>
             )}
             {toast && (
@@ -6524,6 +6540,7 @@ export function App() {
 
           {activeTab === 'admin' && isAdminUser && (
             <div className="space-y-6">
+              <SecurityAuditPanel lang={lang} onToast={showToast} />
               <AdminRecoveryPanel lang={lang} onToast={showToast} />
               {/* Direct Banner to Open Users 360° Dossier & Public Terms */}
               <div className="bg-[#0D1318] border border-[#20C997]/40 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">

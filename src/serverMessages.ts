@@ -314,4 +314,6 @@ export const SERVER_MESSAGES: ReadonlyArray<readonly [string, string]> = [
   ["Cooldown (secondes)", "Cooldown (seconds)"],
   ["Période tronquée : la fenêtre demandée dépasse {} bougies, seules les plus récentes ont été simulées.", "Period truncated: the requested window exceeds {} candles, only the most recent ones were simulated."],
   ["Téléchargement Binance incomplet : des bougies manquent dans la période simulée.", "Incomplete Binance download: some candles are missing from the simulated period."],
+  ["Audit de sécurité lancé.", "Security audit started."],
+  ["Un audit est déjà en cours.", "An audit is already running."],
 ];

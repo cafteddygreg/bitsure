@@ -157,6 +157,8 @@ export interface CoreApiDiagnosticReport {
   checkedAt: number;
   databaseOk: boolean;
   authenticated: boolean;
+  /** Résumé public du serveur (aucun détail technique) : operational | degraded | checking. */
+  serviceStatus: 'operational' | 'degraded' | 'checking';
   probes: EndpointProbeResult[];
   errorSummary?: string;
 }
@@ -271,6 +273,9 @@ export async function runCoreApiDiagnostic(): Promise<CoreApiDiagnosticReport> {
   const allReachable = probes.every((p) => p.reachable);
   const databaseOk = Boolean(healthRes.payload?.database_ok ?? healthRes.probe.reachable);
   const authenticated = Boolean(authMeRes.payload?.authenticated && authMeRes.payload?.user);
+  const rawStatus = healthRes.payload?.status;
+  const serviceStatus: 'operational' | 'degraded' | 'checking' =
+    rawStatus === 'degraded' || !databaseOk ? 'degraded' : rawStatus === 'checking' ? 'checking' : 'operational';
 
   const failed = probes.filter((p) => !p.reachable);
   const errorSummary =
@@ -283,6 +288,7 @@ export async function runCoreApiDiagnostic(): Promise<CoreApiDiagnosticReport> {
     checkedAt: Date.now(),
     databaseOk,
     authenticated,
+    serviceStatus,
     probes,
     errorSummary,
   };
