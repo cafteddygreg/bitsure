@@ -1536,10 +1536,11 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
     ]
   );
 
-  // Run initial backtest on mount so the Lab is immediately populated with real data
+  // À l'ouverture on ne charge QUE la configuration (symboles, schéma, presets, historique). Aucun backtest n'est
+  // lancé sans action explicite de l'utilisateur (« Simuler » / « Lancer ») : un calcul lourd au simple affichage
+  // de la page chargeait le serveur à chaque visite et à chaque remontage du composant.
   useEffect(() => {
     loadLabOverview();
-    executeBacktest(params, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -3856,6 +3857,27 @@ export const StrategyLabView: React.FC<StrategyLabViewProps> = ({ onShowToast, l
           {/* =================================================================
               SECTION 1: OVERVIEW, EQUITY CURVE, DRAWDOWN & DIAGNOSTIC INSIGHTS
              ================================================================= */}
+          {!activeRun && !runningBacktest && ['overview', 'chart', 'trades', 'diagnostics'].includes(labSection) && (
+            <div className="p-6 rounded-xl border border-white/10 bg-[#0D1318] text-center space-y-3">
+              <p className="text-sm text-[#8B98A4]">
+                {tr(
+                  lang,
+                  'Aucune simulation pour le moment. Lancez un backtest pour afficher les résultats.',
+                  'No simulation yet. Run a backtest to display the results.'
+                )}
+              </p>
+              <button
+                type="button"
+                onClick={() => executeBacktest(params, false)}
+                disabled={periodRange.invalid}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#20C997] text-[#080C0F] text-sm font-semibold disabled:opacity-50"
+              >
+                <Play className="w-4 h-4 fill-current" />
+                {tr(lang, 'Simuler', 'Simulate')}
+              </button>
+            </div>
+          )}
+
           {labSection === 'overview' && activeRun && m && (
             <div className="space-y-6">
               {/* Interprétation : lecture factuelle des métriques de CE run (aucune donnée ajoutée) */}

@@ -747,4 +747,11 @@ def public_status() -> str:
     last = _state["last"]
     if last is None:
         return "checking" if (_state["running"] and ENABLED) else "operational"
-    return "degraded" if last["overall"] in ("degraded", "critical") else "operational"
+    # « Dégradé » = un SERVICE est réellement en panne (base de données, Binance, horloge...). Les constats de
+    # configuration, de code, d'en-têtes ou de clés sont des tâches pour l'admin : ils ne doivent jamais afficher
+    # « service dégradé » à tous les utilisateurs.
+    service_failure = any(
+        c.get("category") == "services" and c.get("status") == "fail" and c.get("severity") in ("critical", "high")
+        for c in last.get("checks", [])
+    )
+    return "degraded" if service_failure else "operational"

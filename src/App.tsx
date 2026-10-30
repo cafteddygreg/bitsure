@@ -857,6 +857,27 @@ export function App() {
     return () => clearTimeout(retryTimer);
   }, [apiDiag, apiDiagChecking, loadUserAndCoreData]);
 
+  // Rafraîchit uniquement le résumé public de santé (1 requête légère / minute, onglet visible) : la bannière
+  // « service dégradé » reflète l'état actuel et disparaît dès que le problème est résolu. Ne touche ni à la session
+  // ni à l'affichage de l'application (contrairement à loadUserAndCoreData).
+  const diagOk = Boolean(apiDiag?.ok);
+  useEffect(() => {
+    if (!diagOk) return;
+    const timer = setInterval(async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        const res = await fetch('/api/health', { cache: 'no-store' });
+        const body = await res.json();
+        const next: 'operational' | 'degraded' | 'checking' =
+          body?.status === 'degraded' || body?.database_ok === false ? 'degraded' : body?.status === 'checking' ? 'checking' : 'operational';
+        setApiDiag((prev) => (prev && prev.serviceStatus !== next ? { ...prev, serviceStatus: next } : prev));
+      } catch {
+        // Erreur réseau ponctuelle : on garde l'état précédent plutôt que d'afficher une fausse alerte.
+      }
+    }, 60000);
+    return () => clearInterval(timer);
+  }, [diagOk]);
+
   // Initial session check on mount + Google OAuth postMessage listener
   useEffect(() => {
     loadUserAndCoreData();

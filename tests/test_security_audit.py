@@ -103,9 +103,15 @@ class ReportTests(unittest.TestCase):
     def test_public_status_reveals_no_detail(self):
         with patch.dict(sa._state, {"last": None, "running": True}):
             self.assertEqual(sa.public_status(), "checking")
-        with patch.dict(sa._state, {"last": {"overall": "critical"}, "running": False}):
+        down = sa._chk("svc.database", "services", "fail", "critical", "a", "b")
+        weak_config = sa._chk("cfg.admin_password", "configuration", "fail", "high", "a", "b")
+        leaked = sa._chk("code.secrets", "code", "fail", "high", "a", "b")
+        with patch.dict(sa._state, {"last": {"overall": "critical", "checks": [down]}, "running": False}):
             self.assertEqual(sa.public_status(), "degraded")
-        with patch.dict(sa._state, {"last": {"overall": "attention"}, "running": False}):
+        # Un constat de configuration/code, même grave, n'est PAS une panne de service.
+        with patch.dict(sa._state, {"last": {"overall": "degraded", "checks": [weak_config, leaked]}, "running": False}):
+            self.assertEqual(sa.public_status(), "operational")
+        with patch.dict(sa._state, {"last": {"overall": "attention", "checks": []}, "running": False}):
             self.assertEqual(sa.public_status(), "operational")
 
     def test_auto_lock_only_set_on_failure(self):
