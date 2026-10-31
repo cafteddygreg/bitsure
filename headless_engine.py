@@ -21,6 +21,8 @@ import os
 import threading
 import time
 
+import engine_lease
+
 logger = logging.getLogger("headless_engine")
 
 _STARTED = False
@@ -129,13 +131,31 @@ def _run_engine() -> None:
     asyncio.set_event_loop(loop)
     ctx = HeadlessContext(_build_bot())
 
+    # Un seul processus (site ou bot) exécute les tâches de fond : celui qui détient le bail (engine_lease.py).
+    engine_lease.start("web")
+    leased = engine_lease.leased
+
     try:
-        reconcile_all_accounts(context=ctx, startup_mode=True)
+        if engine_lease.wait_decision(8):
+            reconcile_all_accounts(context=ctx, startup_mode=True)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Réconciliation initiale échouée: %s", exc)
 
+    # Prix temps réel (flux websocket) et alertes de prix : jusqu'ici démarrés uniquement par le bot.
+    try:
+        from data_fetcher import DataFetcher
+
+        DataFetcher.get_instance().start_websocket()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Flux temps réel indisponible (repli REST): %s", exc)
+    try:
+        from alert_manager import AlertManager
+
+        AlertManager.get_instance().start_monitoring(ctx)  # la boucle ne travaille que si ce processus a le bail
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Surveillance des alertes non démarrée: %s", exc)
     scheduler = AsyncIOScheduler(timezone="UTC", event_loop=loop)
-    scheduler.add_job(scheduled_signal_scan, "interval", seconds=20, kwargs={"context": ctx},
+    scheduler.add_job(leased(scheduled_signal_scan), "interval", seconds=20, kwargs={"context": ctx},
                       id="scheduled_signal_scan", replace_existing=True)
     try:
         intervals = get_configured_analysis_intervals()
@@ -143,20 +163,28 @@ def _run_engine() -> None:
         logger.warning("Intervalles d'analyse par défaut (%s)", exc)
         intervals = [5, 10]
     for minutes in intervals:
-        scheduler.add_job(scheduled_market_analysis, "interval", minutes=minutes,
+        scheduler.add_job(leased(scheduled_market_analysis), "interval", minutes=minutes,
                           kwargs={"context": ctx, "interval_minutes": minutes},
                           id=f"market_analysis_{minutes}m", replace_existing=True)
-    scheduler.add_job(monitor_open_positions, "interval", seconds=15, kwargs={"context": ctx},
+    scheduler.add_job(leased(monitor_open_positions), "interval", seconds=15, kwargs={"context": ctx},
                       id="monitor_open_positions", replace_existing=True)
-    scheduler.add_job(_paper_exits_job, "interval", seconds=15, kwargs={"context": ctx},
+    scheduler.add_job(leased(_paper_exits_job), "interval", seconds=15, kwargs={"context": ctx},
                       id="scheduled_paper_exits", replace_existing=True)
-    scheduler.add_job(reconcile_all_accounts, "interval", minutes=1, kwargs={"context": ctx},
+    scheduler.add_job(leased(reconcile_all_accounts), "interval", minutes=1, kwargs={"context": ctx},
                       id="reconcile_all_accounts", replace_existing=True)
     set_active_scheduler(scheduler)
-    scheduler.add_job(scheduled_health_check_job, "interval", minutes=1, kwargs={"context": ctx},
+    scheduler.add_job(leased(scheduled_health_check_job), "interval", minutes=1, kwargs={"context": ctx},
                       id="scheduled_health_check", replace_existing=True)
-    scheduler.add_job(_subscription_expiry_job, "interval", hours=24, kwargs={"context": ctx},
+    scheduler.add_job(leased(_subscription_expiry_job), "interval", hours=24, kwargs={"context": ctx},
                       id="scheduled_subscription_expiry", replace_existing=True)
+    try:
+        # Résultats (gagné/perdu) des signaux émis : alimente l'historique du site, comme dans le bot.
+        from bot_handlers import check_signal_outcomes
+
+        scheduler.add_job(leased(check_signal_outcomes), "interval", minutes=15, kwargs={"bot": ctx.bot},
+                          id="signal_monitor", replace_existing=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Suivi des résultats de signaux indisponible dans le moteur du site: %s", exc)
 
     scheduler.start()
     logger.info("✅ Moteur Auto-Trade embarqué démarré (intervalles d'analyse: %s min)", intervals)
@@ -192,10 +220,18 @@ def _watchdog() -> None:
         time.sleep(WATCH_INTERVAL_SECONDS)
 
 
-def maybe_start_embedded_engine() -> bool:
-    """À appeler au démarrage du serveur web. Ne fait rien sans AUTOTRADE_EMBEDDED=1."""
-    if str(os.environ.get("AUTOTRADE_EMBEDDED", "")).strip().lower() not in ("1", "true", "yes", "on"):
+def maybe_start_embedded_engine(force: bool = False) -> bool:
+    """À appeler au démarrage du serveur web.
+
+    Le site héberge désormais son propre moteur PAR DÉFAUT (il ne dépend plus du bot) : désactivable avec
+    AUTOTRADE_EMBEDDED=0. Le bail (engine_lease.py) garantit qu'un seul processus exécute les tâches, que le bot
+    tourne ou non. `force=True` démarre sans délai de grâce (le bot vient d'échouer ou n'existe pas).
+    """
+    if str(os.environ.get("AUTOTRADE_EMBEDDED", "1")).strip().lower() in ("0", "false", "no", "off"):
         return False
+    global GRACE_SECONDS
+    if force:
+        GRACE_SECONDS = 0
     threading.Thread(target=_watchdog, name="autotrade-watchdog", daemon=True).start()
     logger.info("AUTOTRADE_EMBEDDED activé : surveillance du moteur (délai de grâce %ss).", GRACE_SECONDS)
     return True

@@ -69,6 +69,7 @@ from data_fetcher import DataFetcher
 from database import get_connection, get_db
 from decision_journal import decision_journal
 import health_monitor
+import notifications
 import security_audit
 from history_manager import HistoryManager
 from i18n import get_text
@@ -2754,6 +2755,15 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 self._handle_recovery_admin_get(path, query, sess)
                 return
 
+            if path == "/api/notifications":
+                # Boîte de réception du site : indépendante de Telegram (le bot n'a pas besoin de tourner).
+                try:
+                    limit = int((query.get("limit") or ["30"])[0] if isinstance(query.get("limit"), list) else query.get("limit") or 30)
+                except (TypeError, ValueError):
+                    limit = 30
+                self._send_json(200, {"ok": True, **notifications.list_notifications(int(sess["user_id"]), limit)})
+                return
+
             if path == "/api/admin/security-audit":
                 # Route /api/admin/* : réservée à l'administrateur par la porte d'authentification (require_admin).
                 self._send_json(200, {"ok": True, **security_audit.get_state()})
@@ -4101,6 +4111,12 @@ class BitsureAPIHandler(BaseHTTPRequestHandler):
                 return
 
             # 3. Paper Trading Actions (with per-user daily paper trade quota)
+            if path == "/api/notifications/read":
+                ids = body.get("ids") if isinstance(body.get("ids"), list) else None
+                changed = notifications.mark_read(user_id, ids)
+                self._send_json(200, {"ok": True, "updated": changed})
+                return
+
             if path == "/api/market/order-preview":
                 # Aperçu (sans rien exécuter) de la taille de position pour un ordre issu de l'analyse.
                 symbol = normalize_symbol(body.get("symbol", "BTCUSDT"))
@@ -5336,6 +5352,7 @@ def main():
     host = os.environ.get("WEB_HOST", "0.0.0.0")
     server = ThreadingHTTPServer((host, port), BitsureAPIHandler)
     logger.info("Bitsure Teddy Python API Server listening on http://%s:%d", host, port)
+    security_audit.start_background(port)
     _maybe_start_embedded_engine()
     server.serve_forever()
 

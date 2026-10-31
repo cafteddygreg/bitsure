@@ -18,6 +18,7 @@ import {
 } from './components/AuthFlows';
 import { AccountRecoveryView, ForcePasswordChangeView, AdminRecoveryPanel } from './components/AccountRecovery';
 import { SecurityAuditPanel } from './components/SecurityAuditPanel';
+import { NotificationBell } from './components/NotificationBell';
 import { AppLang, getInitialLang, setSavedLang, tr, translateMessage } from './i18n';
 import {
   UserProfile,
@@ -3385,6 +3386,8 @@ export function App() {
               <span className="text-[#6E7B88]">/</span>
               <span className={lang === 'en' ? 'text-[#20C997] font-bold' : 'text-[#6E7B88]'}>EN</span>
             </button>
+
+            <NotificationBell lang={lang} />
 
             <button
               onClick={handleLogout}

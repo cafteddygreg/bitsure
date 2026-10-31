@@ -63,8 +63,14 @@ class AlertManager:
         from data_fetcher import DataFetcher
         fetcher = DataFetcher.get_instance()
 
+        import engine_lease
+
         while self.running:
             try:
+                if not engine_lease.lease_held():
+                    # Un autre processus (site ou bot) surveille les alertes : on évite les doubles notifications.
+                    await asyncio.sleep(10)
+                    continue
                 # 1. Récupérer toutes les alertes non déclenchées sur les symboles documentés
                 from config import DOCUMENTED_SYMBOLS
                 with self.lock:
@@ -142,11 +148,8 @@ class AlertManager:
                             condition=alert['condition'],
                             price=alert['price'],
                             current_price=current_price)
-            await bot_app.bot.send_message(
-                chat_id=user_id,
-                text=text,
-                parse_mode="Markdown"
-            )
+            from notifications import notify_user
+            await notify_user(bot_app, user_id, text, kind="alert", parse_mode="Markdown")
         except Exception as e:
             print(f"Failed to notify user {user_id}: {e}")
 

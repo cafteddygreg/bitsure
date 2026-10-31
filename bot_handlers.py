@@ -1989,14 +1989,15 @@ def start_signal_monitoring(app):
     if signal_scheduler is not None:
         return
     signal_scheduler = AsyncIOScheduler(timezone="UTC")
+    import engine_lease  # un seul processus (site ou bot) suit les résultats des signaux
     signal_scheduler.add_job(
-        check_signal_outcomes, "interval", minutes=15,
+        engine_lease.leased(check_signal_outcomes), "interval", minutes=15,
         kwargs={"bot": app.bot},
         id="signal_monitor", replace_existing=True
     )
     # Surveillance paper trading toutes les 5 minutes
     signal_scheduler.add_job(
-        check_paper_exits, "interval", minutes=5,
+        engine_lease.leased(check_paper_exits), "interval", minutes=5,
         kwargs={"bot": app.bot},
         id="paper_monitor", replace_existing=True
     )

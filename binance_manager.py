@@ -464,7 +464,7 @@ def _client_for_user(user_id: int, market_type: Optional[MarketType] = None) -> 
     creds = get_binance_credentials(user_id, market_type=market_type)
     if not creds or not creds["api_key"] or not creds["api_secret"]:
         raise BinanceClientError(
-            "Aucune clé API Binance configurée. Utilise /setapikeys pour les ajouter."
+            "Aucune clé API Binance configurée. Ajoute-les dans les paramètres de trading du site (ou avec /setapikeys sur Telegram)."
         )
     if not creds["is_valid"]:
         raise BinanceClientError(
@@ -2042,7 +2042,7 @@ def get_full_account_info(user_id: int, market_type: MarketType = "futures") -> 
 
     creds = get_binance_credentials(user_id, market_type=market_type)
     if not creds or not creds.get("api_key") or not creds.get("api_secret"):
-        raise BinanceClientError("Aucune clé API Binance configurée. Utilise /setapikeys pour les ajouter.")
+        raise BinanceClientError("Aucune clé API Binance configurée. Ajoute-les dans les paramètres de trading du site (ou avec /setapikeys sur Telegram).")
 
     summary = {
         "market_type": market_type,

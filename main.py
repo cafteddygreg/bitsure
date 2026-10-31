@@ -28,6 +28,7 @@ from telegram.ext import (
     filters,
 )
 
+import engine_lease
 from config import ADMIN_ID, TELEGRAM_TOKEN
 from data_fetcher import DataFetcher
 
@@ -211,7 +212,7 @@ def start_autotrade_scheduler(app):
     autotrade_scheduler = AsyncIOScheduler(timezone="UTC")
     app.bot_data["autotrade_scheduler"] = autotrade_scheduler
     autotrade_scheduler.add_job(
-        scheduled_signal_scan, "interval", seconds=20,
+        engine_lease.leased(scheduled_signal_scan), "interval", seconds=20,
         kwargs={"context": app},
         id="scheduled_signal_scan", replace_existing=True
     )
@@ -223,39 +224,40 @@ def start_autotrade_scheduler(app):
 
     for interval in analysis_intervals:
         autotrade_scheduler.add_job(
-            scheduled_market_analysis, "interval", minutes=interval,
+            engine_lease.leased(scheduled_market_analysis), "interval", minutes=interval,
             kwargs={"context": app, "interval_minutes": interval},
             id=f"market_analysis_{interval}m", replace_existing=True
         )
     autotrade_scheduler.add_job(
-        monitor_open_positions, "interval", seconds=15,
+        engine_lease.leased(monitor_open_positions), "interval", seconds=15,
         kwargs={"context": app},
         id="monitor_open_positions", replace_existing=True
     )
     autotrade_scheduler.add_job(
-        scheduled_paper_exits_job, "interval", seconds=15,
+        engine_lease.leased(scheduled_paper_exits_job), "interval", seconds=15,
         kwargs={"context": app},
         id="scheduled_paper_exits", replace_existing=True
     )
     autotrade_scheduler.add_job(
-        reconcile_all_accounts, "interval", minutes=1,
+        engine_lease.leased(reconcile_all_accounts), "interval", minutes=1,
         kwargs={"context": app},
         id="reconcile_all_accounts", replace_existing=True
     )
     from health_monitor import scheduled_health_check_job, set_active_scheduler
     set_active_scheduler(autotrade_scheduler)
     autotrade_scheduler.add_job(
-        scheduled_health_check_job, "interval", minutes=1,
+        engine_lease.leased(scheduled_health_check_job), "interval", minutes=1,
         kwargs={"context": app},
         id="scheduled_health_check", replace_existing=True
     )
     autotrade_scheduler.add_job(
-        scheduled_subscription_expiry_job, "interval", hours=24,
+        engine_lease.leased(scheduled_subscription_expiry_job), "interval", hours=24,
         kwargs={"context": app},
         id="scheduled_subscription_expiry", replace_existing=True
     )
     try:
-        reconcile_all_accounts(context=app, startup_mode=True)
+        if engine_lease.wait_decision(5):  # seul le processus qui détient le bail réconcilie au démarrage
+            reconcile_all_accounts(context=app, startup_mode=True)
     except Exception as e:
         logger.warning(f"Startup reconciliation failed: {e}")
     autotrade_scheduler.start()
@@ -278,6 +280,33 @@ if ADMIN_ID == 0:
     logger.warning("⚠️ ADMIN_ID == 0 : aucun ID Telegram administrateur numérique configuré.")
 
 # =========================================================
+# INDÉPENDANCE DU SITE VIS-À-VIS DU BOT
+# =========================================================
+
+def _site_can_survive_without_bot() -> bool:
+    """Vrai si le site est hébergé dans CE processus et qu'on n'a pas demandé l'ancien comportement
+    (BOT_EXIT_ON_FAILURE=1 : quitter si le bot échoue, pour qu'un superviseur relance tout)."""
+    return (
+        os.environ.get("DISABLE_EMBEDDED_WEB") != "1"
+        and not os.environ.get("WEBHOOK_URL")
+        and os.environ.get("BOT_EXIT_ON_FAILURE") != "1"
+    )
+
+
+def _keep_website_alive() -> None:
+    """Garde le processus en vie pour le site, avec son propre moteur de fond (sans Telegram)."""
+    import threading
+
+    try:
+        from headless_engine import maybe_start_embedded_engine
+
+        maybe_start_embedded_engine(force=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Moteur du site non démarré: %s", exc)
+    threading.Event().wait()
+
+
+# =========================================================
 # MAIN
 # =========================================================
 
@@ -293,7 +322,14 @@ def main():
             logger.warning(f"Embedded web server early startup failed: {web_err}")
 
     if not TELEGRAM_TOKEN:
+        if _site_can_survive_without_bot():
+            logger.error("TELEGRAM_TOKEN manquant : bot Telegram désactivé, le site continue de fonctionner seul.")
+            _keep_website_alive()
+            return
         raise ValueError("❌ TELEGRAM_TOKEN manquant.")
+
+    # Le bot et le site peuvent chacun exécuter les tâches de fond ; le bail garantit qu'un seul le fait à la fois.
+    engine_lease.start("bot")
 
     logger.info("Initializing services...")
 
@@ -601,9 +637,17 @@ pattern="^(menu_(?!autotrade|live|market_mode|analysis_config|positions|trading_
 
         logger.info("Starting polling mode.")
 
-        app.run_polling(
-            drop_pending_updates=True
-        )
+        try:
+            app.run_polling(
+                drop_pending_updates=True
+            )
+        except Exception as bot_err:
+            # Une panne du bot (réseau Telegram, conflit de polling...) ne doit pas emporter le site.
+            if not _site_can_survive_without_bot():
+                raise
+            logger.critical("Le bot Telegram s'est arrêté (%s) : le site continue de fonctionner seul.", bot_err)
+            engine_lease.stop()  # libère le bail pour que le moteur du site reprenne les tâches de fond
+            _keep_website_alive()
 # =========================================================
 # ENTRYPOINT
 # =========================================================

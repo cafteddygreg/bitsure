@@ -171,6 +171,30 @@ def check_services() -> List[dict]:
         out.append(_chk("svc.optimizer", "services", "skip", "info", "Workers d'optimisation", "Optimization workers",
                         "Contrôle indisponible (table absente ?)", "Check unavailable (table missing?)"))
 
+    try:
+        from database import get_connection
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT owner, expires_at FROM engine_lease WHERE name = 'background-engine'")
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        alive = bool(row and float(row[1]) > time.time())
+        holder = str(row[0]).split(":")[0] if row else ""
+        out.append(_chk("svc.engine", "services", "pass" if alive else "warn", "medium",
+                        "Moteur de fond actif (AutoTrade, alertes, suivi SL/TP)", "Background engine running (AutoTrade, alerts, SL/TP tracking)",
+                        (f"Exécuté par : {'le site' if holder == 'web' else 'le bot Telegram'}" if alive else
+                         "Aucun processus ne détient le bail du moteur : l'AutoTrade, les alertes de prix et le suivi des positions ne tournent pas."),
+                        (f"Run by: {'the website' if holder == 'web' else 'the Telegram bot'}" if alive else
+                         "No process holds the engine lease: AutoTrade, price alerts and position tracking are not running."),
+                        "Démarrer le site avec AUTOTRADE_EMBEDDED=1 (défaut) ou lancer le bot ; voir INDEPENDANCE_SITE_BOT.md.",
+                        "Start the website with AUTOTRADE_EMBEDDED=1 (default) or run the bot; see INDEPENDANCE_SITE_BOT.md."))
+    except Exception:  # noqa: BLE001
+        out.append(_chk("svc.engine", "services", "skip", "info", "Moteur de fond", "Background engine",
+                        "Contrôle indisponible (table absente : le moteur n'a jamais démarré ?)",
+                        "Check unavailable (table missing: engine never started?)"))
+
     out.append(_chk("svc.telegram", "services", "pass" if os.getenv("TELEGRAM_TOKEN") else "warn", "low",
                     "Bot Telegram configuré", "Telegram bot configured",
                     fix_fr="Définir TELEGRAM_TOKEN pour recevoir les alertes de sécurité.",

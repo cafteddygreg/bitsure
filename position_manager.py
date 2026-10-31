@@ -17,6 +17,7 @@ except ImportError:
 
 from config import ATR_MULTIPLIER_SL
 from database import get_connection
+from notifications import notify_user
 from trading_config import get_config, TradingConfig, update_config, record_daily_pnl
 from risk_manager import record_trade_loss, EPSILON
 try:
@@ -743,14 +744,16 @@ async def monitor_open_positions(context: ContextTypes.DEFAULT_TYPE) -> None:
                     # Fermeture de sécurité : on annule SL ET TP restants (aucun ordre orphelin).
                     _cancel_remaining_protection(trade, "SAFETY" if safety_close else reason)
                 pnl_usdt, pnl_pct = close_trade(trade, reason, exit_price)
-                if context and hasattr(context, "bot"):
-                    await context.bot.send_message(
-                        chat_id=trade["user_id"],
-                        text=(
+                if context is not None:
+                    await notify_user(
+                        context,
+                        trade["user_id"],
+                        (
                             f"{'🟢' if pnl_usdt >= 0 else '🔴'} *Position fermée ({reason})*\n"
                             f"Symbole : `{trade['symbol']}`\n"
                             f"PnL : {pnl_usdt:.2f} USDT ({pnl_pct:.2f}%)"
                         ),
+                        kind="trade",
                         parse_mode="Markdown",
                     )
                 continue

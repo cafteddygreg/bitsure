@@ -31,7 +31,13 @@ class SafetyError(Exception):
 
 
 def _dispatch_or_queue_notification(user_id: int, text: str, context=None) -> None:
-    """Envoie la notification Telegram via context.bot si disponible, sinon l'empile."""
+    """Enregistre la notification dans le site, puis l'envoie via Telegram (context.bot) si disponible, sinon l'empile."""
+    try:
+        from notifications import store_notification
+
+        store_notification(int(user_id), text, "safety")  # visible dans la cloche du site, bot ou pas
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Safety notification in-app impossible pour user=%s: %s", user_id, exc)
     bot = getattr(context, "bot", None) if context is not None else None
     if bot is not None:
         try:
@@ -263,7 +269,7 @@ def assert_trading_allowed(config: TradingConfig, *, require_auto_trade: bool = 
             )
             _dispatch_or_queue_notification(config.user_id, reminder_msg)
         reason_str = config.safety_lock_reason or "anomalie critique détectée"
-        raise SafetyError(f"Safe mode actif ({reason_str}). Utilise /safestatus ou /clearsafe <code>.")
+        raise SafetyError(f"Safe mode actif ({reason_str}). Déverrouille-le depuis l'onglet Sécurité du site, ou avec /clearsafe <code> sur Telegram.")
 
     if require_auto_trade and not config.auto_trade:
         raise SafetyError("AutoTrade est désactivé.")

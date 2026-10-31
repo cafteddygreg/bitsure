@@ -25,6 +25,7 @@ except ImportError:
         DEFAULT_TYPE = Any
 
 from database import get_connection
+from notifications import notify_user
 from trading_config import get_config, TradingConfig
 from risk_manager import check_can_open_position, calculate_position_size
 from binance_manager import (
@@ -337,7 +338,8 @@ async def _notify_trade_result(context: ContextTypes.DEFAULT_TYPE, user_id: int,
             f"Symbole : `{trade['symbol']}`\n"
             f"Erreur : {trade.get('error_message', 'inconnue')}"
         )
-    await context.bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown")
+    # Toujours enregistrée dans la boîte de réception du site ; Telegram en canal supplémentaire (si lié).
+    await notify_user(context, user_id, text, kind="trade", parse_mode="Markdown")
 
 
 async def _send_confirmation_prompt(context: ContextTypes.DEFAULT_TYPE, signal: dict, config: TradingConfig):
@@ -713,15 +715,11 @@ async def run_market_analysis_for_user(
         requested_symbols=symbols,
     )
     logger.info(f"--- Rapport final User {user_id} ---\n{report}")
-    if send_telegram and context and hasattr(context, "bot"):
+    if send_telegram and context is not None:
         try:
-            await context.bot.send_message(chat_id=user_id, text=report, parse_mode="Markdown")
-        except Exception:
-            try:
-                plain = report.replace("*", "").replace("`", "").replace("_", "")
-                await context.bot.send_message(chat_id=user_id, text=plain)
-            except Exception as e:
-                log_error(logger, user_id, "scheduled_market_analysis.report", str(e))
+            await notify_user(context, user_id, report, kind="report", parse_mode="Markdown")
+        except Exception as e:
+            log_error(logger, user_id, "scheduled_market_analysis.report", str(e))
     return report
 
 
